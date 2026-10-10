@@ -202,6 +202,18 @@ func (t *Tx) adjust(cents int64, reference, description string) error {
 	return t.insert("adjustment", cents, reference, description, nil)
 }
 
+// Expire removes credit that expired, as one expiry entry. The credits/expiry module
+// calls it; apps take credit with Debit.
+func (t *Tx) Expire(cents int64, reference string) error {
+	if cents <= 0 || !strings.HasPrefix(reference, "expiry:") || len(reference) > 128 {
+		return ErrInvalid
+	}
+	if done, err := t.recorded("expiry", -cents, reference); done || err != nil {
+		return err
+	}
+	return t.insert("expiry", -cents, reference, "Credit expired after inactivity", nil)
+}
+
 // recorded reports whether the reference already has the same entry, and returns
 // ErrConflict if it has a different one.
 func (t *Tx) recorded(kind string, cents int64, reference string) (bool, error) {
