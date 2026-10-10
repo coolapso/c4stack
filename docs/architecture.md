@@ -19,17 +19,17 @@ registers.
 | Package | Purpose |
 |---|---|
 | `web` | A Gin engine with security middleware, CSRF, an extensible CSP, request logging, graceful serving and health endpoints |
-| `app` | The registry that modules join (database, migrations, commands, background jobs), plus the command-line entry point |
+| `app` | The command entry point, and the registry modules join: database, commands, background jobs |
 | `app/apptest` | A fresh disposable database per test, with the app's migrations applied |
 | `ui` | The `Layout` type, the default design (CSS, vendored HTMX, a small script) and content-hashed assets |
 | `identity` | The identity provider interface |
-| `identity/hanko` | The Hanko adapter, its login page and its profile UI |
+| `identity/hanko` | The Hanko adapter, its sign-in page and its profile UI |
 | `accounts` | Accounts mapped from identities, sign-in middleware, the settings page and account deletion |
 | `apikeys` | Opt-in. API keys, bearer middleware and the keys page |
 | `payments` | The payment provider interface |
 | `payments/creem` | The Creem adapter |
-| `credits` | Opt-in. Ledger, holds hook, checkout, webhook, history and the credits page |
-| `credits/expiry` | Opt-in. Expires inactive credit after a delivered warning |
+| `credits` | Opt-in. Ledger, holds, purchases, webhooks, history and the credits page |
+| `credits/expiry` | Opt-in. Expires unused credit after a delivered warning |
 | `email` | The email sender interface |
 | `email/scaleway` | The Scaleway Transactional Email adapter |
 | `cmd/c4stack` | The app generator |
@@ -42,7 +42,7 @@ through `app`.
 - `web` and `internal/postgres` depend on nothing else in C4Stack. `app` depends on both;
   `ui` depends on `web`.
 - The interface packages `identity`, `payments` and `email` depend on nothing in C4Stack.
-  Each adapter depends on its interface and on `web` and `ui` where it renders pages.
+  Each adapter depends on its interface, and on `web` and `ui` where it renders pages.
 - `accounts` depends on `identity`. `apikeys` and `credits` depend on `accounts`.
   `credits/expiry` depends on `credits` and `email`. Nothing points back: `accounts` learns
   about other modules only through the deletion hooks they register.
@@ -62,20 +62,20 @@ func main() {
 		DatabaseURL: os.Getenv("ACME_DATABASE_URL"),
 		Migrations: []app.Migrations{
 			accounts.Migrations,
-			{Namespace: "app", Files: migrations},
+			{Namespace: "app", Files: migrations.Files},
 		},
 		Setup: setup,
 	})
 }
 
-// setup wires the application for every command except migrate.
+// setup wires the app for every command except migrate.
 func setup(ctx context.Context, a *app.App) error {
 	cfg, err := loadConfig() // config.go: reads the other ACME_* variables
 	if err != nil {
 		return err
 	}
 	a.SetLogger(cfg.logger())
-	idp, err := hanko.New(hanko.Config{APIURL: cfg.HankoURL})
+	idp, err := hanko.New(hanko.Config{APIURL: cfg.HankoAPIURL, SignedInPath: "/account"})
 	if err != nil {
 		return err
 	}
@@ -101,17 +101,9 @@ assets.Add("app", static)
 layout := newLayout(assets) // layout.go starts from the default design
 
 r.GET("/assets/*path", assets.Serve)
-r.GET("/", home(layout))
-idp.Mount(r, layout) // GET /login
+r.GET("/", home)
+idp.Mount(r, layout)                                          // GET /login
 accts.Mount(r.Group("/account", accts.RequireSignIn), layout) // settings, delete, logout
-```
-
-Enabling API keys adds `apikeys.Migrations` to the list in `main.go`, plus three lines:
-
-```go
-keys, err := apikeys.New(a, apikeys.Config{Prefix: "acme"})
-keys.Mount(r.Group("/account/keys", accts.RequireSignIn), layout)
-api := r.Group("/api", keys.RequireKey)
 ```
 
 ### What a module brings
@@ -141,24 +133,23 @@ plus its constructor and `Mount`.
 `app.Main` runs:
 - `serve`: serves the handler, runs background jobs, and handles health and shutdown
 - `migrate` and `migrate status`, which touch only the database
+- `version` and `help`
 - every command a module or the app registered, such as `accounts delete-local` or
   `credits adjust`
-- `help`
 
 **`migrate` needs only the database.** It reads `Config.DatabaseURL` and
 `Config.Migrations`, applies them and exits. It doesn't run `setup`, load other
-configuration, construct providers or start a server. It follows the least-privilege
-principle, like Searchbase's migrate job: run the same image with the `migrate` command
-as a Job before the rollout, with only the database secret. That Job can use a database
-role that owns the schema, while the server's role only reads and writes data.
+configuration, construct providers or start a server. A deployment runs the same image
+with the `migrate` command as a job before each rollout, with only the database secret.
+That job can use a database role that owns the schema, while the server's role only
+reads and writes data.
 
 Every other command runs `setup` first, so it validates the configuration of every
 enabled module. Operator commands run with the server's configuration.
 
 ## Module surfaces
 
-The signatures below are a sketch. Names may still change during implementation; the
-shape should not.
+The signatures below are abbreviated. The Go documentation has the details.
 
 ### web
 
@@ -177,10 +168,8 @@ type CSP struct{ Scripts, Styles, Images, Fonts, Connect, Frames, FormActions []
 
 func CSRF(c *gin.Context)                    // checks token and Origin on unsafe methods
 func CSRFToken(c *gin.Context) string
-func SetSealedCookie(c *gin.Context, name string, value []byte, maxAge time.Duration)
-func SealedCookie(c *gin.Context, name string) ([]byte, error) // encrypted and authenticated
 func AllowCSP(extra CSP) gin.HandlerFunc     // extends the policy for one route group
-func MaxBody(n int64) gin.HandlerFunc        // overrides the body limit for one group
+func MaxBody(n int64) gin.HandlerFunc        // changes the body limit for one group
 func URL(c *gin.Context, path string) string // absolute URL on the public origin
 func Log(c *gin.Context) *slog.Logger        // the request logger, with request_id
 func SetSealedCookie(c *gin.Context, name string, value []byte, maxAge time.Duration)
@@ -192,6 +181,7 @@ type Server struct {
 	HealthPath      string        // serves <path>/live and <path>/ready; empty disables
 	DrainDelay      time.Duration // default 5s
 	ShutdownTimeout time.Duration // default 30s
+	Logger          *slog.Logger
 }
 func Serve(ctx context.Context, s Server, ready func(context.Context) error) error
 ```
@@ -212,9 +202,8 @@ changes Gin's global mode.
 **CSRF.** C4Stack uses a signed double-submit cookie (`__Host-csrf` on HTTPS, `csrf` on
 plain-HTTP localhost) plus an exact Origin match against `PublicURL`. The cookie holds a
 random value and the form token is its HMAC, so a cookie planted by an attacker never
-matches a token they can produce. Forms send
-`csrf_token`. HTMX requests send `X-CSRF-Token`, which the default page script copies
-from `<meta name="csrf-token">`.
+matches a token they can produce. Forms send `csrf_token`. HTMX requests send
+`X-CSRF-Token`, which the default page script copies from `<meta name="csrf-token">`.
 
 Each kind of route uses one check:
 - `accounts.RequireSignIn` includes the CSRF check. Sign-in is cookie-based, so a signed-in
@@ -232,8 +221,9 @@ frame-ancestors 'none'; base-uri 'none'; object-src 'none'
 
 `Config.CSP` extends the policy for every route; `AllowCSP` extends it for one group.
 Modules use `AllowCSP` on the groups they mount:
-- The Hanko login page adds the Hanko origin to `connect-src`. It also adds inline styles,
+- The Hanko sign-in page adds the Hanko origin to `connect-src`, and inline styles,
   because Hanko's elements inject them.
+- The account settings page adds the Hanko origin to `connect-src` for the profile UI.
 - The credits pages add the checkout origin to `form-action`, because the checkout POST
   answers with a redirect to the provider.
 
@@ -279,10 +269,10 @@ type Command struct {
 }
 ```
 
-**Database.** `Main` opens the pool before `setup` runs, using pgx through `database/sql`. For any host that isn't a Unix
-socket or loopback address, it sets `sslmode=verify-full` with the system roots unless
-the URL already sets `sslmode`. An explicit weaker mode is respected, with a startup
-warning.
+**Database.** `Main` opens the pool before `setup` runs, using pgx through
+`database/sql`. For any host that isn't a Unix socket or loopback address, it sets
+`sslmode=verify-full` with the system roots unless the URL already sets `sslmode`. An
+explicit weaker mode is respected, with a startup warning.
 
 **Migrations.** Namespaces apply in the order of `Config.Migrations`. Each file runs in
 its own transaction, all under one advisory lock. The `schema_migrations` table records
@@ -304,6 +294,8 @@ type Layout struct {
 }
 func (l Layout) Render(c *gin.Context, status int, title string, body templ.Component)
 func (l Layout) NotFound(c *gin.Context)
+func (l Layout) Error(c *gin.Context, status int, title, text string)
+
 type Design struct {
 	Name        string          // header and <title>
 	Nav         []Link
@@ -311,8 +303,6 @@ type Design struct {
 	Stylesheets []string        // linked after the default stylesheet
 	Footer      templ.Component
 }
-type Link struct{ Label, Href string }
-
 func Default(d Design, assets *Assets) Layout
 
 func NewAssets(base string) *Assets              // includes the default design's files
@@ -320,8 +310,9 @@ func (a *Assets) Add(prefix string, files fs.FS) error
 func (a *Assets) URL(name string) string         // /assets/<hash>/ui/base.css
 func (a *Assets) Serve(c *gin.Context)
 
-// Components default pages and custom layouts share.
+// Components that default pages and custom layouts share.
 func Head(c *gin.Context, assets *Assets) templ.Component // CSRF meta tag, HTMX, page script
+func LiveRegion() templ.Component
 func CSRFField(c *gin.Context) templ.Component
 func Dialog(p DialogProps) templ.Component
 ```
@@ -332,19 +323,18 @@ func Dialog(p DialogProps) templ.Component
    `Nav` links and a `Footer`.
 3. **Own layout.** `ui.Layout{Page: myLayout, Assets: assets}` with the app's own Templ
    and CSS. It includes `ui.Head` and `ui.LiveRegion` so HTMX and dialogs work. Default
-   pages render inside it, using documented component classes. A custom layout either
-   links `ui/base.css`, styles those classes itself, or replaces the pages.
+   pages render inside it, using the component classes `ui/base.css` defines. A custom
+   layout either links `ui/base.css`, styles those classes itself, or replaces the pages.
 
 **The default design.** It is one hand-written stylesheet of design tokens and component
 classes, with no build step, supporting light and dark schemes. Class and token names are
-neutral, with no framework prefix.
+neutral, with no framework prefix. `ui.js` wires dialogs, copy buttons, busy states and
+the CSRF header for HTMX through `data-*` attributes, so pages need no inline scripts.
 
 **Assets.** Asset URLs carry a per-file content hash. The current hash is served as
 immutable for a year. Any other hash gets the current file with `no-cache`, so pages from
-the previous release keep working during a rolling deploy.
-
-Modules add their own files with `Add` when they mount; the Hanko adapter adds its
-vendored elements and scripts.
+the previous release keep working during a rolling deploy. Modules add their own files
+with `Add` when they mount; the Hanko adapter adds its vendored elements and scripts.
 
 ### identity and identity/hanko
 
@@ -358,6 +348,7 @@ type Identity struct {
 func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (10 minutes)
 func NewContext(ctx context.Context, id Identity) context.Context
 func FromContext(ctx context.Context) (Identity, bool)
+
 type Provider interface {
 	Name() string                                   // stored with each account, e.g. "hanko"
 	Authenticate(r *http.Request) (Identity, error) // ErrNoSession when not signed in
@@ -369,15 +360,15 @@ type Provider interface {
 **How the Hanko adapter works.**
 - `Authenticate` calls `POST /sessions/validate` on every request. There is no local JWT
   check, so a signed-out or deleted user's token stops working at once.
-- `Logout` calls `POST /logout` and clears the cookie.
+- `Logout` clears the cookie and calls `POST /logout`.
 - `Delete` runs Hanko's profile flow action `account_delete` with the user's own session,
   and succeeds only on the `account_deleted` state. No admin API key is needed.
 - `Mount` adds `GET /login`, a page with Hanko's `<hanko-auth>` element inside the app's
   layout. A user who already has a session continues to the `next` path.
 
-**Profile UI.** The adapter can also offer a profile UI, through three methods that
-`accounts` looks for: `MountProfile`, `ProfileCSP` and `ProfileSection`. When it does,
-the accounts settings page embeds it. Hanko's profile UI has everything Searchbase's settings page has:
+**Profile UI.** The adapter offers a profile UI through three methods that `accounts`
+looks for: `MountProfile`, `ProfileCSP` and `ProfileSection`. The accounts settings page
+embeds it:
 - **Email change.** It runs server-side through Hanko's profile flow:
   1. The user enters a new address and confirms it with a passcode, which they can have
      resent.
@@ -389,15 +380,9 @@ the accounts settings page embeds it. Hanko's profile UI has everything Searchba
 - **Passkeys.** The user adds a named passkey or removes one, through the Hanko SDK in the
   browser.
 - **Signed-in devices.** The user sees their sessions and signs out any of them.
-- **Sign-out.**
 
-Passkey changes require a recent sign-in, as deletion does (see below). The profile UI
-never offers account deletion, which always goes through `accounts`.
-
-**Hanko tenant settings.** The tenant must:
-- allow account deletion, for the flow action
-- require email verification
-- send the `hanko` cookie to the app's host
+Passkey changes require a recent sign-in, as deletion does. The profile UI never offers
+account deletion, which always goes through `accounts`.
 
 ### accounts
 
@@ -421,9 +406,7 @@ func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout)
 ```
 
 Signing out lives here rather than in the provider adapter, because it is the same for
-every provider: `Logout` ends the session at the provider and clears the browser.
-
-The operator command is `accounts delete-local <account-id>`.
+every provider. The operator command is `accounts delete-local <account-id>`.
 
 **`RequireSignIn`** checks CSRF, authenticates the session, then finds the account,
 creating it on first sign-in. It sets `Cache-Control: no-store`. Unauthenticated requests
@@ -481,14 +464,15 @@ hash, so changing `Prefix` never invalidates existing keys. The raw key is shown
 the create response and never logged.
 
 **`RequireKey`** requires exactly one `Authorization: Bearer` header and ignores cookies.
-It answers JSON 401 with `WWW-Authenticate` when the key is missing or invalid. It records
-last use at most every five minutes. A revocation applies from the next request.
+It answers JSON 401 with `WWW-Authenticate` when the key is missing or invalid, and
+removes the header before the handler runs. It records last use at most every five
+minutes. A revocation applies from the next request.
 
 ### payments and payments/creem
 
 ```go
 type Checkout struct {
-	Reference   string // the credits intent ID, echoed back in webhook events
+	Reference   string // the purchase's ID, echoed back in webhook events
 	AmountCents int64  // what the buyer pays, in EUR cents
 	Email       string
 	SuccessURL  string
@@ -499,8 +483,8 @@ type Event struct {
 	Reference   string
 	CheckoutID  string
 	OrderID     string
-	AmountCents int64 // the price for Paid, the reversed amount otherwise
-	PaidCents   int64 // what the buyer paid, after taxes or discounts
+	AmountCents int64  // the price for Paid, the reversed amount otherwise
+	PaidCents   int64  // what the buyer paid, after taxes or discounts
 	Currency    string
 	Review      string // set when the event is ours but cannot be applied as it stands
 }
@@ -563,16 +547,16 @@ The operator commands are `credits adjust`, `credits balance`, `credits reviews`
 - `WithAccount` lets app reservations share the lock and transaction with framework
   debits.
 
-**Webhooks.** The webhook grants credit from the stored intent, never from the payload.
+**Webhooks.** The webhook grants credit from the stored purchase, never from the payload.
 - A paid event credits once.
-- A full refund or dispute of a paid intent reverses once.
-- Any other event about one of our intents becomes a review row.
+- A full refund or dispute of a paid purchase reverses once.
+- Any other event about one of the app's purchases becomes a review row.
 - Foreign events are acknowledged and ignored.
 
 On account deletion, the credits hook forfeits a positive balance. The foreign keys then
-anonymise the account's ledger and intents; the ledger's append-only trigger allows that
-one change and clears the descriptions. `docs/credits.md` has the full contract and the webhook
-outcome table.
+anonymise the account's ledger and purchases; the ledger's append-only trigger allows that
+one change and clears the descriptions. [The credits contract](credits.md) has the full
+rules and the webhook outcome table.
 
 ### credits/expiry (opt-in)
 
@@ -588,21 +572,20 @@ type Config struct {
 }
 
 func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error)
+func (x *Expiry) Run(ctx context.Context) (Result, error)
 ```
 
 `New` registers the `credit_expiry_notices` table, the `credits expire` command and an
 hourly job during `serve`. The job runs under an advisory lock, so replicas don't
 duplicate it.
 
-**Activity.** Purchases, debits and adjustments count as activity.
-
-**Warnings.** A warning goes out only to a verified email address, outside any
-transaction. Its deadline is recorded only after delivery succeeds. A failing address is
-retried at most daily.
-
-**Expiry.** Credit expires only after the full notice period from delivery has passed.
-New activity starts a fresh cycle, and a hold defers expiry. An announced deadline never
-gets shorter.
+- **Activity.** Purchases, debits and adjustments count as activity.
+- **Warnings.** A warning goes out only to a verified email address, outside any
+  transaction. Its deadline is recorded only after delivery succeeds. A failing address
+  is retried at most daily.
+- **Expiry.** Credit expires only after the full notice period from delivery has passed.
+  New activity starts a fresh cycle, and a hold defers expiry. An announced deadline
+  never gets shorter.
 
 ### email and email/scaleway
 
@@ -611,9 +594,9 @@ type Message struct{ To, Subject, Text string }
 type Sender interface{ Send(ctx context.Context, m Message) error }
 ```
 
-`scaleway.New(scaleway.Config{SecretKey, ProjectID, Region, From, FromName, ReplyTo})`. The
-region defaults to `fr-par`. Errors carry the HTTP status, never the provider's response
-body or the recipient.
+`scaleway.New(scaleway.Config{SecretKey, ProjectID, Region, From, FromName, ReplyTo})`.
+The region defaults to `fr-par`. Errors carry the HTTP status, never the provider's
+response body or the recipient.
 
 ## Configuration and naming
 
@@ -652,7 +635,7 @@ It writes these files:
   `pages.templ`
 - `static/app.css` and `static/favicon.svg`
 - `migrations/migrations.go`, which embeds the directory. There is no starter
-  migration, so there is no no-op version 1 to trap the app.
+  migration, so there is no empty version 1 to trap the app.
 - `Taskfile.yml`, `.taskrc.yml`, `.env` (with a fresh secret key), `.env.example` and
   `.gitignore`
 - `docker-compose.yml`, `Containerfile` and `.dockerignore`
@@ -675,20 +658,21 @@ includes:
 
 **One version.** `framework:update` changes the Go dependency and `FRAMEWORK_VERSION`
 together, then tidies, regenerates, tests and builds. `check` fails when the two differ.
-Reading the ref from `go.mod` with a dynamic variable would avoid the second copy, but
-Task does not evaluate dynamic variables in include URLs: the ref comes out empty and
-Task fetches the newest commit. The upgrade test caught this.
+The version has to be written in the Taskfile because Task does not evaluate dynamic
+(`sh:`) variables in include URLs: the ref would come out empty, and Task would fetch the
+newest commit.
 
-**Task mechanics.** These were verified with Task 3.53.1 and 3.54.0 against a local Git
-server. Task 3.51.1 and 3.52.0 still treat remote Taskfiles as an experiment.
-- A Git include works with the developer's Git credentials. Its ref can come from a
-  static variable, not from a dynamic (`sh:`) one.
-- Top-level app variables reach the shared tasks.
+**Task mechanics.** These hold for Task 3.53.1 and later:
+- A Git include uses the developer's Git credentials, so it works for a private
+  repository.
+- App variables reach the shared tasks. Task merges an included file's variables over
+  the app's, so the shared file's own variables all start with `SHARED_` and never
+  share a name with an app variable.
 - An app redefines a shared task by listing it in `excludes`.
 - Shared tasks set `dir: '{{.ROOT_DIR}}'`, so they run from the app root, including
-  under `--local`.
-- `.taskrc.yml` trusts `github.com`, so there is no trust prompt.
-- `.task/` is gitignored, and `--offline` uses that cache.
+  under `--local` and from subdirectories.
+- `.taskrc.yml` trusts `github.com`, so there is no trust prompt, and caches the shared
+  file. `.task/` is gitignored, and `--offline` uses that cache.
 - No checksum is pinned, because the ref is a release tag.
 
 **Shared tasks.**
@@ -698,7 +682,7 @@ server. Task 3.51.1 and 3.52.0 still treat remote Taskfiles as an experiment.
 | Develop | `dev` (templ watch with live reload), `templ:generate`, `templ:watch` |
 | Local database | `db:up`, `db:down`, `db:logs`, `db:connect`, `db:wipe` (asks first) |
 | Operations | `db:migrate`, `run -- <command>` (passthrough to the app binary) |
-| Quality | `test`, `test:integration`, `check` (vet, staticcheck, gofmt, templ fmt, `go mod tidy -diff`, generated-code drift) |
+| Quality | `test`, `test:integration`, `check` (version drift, vet, staticcheck, gofmt, templ fmt, `go mod tidy -diff`, generated-code drift) |
 | Build | `build`, `container:build`, `container:push` (`PLATFORMS` variable, tags from `git describe`) |
 | Framework | `framework:update VERSION=…` |
 | Secrets | optional `infisical run` wrapping when the app sets a project and environment |
@@ -711,37 +695,40 @@ then create a fresh database per test through `app/apptest`.
 **Containers.** `container:build` compiles the binaries on the host and copies them into
 the image. Private-module credentials therefore never enter an image build.
 
-`staticcheck` runs with `go run` at a version the shared Taskfile pins, so apps carry no
-lint dependency in `go.mod` and a newer version arrives with the framework.
+**Lint.** `staticcheck` runs with `go run` at a version the shared Taskfile pins, so apps
+carry no lint dependency in `go.mod` and a newer version arrives with the framework.
 
-This repository's own `Taskfile.yml` includes `taskfiles/app.yml` locally and adds
-framework tasks: `check` (adds golangci-lint), `test`, `test:integration`, `test:app`
-(generate a starter app from this checkout, run its tasks and serve it end to end),
-`test:upgrade`, `cli:build` and `release:verify`.
+**This repository's tasks.** The repository's own `Taskfile.yml` reuses the shared
+test-database tasks and adds `check` (with golangci-lint), `test`, `test:integration`,
+`test:app` (generate a starter app from this checkout, run its tasks and serve it end to
+end), `test:upgrade` (move a generated app to the next release), `test:example`,
+`cli:build` and `release:verify`.
 
-## Decisions on carried-over features
+## Design decisions
 
-| Old feature | Decision | Reason |
+These features were considered and decided as follows.
+
+| Feature | Decision | Reason |
 |---|---|---|
-| Automatic deferred application of refunds that arrive before their payment | Dropped | Rare. The reversal becomes a review row and an operator adjusts. This removes the most intricate code. |
-| Payment review and pending-reversal tables | One `payment_reviews` table | Every event that can't be applied is recorded with a fixed reason. Commands list and resolve them. |
-| Deletion-pending state and cancel commands | Dropped | Deletion is one request: the provider first, then one local transaction. A failure in between is logged and fixed with `accounts delete-local`. |
-| Identity tombstones | Kept, simpler | One hash table, checked at account creation under the identity lock. It prevents an in-flight request recreating a deleted person's account with their email. Per-request session validation already rejects stale sessions. |
-| Expiry metrics, scheduler flag, warning-reset command | Dropped | Expiry runs hourly under a lock and on demand with `credits expire`, and outcomes are logged. Announced deadlines never shorten, so a policy change applies to new warnings without a reset. Apps add metrics if they need them. |
-| Six server-timeout env vars | Dropped | Safe fixed defaults. `DrainDelay` and `ShutdownTimeout` are `web.Server` fields; an app exposes them as env vars if it wants. |
-| Strict DB transport policy | Simplified | `verify-full` by default for remote hosts, using system roots (`sslrootcert` is optional). An explicit `sslmode` is respected, with a warning. Ambient `PG*` variables are not policed. |
-| API-key `creation_id` replay protection | Dropped | A double submit creates a second key, which the user can revoke. |
-| Revocation recheck inside credit transactions | Dropped | A revocation applies from the next request. |
-| Email-unverified page | Dropped | Unverified addresses are not stored, so nothing is mailed to them. The Hanko tenant should require verification. |
-| Ledger metadata JSON | Dropped | A description and a reference are enough. App-specific records go in app tables. |
-| Payment completed after its account was deleted | Review instead of grant-and-forfeit | The right action is a refund, which is an operator decision. |
-| Recent sign-in before deletion | Kept, simple | The session's creation time must be within 10 minutes. It proves the owner is present rather than an unattended browser, and the same check covers passkey changes. |
-| Snapshot read for the credit summary | Kept | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
-| Old asset hashes served with `no-cache` | Kept | Rolling deploys keep working. |
+| Applying a refund automatically when it arrives before its payment | No | Rare. The refund becomes a review row and an operator adjusts. Automatic deferred application would be the most intricate code in the module. |
+| Separate tables for reviews and for refunds waiting for their payment | One `payment_reviews` table | Every event that can't be applied is recorded with a fixed reason. Commands list and resolve them. |
+| A deletion-pending account state with cancel commands | No | Deletion is one request: the provider first, then one local transaction. A failure in between is logged and fixed with `accounts delete-local`. |
+| Identity tombstones | Yes, as one hash table | Checked at account creation under the identity lock, it stops an in-flight request recreating a deleted person's account with their email. Per-request session validation already rejects stale sessions. |
+| Expiry metrics, a scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. Announced deadlines never shorten, so a policy change applies to new warnings without a reset. Apps add metrics if they need them. |
+| Server timeouts as environment variables | No | Safe fixed defaults. `DrainDelay` and `ShutdownTimeout` are `web.Server` fields; an app exposes them as variables if it wants. |
+| A strict database transport policy | Verified TLS by default | `verify-full` with the system roots for remote hosts, and `sslrootcert` when needed. An explicit `sslmode` is respected, with a warning. Ambient `PG*` variables are not policed. |
+| Replay protection for API-key creation | No | A double submit creates a second key, which the user can revoke. |
+| Rechecking a key's revocation inside credit transactions | No | A revocation applies from the next request. |
+| A page for unverified email addresses | No | Unverified addresses are not stored, so nothing is mailed to them. The Hanko tenant should require verification. |
+| JSON metadata on ledger entries | No | A description and a reference are enough. App-specific records go in app tables. |
+| A payment completed after its account was deleted | Review | It is recorded as paid without credit; the right action is a refund, which is an operator decision. |
+| A recent sign-in before deletion | Yes, 10 minutes | It proves the owner is present rather than an unattended browser, and the same check covers passkey changes. |
+| A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
+| Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
 
 ## Not in scope
 
-These are not built now:
+These are not built:
 - subscriptions, organisations, roles and entitlements
 - internationalisation
 - rate limiting, which belongs to the ingress
