@@ -45,6 +45,6 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - Integration tests use `//go:build integration` and `internal/testdb`, which creates a
   fresh database on the disposable server `task test:integration` starts. Never point
   tests at a developer's or operator's database.
-- Run `go tool templ generate` from the repository root after editing `.templ` files and
-  commit the generated code.
+- Run `task templ:generate` after editing `.templ` files and commit the generated code.
+  It leaves the example module alone; the example runs its own.
 - Focused Conventional Commits. Do not tag or push tags; releases are the owner's call.

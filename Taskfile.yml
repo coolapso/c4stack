@@ -15,11 +15,32 @@ includes:
     internal: true
 
 tasks:
+  templ:generate:
+    desc: Generate Go code from the framework's Templ files (the example generates its own)
+    cmds:
+      - for f in $(git ls-files '*.templ' | grep -v '^examples/'); do go tool templ generate -f "$f" -log-level error; done
+
+  # The framework's own check, rather than the shared one: the shared check generates
+  # Templ code for the whole tree, which would rewrite the example module's files.
   check:
     desc: Vet, lint, and check formatting, module tidiness and generated code
     cmds:
-      - task: app:check
-      - golangci-lint run --build-tags integration,apptest ./...
+      - go vet ./...
+      - golangci-lint run --build-tags integration,apptest,upgrade ./...
+      - |
+        unformatted=$(gofmt -l . | grep -v '^examples/' || true)
+        if [ -n "$unformatted" ]; then
+          echo "These files need gofmt:"; echo "$unformatted"; exit 1
+        fi
+      - go tool templ fmt -fail .
+      - go mod tidy -diff
+      - |
+        sums() { git ls-files '*_templ.go' | grep -v '^examples/' | xargs sha256sum; }
+        before=$(sums)
+        task templ:generate
+        if [ "$before" != "$(sums)" ]; then
+          echo "Generated Templ code was out of date and has been regenerated; commit it."; exit 1
+        fi
 
   test:
     desc: Run unit tests
@@ -38,6 +59,14 @@ tasks:
       - task: app:test:db:down
       - task: app:test:db:up
       - TEST_DATABASE_URL='{{.TEST_DATABASE_URL}}' go test -count=1 -tags apptest -run TestStarterApp ./internal/scaffold/
+
+  test:upgrade:
+    desc: Move a generated app from one release to the next with task framework:update
+    cmds:
+      - defer: {task: app:test:db:down}
+      - task: app:test:db:down
+      - task: app:test:db:up
+      - TEST_DATABASE_URL='{{.TEST_DATABASE_URL}}' go test -count=1 -tags upgrade -run TestUpgrade ./internal/scaffold/
 
   test:example:
     desc: Check the example app, and run its integration and browser tests

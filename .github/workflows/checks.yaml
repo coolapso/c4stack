@@ -28,6 +28,8 @@ jobs:
         run: task test:integration -- -race ./...
       - name: Generated starter app
         run: task test:app
+      - name: Upgrade from one release to the next
+        run: task test:upgrade
       - name: Example app, with browser tests
         run: task test:example
       - name: Build the generator
