@@ -7,17 +7,22 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 ## Boundaries
 
 - Public packages are the apps' API: `web`, `app`, `app/apptest`, `ui`, `identity`,
-  `identity/hanko`, `accounts` and the modules added later. Start new names unexported
-  and export them when an app needs them. Keep changes additive after v0.1.0.
+  `identity/hanko`, `accounts`, `apikeys`, `payments`, `payments/creem`, `credits`,
+  `credits/expiry`, `email` and `email/scaleway`. Start new names unexported and export
+  them when an app needs them. Keep changes additive after v0.1.0.
 - Dependencies point one way: `web` and `internal/postgres` at the bottom; interfaces
   (`identity`, `payments`, `email`) depend on nothing in C4Stack; modules depend on
   `accounts`; nothing depends on a module. Errors live in the package that owns them.
+- New capabilities, such as subscriptions, are new modules or optional interfaces,
+  never new required methods on an existing interface. Provider-specific payloads stay
+  in adapters.
 - `internal/scaffold/templates` holds app-owned starter files only. Never put shared
   logic, SQL or assets there.
 - `taskfiles/app.yml` is the shared Taskfile apps include remotely. Its tasks run from
   the app root (`dir: '{{.ROOT_DIR}}'`), push nothing on their own, and hold no secrets.
-- `~/Dev/searchbasecloud` is a read-only reference. Never build, test, format, migrate or
-  change git state there.
+  Its own variables start with `SHARED_`, because Task merges them over the app's.
+- `~/Dev/searchbasecloud` is the reference app for conventions: CSS, billing, tasks. It
+  is read-only: never build, test, format, migrate or change git state there.
 
 ## Rules
 
@@ -27,13 +32,19 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
   subject, never by email. Deletion goes to the provider first.
 - Browser mutations need the CSRF token and a matching Origin; signed-in routes get both
   from `accounts.RequireSignIn`. API-key routes and webhooks use neither.
-- Never log secrets, session tokens, API keys, request or webhook bodies, or panic values.
+- Never log secrets, session tokens, API keys, request or webhook bodies, buyer details,
+  or panic values.
+- Money is integer EUR cents. Every credit mutation locks the account row and is
+  idempotent per account and reference; the ledger is append-only. Webhooks grant what
+  the stored purchase says, and send anything ambiguous to review.
 - Business values (prices, limits, fees, durations) are app configuration.
 - Migrations: one namespace per module, files `NNN_name.sql`. Never change a released
-  file. Runtime only connects; `migrate` applies schema and needs only the database URL.
+  file; before v0.1.0, each module keeps one initial migration. Runtime only connects;
+  `migrate` applies schema and needs only the database URL.
 - New personal data joins account deletion through `ON DELETE CASCADE` or `OnDelete`.
 - Pass `c.Request.Context()` to database and HTTP calls, never the `*gin.Context`: they
   watch the context from other goroutines while middleware replaces `c.Request`.
+- Real providers only in production code. Test substitutes live in `_test.go` files.
 - Every protective mechanism must name the failure it prevents. Prefer recording rare,
   recoverable cases for an operator over adding machinery.
 - Comments and docs describe the present. History belongs in git and release notes.
@@ -41,10 +52,14 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 
 ## Workflow
 
-- `task check`, `task test`, `task test:integration`, `task test:app`, `task cli:build`.
+- `task check`, `task test`, `task test:integration`, `task test:app`,
+  `task test:upgrade`, `task test:example`, `task cli:build`.
 - Integration tests use `//go:build integration` and `internal/testdb`, which creates a
   fresh database on the disposable server `task test:integration` starts. Never point
-  tests at a developer's or operator's database.
+  tests at a developer's or operator's database, and never start or stop their services.
 - Run `task templ:generate` after editing `.templ` files and commit the generated code.
   It leaves the example module alone; the example runs its own.
-- Focused Conventional Commits. Do not tag or push tags; releases are the owner's call.
+- When an API changes, update `docs/guide.md`, `docs/architecture.md` and the example app
+  with it. Behaviour changes and new migrations go in the next release's notes.
+- `task release:verify VERSION=vX.Y.Z` before a release. Focused Conventional Commits.
+  Do not tag or push tags; releases are the owner's call.
