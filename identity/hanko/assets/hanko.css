@@ -1,0 +1,50 @@
+/*
+ * Theme for Hanko's <hanko-auth> element, linked by the sign-in page after the app's
+ * stylesheets. The element renders inside a shadow root; Hanko reads these custom
+ * properties inside it, and they inherit across the shadow boundary, so they point at
+ * the default design's tokens. Apps that override the tokens restyle it too.
+ */
+
+#hanko-auth {
+    display: block;
+
+    --color: var(--text);
+    --color-shade-1: var(--muted);
+    --color-shade-2: var(--line);
+    --background-color: var(--surface);
+    --error-color: var(--danger);
+    --link-color: var(--accent);
+
+    --brand-color: var(--accent);
+    --brand-color-shade-1: var(--accent-hover);
+    --brand-contrast-color: var(--on-accent);
+
+    --font-family: var(--font-sans);
+    --font-size: var(--text-base);
+    --font-weight: 400;
+    --line-height: 1.5;
+
+    --border-radius: var(--radius);
+    --border-style: solid;
+    --border-width: 1px;
+    --item-height: 2.75rem;
+    --item-margin: 0 0 var(--space-4);
+    --input-min-width: 100%;
+    --button-min-width: 100%;
+    --container-padding: 0;
+    --container-max-width: 100%;
+    --link-text-decoration: none;
+    --link-text-decoration-hover: underline;
+    --headline1-margin: 0 0 var(--space-4);
+}
+
+#hanko-auth::part(container) {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+}
+
+#hanko-auth::part(headline1) {
+    display: none;
+}

@@ -1,0 +1,289 @@
+package hanko
+
+import (
+	"strconv"
+
+	"github.com/coolapso/c4stack/ui"
+)
+
+// passkeyNameMin and passkeyNameMax match the limits Hanko enforces when it renames
+// a passkey.
+const (
+	passkeyNameMin = 3
+	passkeyNameMax = 32
+)
+
+templ loginPage(d loginData) {
+	<div class="narrow stack">
+		<div class="page-header">
+			<h1>Sign in</h1>
+			<p class="lead">Use your email address or a passkey.</p>
+		</div>
+		if d.notice != "" {
+			<p class="notice success" role="status">{ d.notice }</p>
+		}
+		<div class="panel">
+			<hanko-auth id="hanko-auth" data-api-url={ d.apiURL } data-module={ d.moduleURL } data-next={ d.next }></hanko-auth>
+			<p id="login-error" class="notice danger" role="alert" hidden>Sign-in could not load. Check your connection and reload the page.</p>
+		</div>
+		<link rel="stylesheet" href={ d.themeURL }/>
+		<script type="module" src={ d.scriptURL }></script>
+	</div>
+}
+
+// profileSection is the profile UI on the account settings page. profile.js fills the
+// passkey and device lists through Hanko's SDK; the email change uses the server.
+templ profileSection(d profileData) {
+	<div
+		class="stack"
+		data-hanko-profile
+		data-api-url={ d.apiURL }
+		data-module={ d.moduleURL }
+		data-authorize={ d.base + "/passkeys/authorize" }
+		data-recent={ strconv.FormatBool(d.recent) }
+	>
+		<section class="panel" aria-labelledby="email-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="email-title">Email address</h2>
+					<p>The address you sign in with.</p>
+				</div>
+				<button type="button" class="btn small" id="change-email" data-dialog-open="email-change-dialog">Change email</button>
+			</div>
+			<p>
+				<strong id="account-email">{ d.email }</strong>
+				if d.verified {
+					<span class="tag success">Verified</span>
+				} else {
+					<span class="tag">Not verified</span>
+				}
+			</p>
+		</section>
+		<section class="panel" aria-labelledby="passkeys-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="passkeys-title">Passkeys</h2>
+					<p>Sign in with your fingerprint, face or device lock.</p>
+				</div>
+				<button type="button" class="btn small" data-passkey-add aria-disabled="true">Add passkey</button>
+			</div>
+			<ul class="item-list" data-passkey-list aria-busy="true">
+				<li class="item"><span class="muted">Loading passkeys…</span></li>
+			</ul>
+			<div data-passkey-status role="status"></div>
+			<p class="hint" id="passkey-unsupported" data-passkey-unsupported hidden>This browser cannot create passkeys. You can still sign in with an email code.</p>
+			<p class="hint">Adding or removing a passkey needs a recent sign-in.</p>
+			<template data-passkey-row>
+				<li class="item">
+					<div class="item-main">
+						<span data-field="name"></span>
+						<span class="item-detail" data-field="detail"></span>
+					</div>
+					<button type="button" class="btn small ghost" data-passkey-remove>Remove</button>
+				</li>
+			</template>
+			<template data-passkey-empty>
+				<li class="item"><span class="muted">No passkeys yet. Add one for a quicker sign-in.</span></li>
+			</template>
+		</section>
+		<section class="panel" aria-labelledby="devices-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="devices-title" tabindex="-1">Signed-in devices</h2>
+					<p>Sign out any device you do not recognise.</p>
+				</div>
+			</div>
+			<ul class="item-list" data-device-list aria-busy="true">
+				<li class="item"><span class="muted">Loading devices…</span></li>
+			</ul>
+			<div data-device-status role="status"></div>
+			<template data-device-row>
+				<li class="item">
+					<div class="item-main">
+						<span data-field="name"></span>
+						<span class="item-detail" data-field="detail"></span>
+					</div>
+					<button type="button" class="btn small ghost" data-device-sign-out>Sign out</button>
+				</li>
+			</template>
+			<template data-device-current>
+				<li class="item">
+					<div class="item-main">
+						<span data-field="name"></span>
+						<span class="item-detail">This device</span>
+					</div>
+					<span class="tag success">Current</span>
+				</li>
+			</template>
+		</section>
+		<div id="profile-modal"></div>
+		@emailChangeDialog(d.base)
+		@ui.Dialog(ui.DialogProps{ID: "passkey-add-dialog", Title: "Add a passkey"}) {
+			<p>Name the device you will sign in with. Your device then asks you to create the passkey.</p>
+			<form class="stack" data-passkey-add-form data-dialog-reset novalidate>
+				<div class="field">
+					<label for="passkey-name">Passkey name</label>
+					<input
+						id="passkey-name"
+						name="passkey_name"
+						type="text"
+						placeholder="Work laptop"
+						minlength={ strconv.Itoa(passkeyNameMin) }
+						maxlength={ strconv.Itoa(passkeyNameMax) }
+						autocomplete="off"
+						required
+						autofocus
+						aria-describedby="passkey-name-hint"
+					/>
+					<p class="hint" id="passkey-name-hint">Use 3 to 32 characters.</p>
+				</div>
+				@ui.ErrorSlot()
+				<div class="dialog-actions">
+					<button type="button" class="btn" data-dialog-close>Cancel</button>
+					<button type="submit" class="btn primary">
+						Add passkey
+						@ui.Spinner()
+					</button>
+				</div>
+			</form>
+		}
+		@ui.Dialog(ui.DialogProps{ID: "passkey-remove-dialog", Title: "Remove this passkey?", Danger: true}) {
+			<p><strong data-passkey-remove-name>This passkey</strong> will no longer sign you in. You can still sign in with an email code.</p>
+			@ui.ErrorSlot()
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close autofocus>Cancel</button>
+				<button type="button" class="btn danger" data-passkey-remove-confirm>
+					Remove passkey
+					@ui.Spinner()
+				</button>
+			</div>
+		}
+		@ui.Dialog(ui.DialogProps{ID: "passkey-reauth-dialog", Title: "Confirm it is you"}) {
+			<p>Changing passkeys needs a recent sign-in. Sign in again to continue.</p>
+			<form method="post" action={ templ.SafeURL(d.logoutPath) } data-busy-form>
+				@ui.CSRFField(d.c)
+				<input type="hidden" name="next" value={ d.signInAgain }/>
+				<div class="dialog-actions">
+					<button type="button" class="btn" data-dialog-close>Cancel</button>
+					<button type="submit" class="btn primary" autofocus>
+						Sign in again
+						@ui.Spinner()
+					</button>
+				</div>
+			</form>
+		}
+		@ui.Dialog(ui.DialogProps{ID: "device-sign-out-dialog", Title: "Sign out this device?"}) {
+			<p>The next time this device opens your account, it has to sign in again.</p>
+			@ui.ErrorSlot()
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close autofocus>Cancel</button>
+				<button type="button" class="btn primary" data-device-sign-out-confirm>
+					Sign out device
+					@ui.Spinner()
+				</button>
+			</div>
+		}
+		<script type="module" src={ d.scriptURL }></script>
+	</div>
+}
+
+templ emailChangeDialog(base string) {
+	@ui.Dialog(ui.DialogProps{ID: "email-change-dialog", Title: "Change your email"}) {
+		<p>We will send a code to your new address. Once you confirm it, you are signed out on every device and sign in again with the new address.</p>
+		<form class="stack" hx-post={ base + "/email" } hx-target="find .dialog-error" hx-swap="innerHTML" data-dialog-reset>
+			<div class="field">
+				<label for="new-email">New email address</label>
+				<input id="new-email" name="email" type="email" autocomplete="email" required autofocus/>
+			</div>
+			@ui.ErrorSlot()
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close>Cancel</button>
+				<button type="submit" class="btn primary">
+					Send code
+					@ui.Spinner()
+				</button>
+			</div>
+		</form>
+	}
+}
+
+// verifyDialog asks for the passcode sent to the new address. message is an error when
+// isError, otherwise a confirmation.
+templ verifyDialog(base, email, message string, isError bool) {
+	@ui.Dialog(ui.DialogProps{ID: "email-verify-dialog", Title: "Verify your new email", Autoshow: true}) {
+		<p>Enter the code we sent to <strong>{ email }</strong>. After that, you are signed out on every device and sign in again with the new address.</p>
+		<form class="stack" id="email-verify-form" hx-post={ base + "/email/verify" } hx-target="#email-verify-error" hx-swap="innerHTML">
+			<div class="field">
+				<label for="email-code">Verification code</label>
+				<input
+					id="email-code"
+					name="code"
+					type="text"
+					inputmode="numeric"
+					autocomplete="one-time-code"
+					pattern="[0-9]{6}"
+					maxlength="6"
+					required
+					autofocus
+					if isError {
+						aria-invalid="true"
+					}
+				/>
+			</div>
+			if message != "" {
+				if isError {
+					<p class="notice danger" role="alert">{ message }</p>
+				} else {
+					<p class="notice success" role="status">{ message }</p>
+				}
+			}
+			<div class="dialog-error" id="email-verify-error" role="alert"></div>
+		</form>
+		<div class="dialog-actions">
+			<button type="button" class="btn ghost" hx-post={ base + "/email/resend" } hx-target="#email-verify-error" hx-swap="innerHTML">
+				Send a new code
+				@ui.Spinner()
+			</button>
+			<button type="button" class="btn" data-dialog-close>Cancel</button>
+			<button type="submit" form="email-verify-form" class="btn primary">
+				Verify
+				@ui.Spinner()
+			</button>
+		</div>
+	}
+}
+
+templ changeErrorDialog(message string) {
+	@ui.Dialog(ui.DialogProps{ID: "email-error-dialog", Title: "Your email did not change", Autoshow: true}) {
+		<p class="notice danger" role="alert">{ message }</p>
+		<div class="dialog-actions">
+			<button type="button" class="btn primary" data-dialog-close autofocus>Close</button>
+		</div>
+	}
+}
+
+// cleanupErrorDialog reports a cleanup that cannot continue. The new address is
+// already saved, so it must not say the email did not change.
+templ cleanupErrorDialog(message string) {
+	@ui.Dialog(ui.DialogProps{ID: "email-error-dialog", Title: "Your email changed", Autoshow: true}) {
+		<p class="notice warning" role="alert">{ message }</p>
+		<div class="dialog-actions">
+			<button type="button" class="btn primary" data-dialog-close autofocus>Close</button>
+		</div>
+	}
+}
+
+// cleanupDialog offers to retry the steps after the new address became primary.
+templ cleanupDialog(base, email string) {
+	@ui.Dialog(ui.DialogProps{ID: "email-cleanup-dialog", Title: "Your email changed", Autoshow: true}) {
+		<p>You now sign in with <strong>{ email }</strong>, but a final step did not finish: removing the old address or signing out your other devices.</p>
+		<div class="dialog-error" id="email-cleanup-error" role="alert"></div>
+		<div class="dialog-actions">
+			<button type="button" class="btn" data-dialog-close>Later</button>
+			<button type="button" class="btn primary" hx-post={ base + "/email/cleanup" } hx-target="#email-cleanup-error" hx-swap="innerHTML" autofocus>
+				Try again
+				@ui.Spinner()
+			</button>
+		</div>
+	}
+}

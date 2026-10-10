@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -19,9 +20,10 @@ import (
 // file uncached, so pages rendered by the previous release keep working during a
 // rolling deploy.
 type Assets struct {
-	base  string
-	mu    sync.RWMutex
-	files map[string]asset
+	base     string
+	mu       sync.RWMutex
+	files    map[string]asset
+	prefixes map[string]fs.FS
 }
 
 type asset struct {
@@ -33,7 +35,7 @@ type asset struct {
 // NewAssets returns assets served under base, such as "/assets". It already holds the
 // default design's files under the "ui" prefix.
 func NewAssets(base string) *Assets {
-	a := &Assets{base: strings.TrimSuffix(base, "/"), files: map[string]asset{}}
+	a := &Assets{base: strings.TrimSuffix(base, "/"), files: map[string]asset{}, prefixes: map[string]fs.FS{}}
 	if err := a.Add("ui", files()); err != nil {
 		panic(err)
 	}
@@ -41,15 +43,18 @@ func NewAssets(base string) *Assets {
 }
 
 // Add serves every file in files under prefix: files/app.css becomes "prefix/app.css".
-// Adding a prefix twice is an error.
+// Adding the same files again is a no-op; adding other files under a used prefix is an
+// error.
 func (a *Assets) Add(prefix string, files fs.FS) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for name := range a.files {
-		if strings.HasPrefix(name, prefix+"/") {
-			return fmt.Errorf("ui: assets with prefix %q were already added", prefix)
+	if existing, ok := a.prefixes[prefix]; ok {
+		if reflect.TypeOf(files).Comparable() && existing == files {
+			return nil
 		}
+		return fmt.Errorf("ui: assets with prefix %q were already added", prefix)
 	}
+	a.prefixes[prefix] = files
 	return fs.WalkDir(files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
 			return err
