@@ -20,8 +20,9 @@ import (
 	"github.com/coolapso/c4stack/internal/scaffold"
 )
 
-// minTask is the first Task release with remote Taskfiles.
-var minTask = [3]int{3, 51, 1}
+// minTask is the first Task release where remote Taskfiles work without opting in to
+// an experiment.
+var minTask = [3]int{3, 53, 1}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))

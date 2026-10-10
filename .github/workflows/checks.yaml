@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   checks:
-    # The self-hosted runner provides Go, Task 3.51.1 or later, Docker with Compose,
+    # The self-hosted runner provides Go, Task 3.53.1 or later, Docker with Compose,
     # golangci-lint and Chromium. The job needs no secrets and publishes nothing.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
