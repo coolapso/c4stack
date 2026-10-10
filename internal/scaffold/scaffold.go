@@ -66,6 +66,7 @@ type data struct {
 	Version   string
 	Local     string // replace target, relative to the app
 	Taskfile  string // the shared Taskfile include
+	Docs      string // where the pinned release's docs are
 	GoVersion string
 	SecretKey string
 }
@@ -155,6 +156,7 @@ func prepare(opts Options) (data, error) {
 		d.Version = "v0.0.0"
 		d.Local = local
 		d.Taskfile = path.Join(local, "taskfiles/app.yml")
+		d.Docs = path.Join(local, "docs")
 		return d, nil
 	}
 	if !IsRelease(opts.Version) {
@@ -162,6 +164,7 @@ func prepare(opts Options) (data, error) {
 	}
 	d.Version = opts.Version
 	d.Taskfile = "https://" + FrameworkModule + ".git//taskfiles/app.yml?ref={{.FRAMEWORK_VERSION}}"
+	d.Docs = "https://" + FrameworkModule + "/blob/" + opts.Version + "/docs"
 	return d, nil
 }
 

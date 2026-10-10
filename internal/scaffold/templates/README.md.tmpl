@@ -22,6 +22,9 @@ You need Go, [Task](https://taskfile.dev) 3.53.1 or later, and Docker.
 
 `task --list` shows every task. `go run . help` shows the app's commands.
 
+To add pages, tables, API keys, credits and more, follow the
+[C4Stack guide]([[.Docs]]/guide.md).
+
 ## Where things are
 
 | Path | What it holds |
@@ -52,6 +55,8 @@ Build and push the image with `task container:push REGISTRY=…`. On each releas
    `[[.EnvPrefix]]_DATABASE_URL`.
 2. Roll out the image with the `serve` command. Point readiness probes at
    `/health/ready` and liveness probes at `/health/live`.
+
+[Operations]([[.Docs]]/operations.md) has the details and the runbooks.
 
 ## Upgrade C4Stack
 

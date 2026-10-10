@@ -107,6 +107,9 @@ func TestGeneratedApp(t *testing.T) {
 		!strings.Contains(taskfile, "  FRAMEWORK_VERSION: v0.3.1\n") {
 		t.Errorf("the Taskfile does not include the shared tasks at the pinned release:\n%s", taskfile)
 	}
+	if !strings.Contains(read(t, dir, "AGENTS.md"), "https://github.com/coolapso/c4stack/blob/v0.3.1/docs/guide.md") {
+		t.Error("AGENTS.md does not link the guide of the pinned release")
+	}
 	if !strings.Contains(read(t, dir, "config.go"), `os.Getenv("ORDER_DESK_" + name)`) {
 		t.Error("the environment prefix is not derived from the app name")
 	}
