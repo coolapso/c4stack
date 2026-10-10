@@ -32,6 +32,8 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - Migrations: one namespace per module, files `NNN_name.sql`. Never change a released
   file. Runtime only connects; `migrate` applies schema and needs only the database URL.
 - New personal data joins account deletion through `ON DELETE CASCADE` or `OnDelete`.
+- Pass `c.Request.Context()` to database and HTTP calls, never the `*gin.Context`: they
+  watch the context from other goroutines while middleware replaces `c.Request`.
 - Every protective mechanism must name the failure it prevents. Prefer recording rare,
   recoverable cases for an operator over adding machinery.
 - Comments and docs describe the present. History belongs in git and release notes.

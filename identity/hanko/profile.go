@@ -161,9 +161,9 @@ func (h *Hanko) startEmailChange(c *gin.Context) {
 	web.ClearSealedCookie(c, pendingCookie)
 
 	token := sessionToken(c.Request)
-	state, err := h.startProfile(c, token)
+	state, err := h.startProfile(c.Request.Context(), token)
 	if err == nil {
-		state, err = h.act(c, token, state, "email_create", map[string]string{"email": email})
+		state, err = h.act(c.Request.Context(), token, state, "email_create", map[string]string{"email": email})
 	}
 	if err != nil {
 		h.profileFailure(c, "start email change", err)
@@ -194,7 +194,7 @@ func (h *Hanko) verifyEmail(c *gin.Context) {
 		return
 	}
 	token := sessionToken(c.Request)
-	state, err := h.act(c, token, pending.state(), "verify_passcode", map[string]string{"code": code})
+	state, err := h.act(c.Request.Context(), token, pending.state(), "verify_passcode", map[string]string{"code": code})
 	if err != nil {
 		h.profileFailure(c, "verify email", err)
 		return
@@ -236,7 +236,7 @@ func (h *Hanko) resendEmailCode(c *gin.Context) {
 		h.showDialog(c, changeErrorDialog("This email change is no longer available. Start again."))
 		return
 	}
-	state, err := h.act(c, sessionToken(c.Request), pending.state(), "resend_passcode", map[string]any{})
+	state, err := h.act(c.Request.Context(), sessionToken(c.Request), pending.state(), "resend_passcode", map[string]any{})
 	if err != nil {
 		h.profileFailure(c, "resend email code", err)
 		return
@@ -269,7 +269,7 @@ func (h *Hanko) finishEmailChange(c *gin.Context) {
 	// The cleanup steps act on email and session IDs, so a fresh profile flow serves
 	// them; the stored flow state may be stale after a failure.
 	token := sessionToken(c.Request)
-	state, err := h.startProfile(c, token)
+	state, err := h.startProfile(c.Request.Context(), token)
 	if err != nil {
 		h.profileFailure(c, "resume email change", err)
 		return
@@ -293,7 +293,7 @@ func (h *Hanko) makePrimary(c *gin.Context, token string, id identity.Identity, 
 	if !ok {
 		return state, errUnexpectedProfile
 	}
-	state, err = h.act(c, token, state, "email_set_primary", map[string]string{"email_id": added.ID})
+	state, err = h.act(c.Request.Context(), token, state, "email_set_primary", map[string]string{"email_id": added.ID})
 	if err != nil {
 		return state, err
 	}
@@ -337,7 +337,7 @@ func (h *Hanko) completeEmailChange(c *gin.Context, token string, id identity.Id
 	}
 	if !pending.FormerDeleted {
 		var err error
-		state, err = h.act(c, token, state, "email_delete", map[string]string{"email_id": pending.FormerEmailID})
+		state, err = h.act(c.Request.Context(), token, state, "email_delete", map[string]string{"email_id": pending.FormerEmailID})
 		if err == nil && !state.ok() {
 			err = flowError(state)
 		}
@@ -359,7 +359,7 @@ func (h *Hanko) completeEmailChange(c *gin.Context, token string, id identity.Id
 			if s.Current {
 				continue
 			}
-			state, err = h.act(c, token, state, "session_delete", map[string]string{"session_id": s.ID})
+			state, err = h.act(c.Request.Context(), token, state, "session_delete", map[string]string{"session_id": s.ID})
 			if err == nil && !state.ok() {
 				err = flowError(state)
 			}

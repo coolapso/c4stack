@@ -31,7 +31,7 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 		c.AbortWithStatus(http.StatusServiceUnavailable)
 		return
 	}
-	account, err := s.resolve(c, id)
+	account, err := s.resolve(c.Request.Context(), id)
 	if errors.Is(err, errDeleted) {
 		_ = s.idp.Logout(c.Writer, c.Request)
 		s.toLogin(c)

@@ -34,7 +34,7 @@ func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) {
 	if ok {
 		r = r.Group("", web.AllowCSP(profile.ProfileCSP()))
 		profile.MountProfile(r, layout, base+"/logout", func(c *gin.Context, email string) error {
-			return s.setEmail(c, Current(c).ID, email)
+			return s.setEmail(c.Request.Context(), Current(c).ID, email)
 		})
 		p.profile = profile
 	}
