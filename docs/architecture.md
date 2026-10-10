@@ -665,8 +665,7 @@ flattened:
 vars:
   APP: acme
   ENV_PREFIX: ACME
-  FRAMEWORK_VERSION:
-    sh: awk '$1 == "github.com/coolapso/c4stack" {print $2}' go.mod
+  FRAMEWORK_VERSION: v0.1.0 # the C4Stack release in go.mod
 includes:
   shared:
     taskfile: https://github.com/coolapso/c4stack.git//taskfiles/app.yml?ref={{.FRAMEWORK_VERSION}}
@@ -674,15 +673,16 @@ includes:
     excludes: []
 ```
 
-**Deviation from the brief.** The include ref is read from `go.mod`, not written in a
-second place. The ref and the Go dependency therefore cannot drift. `framework:update`
-only bumps the Go dependency, then tidies, regenerates, tests and builds. `check` doesn't
-need a drift check, so it has none.
+**One version.** `framework:update` changes the Go dependency and `FRAMEWORK_VERSION`
+together, then tidies, regenerates, tests and builds. `check` fails when the two differ.
+Reading the ref from `go.mod` with a dynamic variable would avoid the second copy, but
+Task does not evaluate dynamic variables in include URLs: the ref comes out empty and
+Task fetches the newest commit. The upgrade test caught this.
 
 **Task mechanics.** These were verified with Task 3.53.1 and 3.54.0 against a local Git
 server. Task 3.51.1 and 3.52.0 still treat remote Taskfiles as an experiment.
-- A Git include works with the developer's Git credentials, and its ref can come from a
-  dynamic variable.
+- A Git include works with the developer's Git credentials. Its ref can come from a
+  static variable, not from a dynamic (`sh:`) one.
 - Top-level app variables reach the shared tasks.
 - An app redefines a shared task by listing it in `excludes`.
 - Shared tasks set `dir: '{{.ROOT_DIR}}'`, so they run from the app root, including

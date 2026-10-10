@@ -102,8 +102,10 @@ func TestGeneratedApp(t *testing.T) {
 	if !strings.Contains(gomod, "module example.com/orders") || !strings.Contains(gomod, FrameworkModule+" v0.3.1") || strings.Contains(gomod, "replace") {
 		t.Errorf("go.mod:\n%s", gomod)
 	}
-	if !strings.Contains(read(t, dir, "Taskfile.yml"), "https://github.com/coolapso/c4stack.git//taskfiles/app.yml?ref={{.FRAMEWORK_VERSION}}") {
-		t.Error("the Taskfile does not include the shared tasks at the pinned release")
+	taskfile := read(t, dir, "Taskfile.yml")
+	if !strings.Contains(taskfile, "https://github.com/coolapso/c4stack.git//taskfiles/app.yml?ref={{.FRAMEWORK_VERSION}}") ||
+		!strings.Contains(taskfile, "  FRAMEWORK_VERSION: v0.3.1\n") {
+		t.Errorf("the Taskfile does not include the shared tasks at the pinned release:\n%s", taskfile)
 	}
 	if !strings.Contains(read(t, dir, "config.go"), `os.Getenv("ORDER_DESK_" + name)`) {
 		t.Error("the environment prefix is not derived from the app name")

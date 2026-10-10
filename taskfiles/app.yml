@@ -179,6 +179,12 @@ tasks:
     desc: Vet, lint, and check formatting, module tidiness and generated code
     dir: '{{.ROOT_DIR}}'
     cmds:
+      - |
+        required=$(go list -m -f '{{"{{"}}.Version{{"}}"}}' github.com/coolapso/c4stack 2>/dev/null || true)
+        if [ "$required" != "{{.FRAMEWORK_VERSION}}" ]; then
+          echo "Taskfile.yml includes the shared tasks of {{.FRAMEWORK_VERSION}}, but go.mod requires C4Stack $required."
+          echo "Run: task framework:update VERSION=$required"; exit 1
+        fi
       - go vet ./...
       - go run {{.STATICCHECK}} ./...
       - |
@@ -245,6 +251,11 @@ tasks:
     cmds:
       - go get github.com/coolapso/c4stack@{{.VERSION}}
       - go mod tidy
+      # Pin the shared tasks to the same release.
+      - |
+        tmp=$(mktemp)
+        awk -v version='{{.VERSION}}' '/^  FRAMEWORK_VERSION: / { print "  FRAMEWORK_VERSION: " version; next } { print }' Taskfile.yml > "$tmp"
+        cat "$tmp" > Taskfile.yml && rm "$tmp"
       # A new task process includes the shared tasks of the new release.
       - task templ:generate
       - task test

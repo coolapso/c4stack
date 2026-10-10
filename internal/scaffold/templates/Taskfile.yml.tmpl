@@ -13,8 +13,9 @@ vars:
   # Run dev, run and db:migrate under `infisical run`:
   # INFISICAL_PROJECT: <project-id>
   # INFISICAL_ENV: dev
-  FRAMEWORK_VERSION:
-    sh: awk '$1 == "github.com/coolapso/c4stack" { print $2; exit } $1 == "require" && $2 == "github.com/coolapso/c4stack" { print $3; exit }' go.mod
+  # The C4Stack release in go.mod. task framework:update changes both, and task check
+  # fails when they differ.
+  FRAMEWORK_VERSION: [[.Version]]
 
 dotenv: ['.env']
 
