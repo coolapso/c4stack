@@ -498,7 +498,9 @@ type Event struct {
 	Kind        EventKind // Paid, Refunded, Disputed
 	Reference   string
 	CheckoutID  string
-	AmountCents int64
+	OrderID     string
+	AmountCents int64 // the price for Paid, the reversed amount otherwise
+	PaidCents   int64 // what the buyer paid, after taxes or discounts
 	Currency    string
 	Review      string // set when the event is ours but cannot be applied as it stands
 }
@@ -537,15 +539,20 @@ func (cr *Credits) Debit(ctx context.Context, accountID string, cents int64, ref
 func (cr *Credits) Adjust(ctx context.Context, accountID string, cents int64, reference, description string) error
 func (cr *Credits) WithAccount(ctx context.Context, accountID string, fn func(tx *Tx) error) error
 func (tx *Tx) SQL() *sql.Tx
+func (tx *Tx) Balance() (int64, error)
 func (tx *Tx) Available() (int64, error)
 func (tx *Tx) Debit(cents int64, reference, description string) error
+func (tx *Tx) Expire(cents int64, reference string) error // for credits/expiry
 func (cr *Credits) Summary(ctx context.Context, accountID string) (Summary, error) // balance, held, available
 func (cr *Credits) History(ctx context.Context, accountID string, before int64, limit int) ([]Entry, error)
-func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout) // GET "", POST "/checkout", GET "/balance"
+func (cr *Credits) Quote(creditCents int64) (Quote, error)
+func (cr *Credits) Purchase(ctx context.Context, account accounts.Account, creditCents int64, successURL string) (Purchase, error)
+func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout) // GET "", GET "/quote", POST "/checkout", GET "/status"
 func (cr *Credits) Webhook(c *gin.Context)
 ```
 
-The operator commands are `credits adjust`, `credits reviews` and `credits resolve`.
+The operator commands are `credits adjust`, `credits balance`, `credits reviews` and
+`credits resolve`.
 
 **Ledger rules.**
 - Every mutation locks the account row.
@@ -562,8 +569,9 @@ The operator commands are `credits adjust`, `credits reviews` and `credits resol
 - Any other event about one of our intents becomes a review row.
 - Foreign events are acknowledged and ignored.
 
-On account deletion, the credits hook forfeits a positive balance and anonymises the
-account's ledger and intents. `docs/credits.md` has the full contract and the webhook
+On account deletion, the credits hook forfeits a positive balance. The foreign keys then
+anonymise the account's ledger and intents; the ledger's append-only trigger allows that
+one change and clears the descriptions. `docs/credits.md` has the full contract and the webhook
 outcome table.
 
 ### credits/expiry (opt-in)
@@ -574,8 +582,9 @@ type Policy struct{ InactiveMonths, NoticeDays int } // required
 type Config struct {
 	Sender     email.Sender // required
 	Policy     Policy
+	AppName    string                     // named in the default warning
 	CreditsURL string                     // linked from the warning
-	Message    func(Notice) email.Message // optional; the default names the app
+	Message    func(Notice) email.Message // optional
 }
 
 func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error)

@@ -33,7 +33,12 @@ sure Git can reach GitHub with your credentials.
 | `identity`, `identity/hanko` | Identity provider interface and the Hanko adapter |
 | `accounts` | Accounts, sign-in middleware, settings and account deletion |
 | `apikeys` | Opt-in API keys: issue, list, revoke, and bearer authentication |
+| `payments`, `payments/creem` | Payment provider interface and the Creem adapter |
+| `credits` | Opt-in prepaid credit: ledger, holds, purchases, webhooks and history |
+| `credits/expiry` | Opt-in expiry of unused credit, after a delivered warning |
+| `email`, `email/scaleway` | Email sender interface and the Scaleway adapter |
 
 ## Docs
 
 - [Architecture](docs/architecture.md)
+- [Credits contract](docs/credits.md)
