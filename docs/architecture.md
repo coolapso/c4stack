@@ -109,7 +109,7 @@ accts.Mount(r.Group("/account", accts.RequireSignIn), layout) // settings, delet
 Enabling API keys adds `apikeys.Migrations` to the list in `main.go`, plus three lines:
 
 ```go
-keys, err := apikeys.New(a, accts, apikeys.Config{Prefix: "acme"})
+keys, err := apikeys.New(a, apikeys.Config{Prefix: "acme"})
 keys.Mount(r.Group("/account/keys", accts.RequireSignIn), layout)
 api := r.Group("/api", keys.RequireKey)
 ```
@@ -465,13 +465,14 @@ api_keys(id uuid, account_id → accounts ON DELETE CASCADE, name, prefix, suffi
 ```go
 type Config struct{ Prefix string } // "acme" issues acme_<43 characters>
 
-func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Keys, error)
+func New(a *app.App, cfg Config) (*Keys, error) // keys cascade with their account
 func (k *Keys) Create(ctx context.Context, accountID, name string) (raw string, key Key, err error)
 func (k *Keys) List(ctx context.Context, accountID string) ([]Key, error)
 func (k *Keys) Revoke(ctx context.Context, accountID, keyID string) error
+func (k *Keys) Authenticate(ctx context.Context, raw string) (Key, error)
 func (k *Keys) RequireKey(c *gin.Context)
 func Current(c *gin.Context) Key
-func (k *Keys) Mount(r gin.IRouter, layout ui.Layout)
+func (k *Keys) Mount(r gin.IRouter, layout ui.Layout) // GET "", POST "", POST "/:id/revoke"
 ```
 
 **Storage.** A raw key is the prefix, an underscore and 32 random bytes in base64url.

@@ -32,6 +32,7 @@ sure Git can reach GitHub with your credentials.
 | `ui` | Default design, layout types and content-hashed assets |
 | `identity`, `identity/hanko` | Identity provider interface and the Hanko adapter |
 | `accounts` | Accounts, sign-in middleware, settings and account deletion |
+| `apikeys` | Opt-in API keys: issue, list, revoke, and bearer authentication |
 
 ## Docs
 

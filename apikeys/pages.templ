@@ -1,0 +1,119 @@
+package apikeys
+
+import (
+	"time"
+
+	"github.com/coolapso/c4stack/ui"
+)
+
+templ keysPage(v keysView) {
+	<div class="page-header">
+		<h1>API keys</h1>
+		<p class="lead">Keys let programs use the API on your behalf. Keep them secret.</p>
+	</div>
+	<section class="panel" aria-labelledby="keys-title">
+		<div class="panel-header">
+			<div>
+				<h2 id="keys-title">Your keys</h2>
+				<p>Revoke a key as soon as you no longer need it.</p>
+			</div>
+			<button type="button" class="btn small primary" data-dialog-open="key-create-dialog">Create key</button>
+		</div>
+		@keyList(v, false)
+	</section>
+	<div id="key-modal">
+		if v.created != "" {
+			@revealDialog(v.created)
+		}
+	</div>
+	@ui.Dialog(ui.DialogProps{ID: "key-create-dialog", Title: "Create an API key", Autoshow: v.createError != ""}) {
+		<form class="stack" method="post" action={ templ.SafeURL(v.base) } hx-post={ v.base } hx-target="find .dialog-error" hx-swap="innerHTML" data-dialog-reset>
+			@ui.CSRFField(v.c)
+			<div class="field">
+				<label for="key-name">Name</label>
+				<input id="key-name" name="name" type="text" maxlength="64" placeholder="Production server" autocomplete="off" required autofocus/>
+				<p class="hint">A name helps you recognise the key later.</p>
+			</div>
+			<div class="dialog-error" role="alert">
+				if v.createError != "" {
+					@ui.FormError(v.createError)
+				}
+			</div>
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close>Cancel</button>
+				<button type="submit" class="btn primary">
+					Create key
+					@ui.Spinner()
+				</button>
+			</div>
+		</form>
+	}
+}
+
+// keyList is the list of keys, replaced after each change. With oob, it replaces the
+// page's list from another HTMX response.
+templ keyList(v keysView, oob bool) {
+	<div
+		id="key-list"
+		if oob {
+			hx-swap-oob="true"
+		}
+	>
+		if len(v.keys) == 0 {
+			<p class="empty">No keys yet.</p>
+		} else {
+			<ul class="item-list">
+				for _, key := range v.keys {
+					<li class="item">
+						<div class="item-main">
+							<span>
+								{ key.Name }
+								if key.RevokedAt != nil {
+									<span class="tag danger">Revoked</span>
+								}
+							</span>
+							<span class="item-detail">
+								<code>{ key.Display() }</code> · Created { date(key.CreatedAt) } ·
+								if key.LastUsedAt != nil {
+									Last used { date(*key.LastUsedAt) }
+								} else {
+									Never used
+								}
+							</span>
+						</div>
+						if key.RevokedAt == nil {
+							<form method="post" action={ templ.SafeURL(v.base + "/" + key.ID + "/revoke") } hx-post={ v.base + "/" + key.ID + "/revoke" } hx-target="#key-list" hx-swap="outerHTML" hx-confirm={ "Revoke the key “" + key.Name + "”? Programs using it stop working at once." }>
+								@ui.CSRFField(v.c)
+								<button type="submit" class="btn small ghost" aria-label={ "Revoke " + key.Name }>
+									Revoke
+									@ui.Spinner()
+								</button>
+							</form>
+						}
+					</li>
+				}
+			</ul>
+		}
+	</div>
+}
+
+// createdFragment answers an HTMX create: the key, shown once, and the updated list.
+templ createdFragment(v keysView) {
+	@revealDialog(v.created)
+	@keyList(v, true)
+}
+
+templ revealDialog(raw string) {
+	@ui.Dialog(ui.DialogProps{ID: "key-reveal-dialog", Title: "Your new API key", Autoshow: true, Ephemeral: true}) {
+		<p class="notice warning">Copy the key now. You will not be able to see it again.</p>
+		<code class="secret" id="new-key" data-secret>{ raw }</code>
+		<div class="dialog-actions">
+			<button type="button" class="btn" data-copy-target="new-key">Copy</button>
+			<button type="button" class="btn primary" data-dialog-close>Done</button>
+		</div>
+	}
+}
+
+func date(t time.Time) string {
+	return t.UTC().Format("2 Jan 2006")
+}
