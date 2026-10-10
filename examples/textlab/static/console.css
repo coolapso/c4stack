@@ -1,0 +1,102 @@
+/*
+ * Textlab's console. It links after the default stylesheet: it changes the design
+ * tokens for a dark theme, and lays out its own sidebar shell. The default pages'
+ * components keep working because they only use the tokens.
+ */
+
+:root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --surface: #151b23;
+    --sunken: #0b0f14;
+    --line: #26303b;
+    --line-strong: #364250;
+    --text: #e6edf3;
+    --text-soft: #c2ccd6;
+    --muted: #8b98a5;
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --on-accent: #042f2e;
+    --focus: #5eead4;
+    --radius: 6px;
+    --radius-lg: 10px;
+}
+
+.console {
+    display: grid;
+    grid-template-columns: 15rem 1fr;
+    min-height: 100vh;
+}
+
+.console-side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    padding: var(--space-5) var(--space-4);
+    border-right: 1px solid var(--line);
+    background: var(--sunken);
+}
+
+.console-brand {
+    color: var(--accent);
+    font-size: var(--text-xl);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+}
+
+.console-side ul {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.console-side a:not(.console-brand) {
+    display: block;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    color: var(--text-soft);
+    text-decoration: none;
+}
+
+.console-side a[aria-current="page"],
+.console-side a:not(.console-brand):hover {
+    background: var(--surface);
+    color: var(--text);
+}
+
+.console-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    width: 100%;
+    max-width: 60rem;
+    padding: var(--space-6);
+}
+
+.hero {
+    padding-block: var(--space-6);
+}
+
+@media (max-width: 48rem) {
+    .console {
+        grid-template-columns: 1fr;
+    }
+
+    .console-side {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .console-side ul {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .console-main {
+        padding: var(--space-4);
+    }
+}

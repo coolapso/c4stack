@@ -28,5 +28,7 @@ jobs:
         run: task test:integration -- -race ./...
       - name: Generated starter app
         run: task test:app
+      - name: Example app, with browser tests
+        run: task test:example
       - name: Build the generator
         run: task cli:build

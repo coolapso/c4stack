@@ -1,0 +1,83 @@
+package main
+
+import (
+	"strings"
+
+	"github.com/coolapso/c4stack/ui"
+	"github.com/gin-gonic/gin"
+)
+
+// consoleLayout is Textlab's own layout: a sidebar console instead of the default
+// header. The default account, keys and credits pages render inside it.
+func consoleLayout(assets *ui.Assets) ui.Layout {
+	return ui.Layout{
+		Assets: assets,
+		Page: func(c *gin.Context, title string, body templ.Component) templ.Component {
+			return console(c, assets, title, body)
+		},
+	}
+}
+
+type navLink struct {
+	label, href string
+}
+
+var consoleNav = []navLink{
+	{"Overview", "/console"},
+	{"Jobs", "/console/jobs"},
+	{"API keys", "/console/keys"},
+	{"Credits", "/console/credits"},
+	{"Settings", "/console/settings"},
+}
+
+func active(c *gin.Context, href string) bool {
+	path := c.Request.URL.Path
+	if href == "/console" {
+		return path == href
+	}
+	return path == href || strings.HasPrefix(path, href+"/")
+}
+
+templ console(c *gin.Context, assets *ui.Assets, title string, body templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="dark"/>
+			if title == "" {
+				<title>Textlab</title>
+			} else {
+				<title>{ title } — Textlab</title>
+			}
+			<link rel="icon" href={ assets.URL("app/favicon.svg") } type="image/svg+xml"/>
+			@ui.Head(c, assets)
+			<link rel="stylesheet" href={ assets.URL("ui/base.css") }/>
+			<link rel="stylesheet" href={ assets.URL("app/console.css") }/>
+		</head>
+		<body class="console">
+			<a class="skip-link" href="#main">Skip to content</a>
+			<aside class="console-side">
+				<a class="console-brand" href="/">Textlab</a>
+				<nav aria-label="Console">
+					<ul>
+						for _, link := range consoleNav {
+							<li>
+								<a
+									href={ templ.SafeURL(link.href) }
+									if active(c, link.href) {
+										aria-current="page"
+									}
+								>{ link.label }</a>
+							</li>
+						}
+					</ul>
+				</nav>
+			</aside>
+			<main id="main" class="console-main">
+				@body
+			</main>
+			@ui.LiveRegion()
+		</body>
+	</html>
+}

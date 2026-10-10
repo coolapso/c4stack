@@ -39,6 +39,14 @@ tasks:
       - task: app:test:db:up
       - TEST_DATABASE_URL='{{.TEST_DATABASE_URL}}' go test -count=1 -tags apptest -run TestStarterApp ./internal/scaffold/
 
+  test:example:
+    desc: Check the example app, and run its integration and browser tests
+    dir: examples/textlab
+    cmds:
+      - task check
+      - task test:integration
+      - task test:browser
+
   cli:build:
     desc: Build the generator into bin/c4stack
     cmds:
