@@ -102,8 +102,8 @@ layout := newLayout(assets) // layout.go starts from the default design
 
 r.GET("/assets/*path", assets.Serve)
 r.GET("/", home(layout))
-idp.Mount(r, layout) // GET /login, POST /logout
-accts.Mount(r.Group("/account", accts.RequireSignIn), layout)
+idp.Mount(r, layout) // GET /login
+accts.Mount(r.Group("/account", accts.RequireSignIn), layout) // settings, delete, logout
 ```
 
 Enabling API keys adds `apikeys.Migrations` to the list in `main.go`, plus three lines:
@@ -177,6 +177,8 @@ type CSP struct{ Scripts, Styles, Images, Fonts, Connect, Frames, FormActions []
 
 func CSRF(c *gin.Context)                    // checks token and Origin on unsafe methods
 func CSRFToken(c *gin.Context) string
+func SetSealedCookie(c *gin.Context, name string, value []byte, maxAge time.Duration)
+func SealedCookie(c *gin.Context, name string) ([]byte, error) // encrypted and authenticated
 func AllowCSP(extra CSP) gin.HandlerFunc     // extends the policy for one route group
 func MaxBody(n int64) gin.HandlerFunc        // overrides the body limit for one group
 func URL(c *gin.Context, path string) string // absolute URL on the public origin
@@ -208,8 +210,11 @@ The app keeps the engine. It can add middleware or set `NoRoute`, and C4Stack ne
 changes Gin's global mode.
 
 **CSRF.** C4Stack uses a signed double-submit cookie (`__Host-csrf` on HTTPS, `csrf` on
-plain-HTTP localhost) plus an exact Origin match against `PublicURL`. Forms send
-`csrf_token`. HTMX sends `X-CSRF-Token` from `hx-headers` on `<body>`.
+plain-HTTP localhost) plus an exact Origin match against `PublicURL`. The cookie holds a
+random value and the form token is its HMAC, so a cookie planted by an attacker never
+matches a token they can produce. Forms send
+`csrf_token`. HTMX requests send `X-CSRF-Token`, which the default page script copies
+from `<meta name="csrf-token">`.
 
 Each kind of route uses one check:
 - `accounts.RequireSignIn` includes the CSRF check. Sign-in is cookie-based, so a signed-in
@@ -221,8 +226,8 @@ Each kind of route uses one check:
 
 ```
 default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
-font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none';
-base-uri 'none'; object-src 'none'
+font-src 'self'; connect-src 'self'; frame-src 'none'; form-action 'self';
+frame-ancestors 'none'; base-uri 'none'; object-src 'none'
 ```
 
 `Config.CSP` extends the policy for every route; `AllowCSP` extends it for one group.
@@ -245,6 +250,7 @@ load balancers stop routing to the instance. In-flight requests then get
 
 ```go
 func Main(cfg Config)
+func New(cfg Config, db *sql.DB) *App // what Main builds; for tests and tools
 
 type Config struct {
 	Name        string
@@ -257,6 +263,7 @@ type Migrations struct {
 	Files     fs.FS // NNN_name.sql
 }
 
+func (a *App) Require(m Migrations) error // module constructors check their migrations are listed
 func (a *App) DB() *sql.DB
 func (a *App) SetLogger(l *slog.Logger)
 func (a *App) Log() *slog.Logger
@@ -295,6 +302,8 @@ type Layout struct {
 	Page   func(c *gin.Context, title string, body templ.Component) templ.Component
 	Assets *Assets
 }
+func (l Layout) Render(c *gin.Context, status int, title string, body templ.Component)
+func (l Layout) NotFound(c *gin.Context)
 type Design struct {
 	Name        string          // header and <title>
 	Nav         []Link
@@ -306,12 +315,15 @@ type Link struct{ Label, Href string }
 
 func Default(d Design, assets *Assets) Layout
 
-func NewAssets(base string) *Assets        // includes the default design's files
-func (a *Assets) Add(prefix string, files fs.FS)
-func (a *Assets) URL(name string) string   // /assets/<hash>/ui/base.css
+func NewAssets(base string) *Assets              // includes the default design's files
+func (a *Assets) Add(prefix string, files fs.FS) error
+func (a *Assets) URL(name string) string         // /assets/<hash>/ui/base.css
 func (a *Assets) Serve(c *gin.Context)
 
+// Components default pages and custom layouts share.
+func Head(c *gin.Context, assets *Assets) templ.Component // CSRF meta tag, HTMX, page script
 func CSRFField(c *gin.Context) templ.Component
+func Dialog(p DialogProps) templ.Component
 ```
 
 **Levels of design freedom.** Apps choose one of three:
@@ -319,9 +331,9 @@ func CSRFField(c *gin.Context) templ.Component
 2. **Restyle.** Add a stylesheet that overrides design tokens, plus a favicon in `Head`,
    `Nav` links and a `Footer`.
 3. **Own layout.** `ui.Layout{Page: myLayout, Assets: assets}` with the app's own Templ
-   and CSS. Default pages render inside it, using documented component classes. A custom
-   layout either links `ui/base.css`, styles those classes itself, or replaces the
-   pages.
+   and CSS. It includes `ui.Head` and `ui.LiveRegion` so HTMX and dialogs work. Default
+   pages render inside it, using documented component classes. A custom layout either
+   links `ui/base.css`, styles those classes itself, or replaces the pages.
 
 **The default design.** It is one hand-written stylesheet of design tokens and component
 classes, with no build step, supporting light and dark schemes. Class and token names are
@@ -343,6 +355,9 @@ type Identity struct {
 	EmailVerified bool
 	SignedInAt    time.Time // when the session was created
 }
+func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (10 minutes)
+func NewContext(ctx context.Context, id Identity) context.Context
+func FromContext(ctx context.Context) (Identity, bool)
 type Provider interface {
 	Name() string                                   // stored with each account, e.g. "hanko"
 	Authenticate(r *http.Request) (Identity, error) // ErrNoSession when not signed in
@@ -358,10 +373,11 @@ type Provider interface {
 - `Delete` runs Hanko's profile flow action `account_delete` with the user's own session,
   and succeeds only on the `account_deleted` state. No admin API key is needed.
 - `Mount` adds `GET /login`, a page with Hanko's `<hanko-auth>` element inside the app's
-  layout, and `POST /logout`.
+  layout. A user who already has a session continues to the `next` path.
 
-**Profile UI.** The adapter can also offer a profile UI. When it does, the accounts
-settings page embeds it. Hanko's profile UI has everything Searchbase's settings page has:
+**Profile UI.** The adapter can also offer a profile UI, through three methods that
+`accounts` looks for: `MountProfile`, `ProfileCSP` and `ProfileSection`. When it does,
+the accounts settings page embeds it. Hanko's profile UI has everything Searchbase's settings page has:
 - **Email change.** It runs server-side through Hanko's profile flow:
   1. The user enters a new address and confirms it with a passcode, which they can have
      resent.
@@ -399,9 +415,13 @@ func (s *Accounts) RequireSignIn(c *gin.Context)
 func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
-func (s *Accounts) Delete(c *gin.Context) error              // deletes the signed-in account
-func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) // GET "" settings, POST "/delete"
+func (s *Accounts) Delete(c *gin.Context) error // ErrNotDeleted or ErrCleanupPending on failure
+func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout)
+// GET "" settings, POST "/delete", POST "/logout" (continues to a local "next" path)
 ```
+
+Signing out lives here rather than in the provider adapter, because it is the same for
+every provider: `Logout` ends the session at the provider and clears the browser.
 
 The operator command is `accounts delete-local <account-id>`.
 
@@ -592,7 +612,7 @@ reads `<PREFIX>_*`, where the generator derives the prefix from the app name, an
 the values in code. A minimal app needs four, plus an optional `ACME_ADDR`:
 - `ACME_PUBLIC_URL`
 - `ACME_DATABASE_URL`, the only variable `migrate` reads
-- `ACME_SECRET_KEY`, from which C4Stack derives separate CSRF and cookie keys
+- `ACME_SECRET_KEY`, from which C4Stack derives separate CSRF and cookie keys with HKDF
 - `ACME_HANKO_API_URL`
 
 **Other names users can see.**
@@ -614,16 +634,18 @@ config structs. C4Stack has no business-value constants.
   option writes a development-only `replace` and includes the shared Taskfile from that
   checkout.
 - It runs `go mod tidy` and `templ generate`.
-- It warns when Task is older than the minimum version.
+- It warns when Task is older than 3.53.1, the first release where remote Taskfiles
+  work without opting in to an experiment.
 
 It writes these files:
 - `main.go`, with the migration list, plus `config.go`, `routes.go`, `layout.go` and
-  `home.templ`
-- `static/app.css`
-- `migrations/README.md`. There is no starter migration, so there is no no-op version 1
-  to trap the app.
-- `Taskfile.yml`, `.taskrc.yml`, `.env.example` and `.gitignore`
-- `docker-compose.yml` and `Containerfile`
+  `pages.templ`
+- `static/app.css` and `static/favicon.svg`
+- `migrations/migrations.go`, which embeds the directory. There is no starter
+  migration, so there is no no-op version 1 to trap the app.
+- `Taskfile.yml`, `.taskrc.yml`, `.env` (with a fresh secret key), `.env.example` and
+  `.gitignore`
+- `docker-compose.yml`, `Containerfile` and `.dockerignore`
 - `README.md` and `AGENTS.md`
 
 **The include.** The app's Taskfile includes `taskfiles/app.yml` from this repository,
@@ -647,8 +669,8 @@ second place. The ref and the Go dependency therefore cannot drift. `framework:u
 only bumps the Go dependency, then tidies, regenerates, tests and builds. `check` doesn't
 need a drift check, so it has none.
 
-**Task mechanics.** I verified these with Task 3.54.0 against a local Git server; the
-minimum version, 3.51.1, is still to be confirmed.
+**Task mechanics.** These were verified with Task 3.53.1 and 3.54.0 against a local Git
+server. Task 3.51.1 and 3.52.0 still treat remote Taskfiles as an experiment.
 - A Git include works with the developer's Git credentials, and its ref can come from a
   dynamic variable.
 - Top-level app variables reach the shared tasks.
@@ -666,7 +688,7 @@ minimum version, 3.51.1, is still to be confirmed.
 | Develop | `dev` (templ watch with live reload), `templ:generate`, `templ:watch` |
 | Local database | `db:up`, `db:down`, `db:logs`, `db:connect`, `db:wipe` (asks first) |
 | Operations | `db:migrate`, `run -- <command>` (passthrough to the app binary) |
-| Quality | `test`, `test:integration`, `check` (vet, gofmt, templ fmt, `go mod tidy -diff`, generated-code drift) |
+| Quality | `test`, `test:integration`, `check` (vet, staticcheck, gofmt, templ fmt, `go mod tidy -diff`, generated-code drift) |
 | Build | `build`, `container:build`, `container:push` (`PLATFORMS` variable, tags from `git describe`) |
 | Framework | `framework:update VERSION=…` |
 | Secrets | optional `infisical run` wrapping when the app sets a project and environment |
@@ -679,9 +701,13 @@ then create a fresh database per test through `app/apptest`.
 **Containers.** `container:build` compiles the binaries on the host and copies them into
 the image. Private-module credentials therefore never enter an image build.
 
+`staticcheck` runs with `go run` at a version the shared Taskfile pins, so apps carry no
+lint dependency in `go.mod` and a newer version arrives with the framework.
+
 This repository's own `Taskfile.yml` includes `taskfiles/app.yml` locally and adds
-framework tasks: `check`, `test`, `test:integration`, `test:app` (generate a starter app
-and run its tasks), `test:upgrade`, `cli:build` and `release:verify`.
+framework tasks: `check` (adds golangci-lint), `test`, `test:integration`, `test:app`
+(generate a starter app from this checkout, run its tasks and serve it end to end),
+`test:upgrade`, `cli:build` and `release:verify`.
 
 ## Decisions on carried-over features
 
