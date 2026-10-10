@@ -1,0 +1,17 @@
+// Package migrations holds [[.Title]]'s database migrations.
+//
+// Add files named NNN_description.sql, such as 001_notes.sql. The migrate command
+// applies them in order, after C4Stack's own migrations, so they can reference tables
+// such as accounts. Never change a file once it has been applied anywhere; add a new
+// one instead.
+//
+// Tables with personal data must reference accounts with ON DELETE CASCADE, or be
+// cleaned up in an accounts OnDelete hook, so deleting an account removes them.
+package migrations
+
+import "embed"
+
+// Files are this app's migrations.
+//
+//go:embed *
+var Files embed.FS

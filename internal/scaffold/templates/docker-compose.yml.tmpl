@@ -1,0 +1,22 @@
+# The local development database. task db:up starts it, task db:wipe deletes its data.
+name: [[.Name]]
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: [[.Name]]
+      POSTGRES_PASSWORD: [[.Name]]
+      POSTGRES_DB: [[.Name]]
+    ports:
+      - 127.0.0.1:${DB_PORT:-5432}:5432
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: [CMD, pg_isready, -U, [[.Name]], -d, [[.Name]]]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres:

@@ -1,0 +1,251 @@
+# Shared tasks for C4Stack apps.
+#
+# An app's Taskfile.yml includes this file at the C4Stack release in its go.mod, so
+# fixed and new tasks arrive when the app updates the framework. Every task runs from
+# the app's root directory.
+#
+# The app's Taskfile sets:
+#   APP           the app's name: binary, Compose project and database name
+#   ENV_PREFIX    the prefix of the app's environment variables, such as ACME
+#   IMAGE         the container image name
+# and can set:
+#   REGISTRY      where container:push pushes, such as ghcr.io/you
+#   PLATFORMS     container:push platforms (default linux/amd64,linux/arm64)
+#   DB_PORT       the local database's port (default 5432)
+#   DEV_PORT      the port task dev serves on (default 8080); the app itself listens
+#                 on DEV_APP_PORT (default 8081) behind the live-reload proxy
+#   TEST_DB_PORT  the disposable test database's port (default 55432)
+#   INFISICAL_PROJECT and INFISICAL_ENV
+#                 run dev, run and db:migrate under `infisical run`
+#
+# To change a shared task, add its name to `excludes` in the app's include and define
+# a task with the same name in the app's Taskfile.
+
+version: '3'
+
+vars:
+  BINARY: bin/{{.APP}}
+  DB_PORT: '{{.DB_PORT | default "5432"}}'
+  DEV_PORT: '{{.DEV_PORT | default "8080"}}'
+  DEV_APP_PORT: '{{.DEV_APP_PORT | default "8081"}}'
+  TEST_DB_PORT: '{{.TEST_DB_PORT | default "55432"}}'
+  TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.TEST_DB_PORT}}/test?sslmode=disable
+  PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
+  SECRETS: '{{if .INFISICAL_PROJECT}}infisical run --projectId={{.INFISICAL_PROJECT}} --env={{.INFISICAL_ENV | default "dev"}} --{{end}}'
+  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.1
+  TAG:
+    sh: (git describe --tags --always --dirty=-dev 2>/dev/null || echo dev) | sed 's/^v//'
+  # The disposable test database. Its data lives in memory and disappears with it.
+  TEST_COMPOSE: |
+    services:
+      postgres:
+        image: postgres:18-alpine
+        environment:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: test
+        ports:
+          - 127.0.0.1:{{.TEST_DB_PORT}}:5432
+        tmpfs:
+          - /var/lib/postgresql
+        healthcheck:
+          test: [CMD, pg_isready, -U, test, -d, test]
+          interval: 1s
+          timeout: 3s
+          retries: 30
+
+tasks:
+  # Develop -------------------------------------------------------------------
+
+  dev:
+    desc: Serve the app with live reload on http://localhost:{{.DEV_PORT}}
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - go tool templ generate
+      - >-
+        {{.ENV_PREFIX}}_ADDR=127.0.0.1:{{.DEV_APP_PORT}} {{.SECRETS}}
+        go tool templ generate --watch
+        --proxy=http://127.0.0.1:{{.DEV_APP_PORT}} --proxybind=127.0.0.1 --proxyport={{.DEV_PORT}}
+        --open-browser=false
+        --watch-pattern='(.+\.go$)|(.+\.templ$)|(.+\.css$)|(.+\.js$)|(.+\.sql$)'
+        --cmd='go run . serve'
+
+  templ:generate:
+    desc: Generate Go code from Templ files
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - go tool templ generate
+
+  templ:watch:
+    desc: Regenerate Go code whenever a Templ file changes
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - go tool templ generate --watch
+
+  run:
+    desc: 'Run an app command, for example: task run -- migrate status'
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - '{{.SECRETS}} go run . {{.CLI_ARGS}}'
+
+  # Local database --------------------------------------------------------------
+
+  db:up:
+    desc: Start the local development database
+    dir: '{{.ROOT_DIR}}'
+    env:
+      DB_PORT: '{{.DB_PORT}}'
+    cmds:
+      - docker compose up -d --wait postgres
+
+  db:down:
+    desc: Stop the local development database and keep its data
+    dir: '{{.ROOT_DIR}}'
+    env:
+      DB_PORT: '{{.DB_PORT}}'
+    cmds:
+      - docker compose down
+
+  db:logs:
+    desc: Follow the local database's logs
+    dir: '{{.ROOT_DIR}}'
+    env:
+      DB_PORT: '{{.DB_PORT}}'
+    cmds:
+      - docker compose logs -f postgres
+
+  db:connect:
+    desc: Open psql on the local database
+    dir: '{{.ROOT_DIR}}'
+    interactive: true
+    env:
+      DB_PORT: '{{.DB_PORT}}'
+    cmds:
+      - docker compose exec postgres psql -U {{.APP}} {{.APP}}
+
+  db:wipe:
+    desc: Delete the local database and all its data
+    dir: '{{.ROOT_DIR}}'
+    prompt: This deletes the local {{.APP}} database and all its data. Continue?
+    env:
+      DB_PORT: '{{.DB_PORT}}'
+    cmds:
+      - docker compose down --volumes
+
+  db:migrate:
+    desc: Apply pending migrations to the database in {{.ENV_PREFIX}}_DATABASE_URL
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - '{{.SECRETS}} go run . migrate'
+
+  # Quality -------------------------------------------------------------------
+
+  test:
+    desc: Run unit tests
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - go test {{.CLI_ARGS | default "./..."}}
+
+  test:integration:
+    desc: Run unit and integration tests against a disposable PostgreSQL
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - defer: {task: test:db:down}
+      - task: test:db:down
+      - task: test:db:up
+      - >-
+        {{.ENV_PREFIX}}_DATABASE_URL='{{.TEST_DATABASE_URL}}' TEST_DATABASE_URL='{{.TEST_DATABASE_URL}}'
+        go test -count=1 -tags integration {{.CLI_ARGS | default "./..."}}
+
+  test:db:up:
+    desc: Start the disposable test database (task test:integration does this)
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - |
+        cat <<'EOF' | docker compose -p {{.APP}}-test -f - up -d --wait --wait-timeout 60
+        {{.TEST_COMPOSE}}
+        EOF
+
+  test:db:down:
+    desc: Remove the disposable test database
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - |
+        cat <<'EOF' | docker compose -p {{.APP}}-test -f - down --volumes --remove-orphans
+        {{.TEST_COMPOSE}}
+        EOF
+
+  check:
+    desc: Vet, lint, and check formatting, module tidiness and generated code
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - go vet ./...
+      - go run {{.STATICCHECK}} ./...
+      - |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "These files need gofmt:"; echo "$unformatted"; exit 1
+        fi
+      - go tool templ fmt -fail .
+      - go mod tidy -diff
+      - |
+        before=$(find . -name '*_templ.go' -not -path './.task/*' -exec sha256sum {} + | sort)
+        go tool templ generate -log-level error
+        after=$(find . -name '*_templ.go' -not -path './.task/*' -exec sha256sum {} + | sort)
+        if [ "$before" != "$after" ]; then
+          echo "Generated Templ code was out of date and has been regenerated; commit it."; exit 1
+        fi
+
+  # Build ---------------------------------------------------------------------
+
+  build:
+    desc: Build the app's binary into {{.BINARY}}
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o {{.BINARY}} .
+
+  container:binaries:
+    internal: true
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - for: {var: TARGETS, split: ','}
+        cmd: >-
+          CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
+          go build -trimpath -ldflags='-s -w' -o bin/{{.APP}}-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}} .
+
+  container:build:
+    desc: Build the container image for this machine, tagged from git describe
+    dir: '{{.ROOT_DIR}}'
+    vars:
+      LOCAL_PLATFORM: linux/{{ARCH}}
+    cmds:
+      - task: container:binaries
+        vars: {TARGETS: '{{.LOCAL_PLATFORM}}'}
+      - docker buildx build --platform {{.LOCAL_PLATFORM}} -f Containerfile -t {{.IMAGE}}:{{.TAG}} --load .
+
+  container:push:
+    desc: Build the image for PLATFORMS and push it to REGISTRY, tagged from git describe and latest
+    dir: '{{.ROOT_DIR}}'
+    requires:
+      vars: [REGISTRY]
+    cmds:
+      - task: container:binaries
+        vars: {TARGETS: '{{.PLATFORMS}}'}
+      - >-
+        docker buildx build --platform {{.PLATFORMS}} -f Containerfile
+        -t {{.REGISTRY}}/{{.IMAGE}}:{{.TAG}} -t {{.REGISTRY}}/{{.IMAGE}}:latest --push .
+
+  # Framework -----------------------------------------------------------------
+
+  framework:update:
+    desc: 'Move to another C4Stack release, for example: task framework:update VERSION=v0.2.0'
+    dir: '{{.ROOT_DIR}}'
+    requires:
+      vars: [VERSION]
+    cmds:
+      - go get github.com/coolapso/c4stack@{{.VERSION}}
+      - go mod tidy
+      # A new task process includes the shared tasks of the new release.
+      - task templ:generate
+      - task test
+      - task build

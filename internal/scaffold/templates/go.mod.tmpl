@@ -1,0 +1,13 @@
+module [[.Module]]
+
+go [[.GoVersion]]
+
+require github.com/coolapso/c4stack [[.Version]]
+
+tool github.com/a-h/templ/cmd/templ
+[[- if .Local]]
+
+// Development only: builds against a local C4Stack checkout. Remove this line and pin
+// a release before you deploy.
+replace github.com/coolapso/c4stack => [[.Local]]
+[[- end]]

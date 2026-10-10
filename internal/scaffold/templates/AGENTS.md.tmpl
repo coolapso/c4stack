@@ -1,0 +1,26 @@
+# [[.Title]]
+
+[[.Title]] is a C4Stack app. Replace this paragraph with what the product does as
+its code grows.
+
+## Boundaries
+
+- C4Stack is a pinned dependency. Never copy its code, SQL or assets into this app;
+  upgrade with `task framework:update VERSION=…`.
+- The app owns `main.go`, `config.go`, `routes.go`, the layout, pages, styles and
+  `migrations/`.
+- Environment variables use the `[[.EnvPrefix]]_` prefix and are read in `config.go`,
+  except `[[.EnvPrefix]]_DATABASE_URL`, which `main.go` passes to `app.Main` for migrate.
+
+## Rules
+
+- Signed-in browser routes go in a group with `accts.RequireSignIn`; public forms use
+  `web.CSRF`. Never protect an API-key route with either.
+- Read the signed-in account with `accounts.Current(c)`.
+- Render pages with `layout.Render`; forms include `@ui.CSRFField(c)`.
+- New tables with personal data reference `accounts (id) ON DELETE CASCADE`, or are
+  cleaned in an `accts.OnDelete` hook.
+- Never change a migration file once it has been applied anywhere. Add a new file.
+- Run `task templ:generate` after editing `.templ` files and commit the generated code.
+- Never log secrets, session cookies, API keys or request bodies.
+- Before finishing, run `task check` and `task test:integration`.

@@ -1,0 +1,12 @@
+/*
+ * App styles, linked after the default design's stylesheet. Override its design
+ * tokens here to restyle every page, and add styles for your own components.
+ */
+
+:root {
+    /* For example: --accent: #0f766e; --radius: 4px; */
+}
+
+.hero {
+    padding-block: var(--space-6);
+}

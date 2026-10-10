@@ -1,0 +1,18 @@
+package main
+
+import "github.com/coolapso/c4stack/ui"
+
+// head adds the favicon to every page.
+templ head(assets *ui.Assets) {
+	<link rel="icon" href={ assets.URL("app/favicon.svg") } type="image/svg+xml"/>
+}
+
+templ homePage() {
+	<section class="hero stack">
+		<h1>Welcome to [[.Title]]</h1>
+		<p class="lead">This page lives in pages.templ. Make it yours.</p>
+		<p class="cluster">
+			<a class="btn primary" href="/account">Go to your account</a>
+		</p>
+	</section>
+}

@@ -1,0 +1,27 @@
+# [[.Title]]'s tasks. The shared tasks (dev, test, check, build, db:migrate and more)
+# come from the C4Stack release in go.mod; run `task --list` to see them all.
+#
+# To change a shared task, add its name to `excludes` below and define your own task
+# with the same name under `tasks`.
+version: '3'
+
+vars:
+  APP: [[.Name]]
+  ENV_PREFIX: [[.EnvPrefix]]
+  IMAGE: [[.Name]]
+  # REGISTRY: ghcr.io/you
+  # Run dev, run and db:migrate under `infisical run`:
+  # INFISICAL_PROJECT: <project-id>
+  # INFISICAL_ENV: dev
+  FRAMEWORK_VERSION:
+    sh: awk '$1 == "github.com/coolapso/c4stack" { print $2; exit } $1 == "require" && $2 == "github.com/coolapso/c4stack" { print $3; exit }' go.mod
+
+dotenv: ['.env']
+
+includes:
+  shared:
+    taskfile: [[.Taskfile]]
+    flatten: true
+    excludes: []
+
+tasks: {}

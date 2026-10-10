@@ -1,0 +1,18 @@
+package main
+
+import "github.com/coolapso/c4stack/ui"
+
+// newLayout returns [[.Title]]'s layout. It starts from the default design: change the
+// fields below, restyle static/app.css, or replace it with a Templ layout of your own
+// (see ui.Layout).
+func newLayout(assets *ui.Assets) ui.Layout {
+	return ui.Default(ui.Design{
+		Name: "[[.Title]]",
+		Nav: []ui.Link{
+			{Label: "Home", Href: "/"},
+			{Label: "Account", Href: "/account"},
+		},
+		Head:        head(assets),
+		Stylesheets: []string{assets.URL("app/app.css")},
+	}, assets)
+}

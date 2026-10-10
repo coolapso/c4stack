@@ -1,0 +1,12 @@
+# task container:build and task container:push compile the binaries on the host first,
+# so private modules never need credentials inside an image build.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+ARG TARGETOS
+ARG TARGETARCH
+COPY bin/[[.Name]]-${TARGETOS}-${TARGETARCH} /app
+
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/app"]
+CMD ["serve"]

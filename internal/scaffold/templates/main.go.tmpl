@@ -1,0 +1,53 @@
+// Command [[.Name]] is the [[.Title]] web app. Run it with a command: serve, migrate,
+// or help for the full list.
+package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/coolapso/c4stack/accounts"
+	"github.com/coolapso/c4stack/app"
+	"github.com/coolapso/c4stack/identity/hanko"
+	"github.com/coolapso/c4stack/web"
+
+	"[[.Module]]/migrations"
+)
+
+func main() {
+	app.Main(app.Config{
+		Name: "[[.Name]]",
+		// The migrate command reads only the database URL and the migrations.
+		DatabaseURL: os.Getenv("[[.EnvPrefix]]_DATABASE_URL"),
+		Migrations: []app.Migrations{
+			accounts.Migrations,
+			{Namespace: "app", Files: migrations.Files},
+		},
+		Setup: setup,
+	})
+}
+
+// setup wires the app for every command except migrate.
+func setup(ctx context.Context, a *app.App) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	a.SetLogger(cfg.logger())
+
+	idp, err := hanko.New(hanko.Config{APIURL: cfg.HankoAPIURL, SignedInPath: "/account"})
+	if err != nil {
+		return err
+	}
+	accts, err := accounts.New(a, idp, accounts.Config{LoginPath: "/login"})
+	if err != nil {
+		return err
+	}
+
+	handler, err := routes(cfg, idp, accts)
+	if err != nil {
+		return err
+	}
+	a.Serve(web.Server{Addr: cfg.Addr, Handler: handler, HealthPath: "/health"})
+	return nil
+}

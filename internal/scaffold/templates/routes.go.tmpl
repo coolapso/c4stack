@@ -1,0 +1,47 @@
+package main
+
+import (
+	"embed"
+	"io/fs"
+	"net/http"
+
+	"github.com/coolapso/c4stack/accounts"
+	"github.com/coolapso/c4stack/identity/hanko"
+	"github.com/coolapso/c4stack/ui"
+	"github.com/coolapso/c4stack/web"
+	"github.com/gin-gonic/gin"
+)
+
+//go:embed static
+var staticFiles embed.FS
+
+// routes decides what [[.Title]] serves and where.
+func routes(cfg config, idp *hanko.Hanko, accts *accounts.Accounts) (http.Handler, error) {
+	gin.SetMode(gin.ReleaseMode)
+	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey})
+	if err != nil {
+		return nil, err
+	}
+
+	static, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		return nil, err
+	}
+	assets := ui.NewAssets("/assets")
+	if err := assets.Add("app", static); err != nil {
+		return nil, err
+	}
+	layout := newLayout(assets)
+
+	r.GET("/assets/*path", assets.Serve)
+	r.NoRoute(layout.NotFound)
+	r.GET("/", func(c *gin.Context) {
+		layout.Render(c, http.StatusOK, "", homePage())
+	})
+
+	// Sign-in, and the signed-in account pages.
+	idp.Mount(r, layout)
+	accts.Mount(r.Group("/account", accts.RequireSignIn), layout)
+
+	return r, nil
+}
