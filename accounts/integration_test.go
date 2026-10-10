@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/coolapso/c4stack/app"
 	"github.com/coolapso/c4stack/app/apptest"
 	"github.com/coolapso/c4stack/identity"
@@ -336,5 +338,37 @@ func TestLogout(t *testing.T) {
 	}
 	if f.idp.logouts != 2 {
 		t.Fatalf("logouts %d", f.idp.logouts)
+	}
+}
+
+// An app can mount the default pages anywhere and render them in its own layout.
+func TestPagesInACustomLayoutAndPlace(t *testing.T) {
+	f := newFixture(t)
+	custom := ui.Layout{
+		Assets: ui.NewAssets("/static"),
+		Page: func(c *gin.Context, title string, body templ.Component) templ.Component {
+			return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
+				io.WriteString(w, `<html><body class="my-own-layout"><h1 class="brand">`+title+`</h1>`)
+				if err := body.Render(ctx, w); err != nil {
+					return err
+				}
+				_, err := io.WriteString(w, `</body></html>`)
+				return err
+			})
+		},
+	}
+	f.accounts.Mount(f.r.Group("/me", f.accounts.RequireSignIn), custom)
+
+	if rec := f.do(http.MethodGet, "/me", "", nil, nil); rec.Header().Get("Location") != "/login?next=%2Fme" {
+		t.Fatalf("visitor: %q", rec.Header().Get("Location"))
+	}
+	body := f.do(http.MethodGet, "/me", "ada", nil, nil).Body.String()
+	for _, want := range []string{`class="my-own-layout"`, `action="/me/logout"`, `action="/me/delete"`, "ada@example.com"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	if rec := f.do(http.MethodPost, "/me/logout", "ada", nil, nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("relocated logout: %d", rec.Code)
 	}
 }
