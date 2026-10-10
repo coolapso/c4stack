@@ -1,0 +1,141 @@
+package ui
+
+import (
+	"github.com/coolapso/c4stack/web"
+	"github.com/gin-gonic/gin"
+)
+
+// page is the default document.
+templ page(d Design, assets *Assets, c *gin.Context, title string, body templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+			<title>{ pageTitle(title, d.Name) }</title>
+			@Head(c, assets)
+			<link rel="stylesheet" href={ assets.URL("ui/base.css") }/>
+			for _, href := range d.Stylesheets {
+				<link rel="stylesheet" href={ href }/>
+			}
+			if d.Head != nil {
+				@d.Head
+			}
+		</head>
+		<body>
+			<a class="skip-link" href="#main">Skip to content</a>
+			<header class="site-header">
+				<div class="wrap">
+					<a class="brand" href="/">{ d.Name }</a>
+					if len(d.Nav) > 0 {
+						<nav class="site-nav" aria-label="Main">
+							<ul>
+								for _, link := range d.Nav {
+									<li>
+										if current(c, link.Href) {
+											<a href={ templ.SafeURL(link.Href) } aria-current="page">{ link.Label }</a>
+										} else {
+											<a href={ templ.SafeURL(link.Href) }>{ link.Label }</a>
+										}
+									</li>
+								}
+							</ul>
+						</nav>
+					}
+				</div>
+			</header>
+			<main id="main" class="site-main wrap">
+				@body
+			</main>
+			<footer class="site-footer">
+				<div class="wrap">
+					if d.Footer != nil {
+						@d.Footer
+					} else {
+						<p>{ d.Name }</p>
+					}
+				</div>
+			</footer>
+			@LiveRegion()
+		</body>
+	</html>
+}
+
+// Head renders what every layout's <head> needs for default pages to work: the CSRF
+// token for HTMX requests, HTMX and the default page script. Custom layouts include it.
+templ Head(c *gin.Context, assets *Assets) {
+	<meta name="csrf-token" content={ web.CSRFToken(c) }/>
+	<script src={ assets.URL("ui/htmx.js") } defer></script>
+	<script src={ assets.URL("ui/ui.js") } defer></script>
+}
+
+// LiveRegion is the polite status region the page script announces results in.
+// Custom layouts include it once, at the end of <body>.
+templ LiveRegion() {
+	<div id="live-status" class="sr-only" role="status" aria-live="polite"></div>
+}
+
+// CSRFField is the hidden field every state-changing form needs.
+templ CSRFField(c *gin.Context) {
+	<input type="hidden" name={ web.CSRFField } value={ web.CSRFToken(c) }/>
+}
+
+// Spinner shows while its button or form is busy.
+templ Spinner() {
+	<span class="spinner" aria-hidden="true"></span>
+}
+
+// DialogProps describes a modal dialog.
+type DialogProps struct {
+	ID    string
+	Title string
+	// Danger styles the dialog for a destructive action.
+	Danger bool
+	// Autoshow opens the dialog as soon as it is rendered or swapped in.
+	Autoshow bool
+	// Ephemeral clears the dialog's [data-secret] text when it closes, for values
+	// such as a new API key that must be shown only once.
+	Ephemeral bool
+}
+
+// Dialog renders a native modal dialog. Its error slot (.dialog-error) receives error
+// fragments from HTMX requests issued inside it.
+templ Dialog(p DialogProps) {
+	<dialog
+		id={ p.ID }
+		class={ "dialog", templ.KV("danger", p.Danger) }
+		aria-labelledby={ p.ID + "-title" }
+		if p.Autoshow {
+			data-autoshow
+		}
+		if p.Ephemeral {
+			data-ephemeral
+		}
+	>
+		<div class="dialog-header">
+			<h2 id={ p.ID + "-title" }>{ p.Title }</h2>
+			<button type="button" class="btn ghost small" data-dialog-close aria-label="Close">✕</button>
+		</div>
+		<div class="dialog-body">
+			{ children... }
+		</div>
+	</dialog>
+}
+
+// ErrorSlot is where an HTMX form shows an error response.
+templ ErrorSlot() {
+	<div class="dialog-error" role="alert"></div>
+}
+
+// FormError renders an error message for an ErrorSlot.
+templ FormError(text string) {
+	<p class="notice danger">{ text }</p>
+}
+
+templ message(title, text string) {
+	<div class="page-header">
+		<h1>{ title }</h1>
+		<p class="lead">{ text }</p>
+	</div>
+}
