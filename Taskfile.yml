@@ -80,3 +80,25 @@ tasks:
     desc: Build the generator into bin/c4stack
     cmds:
       - go build -o bin/c4stack ./cmd/c4stack
+
+  release:verify:
+    desc: 'Check that this commit can be released, for example: task release:verify VERSION=v0.1.0'
+    requires:
+      vars: [VERSION]
+    cmds:
+      - |
+        echo "{{.VERSION}}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "VERSION must be a release such as v0.1.0."; exit 1; }
+        [ -z "$(git status --porcelain)" ] || { echo "Commit or stash your changes first."; exit 1; }
+        if git rev-parse -q --verify "refs/tags/{{.VERSION}}" >/dev/null; then
+          echo "{{.VERSION}} is already tagged."; exit 1
+        fi
+        [ -f "docs/releases/{{.VERSION}}.md" ] || { echo "Write docs/releases/{{.VERSION}}.md first."; exit 1; }
+      - task: check
+      - task: test:integration
+        vars: {CLI_ARGS: -race ./...}
+      - task: test:app
+      - task: test:upgrade
+      - task: test:example
+      - task: cli:build
+      # Tagging and publishing are the owner's decision; this task does neither.
+      - echo "{{.VERSION}} passed every check. Tag and publish it when you decide to."
