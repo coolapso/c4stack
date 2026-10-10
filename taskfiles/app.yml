@@ -23,20 +23,22 @@
 
 version: '3'
 
+# The shared tasks' own variables start with SHARED_. Task merges an included file's
+# variables over the app's, so they must never share a name with an app variable.
 vars:
-  BINARY: bin/{{.APP}}
-  DB_PORT: '{{.DB_PORT | default "5432"}}'
-  DEV_PORT: '{{.DEV_PORT | default "8080"}}'
-  DEV_APP_PORT: '{{.DEV_APP_PORT | default "8081"}}'
-  TEST_DB_PORT: '{{.TEST_DB_PORT | default "55432"}}'
-  TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.TEST_DB_PORT}}/test?sslmode=disable
-  PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
-  SECRETS: '{{if .INFISICAL_PROJECT}}infisical run --projectId={{.INFISICAL_PROJECT}} --env={{.INFISICAL_ENV | default "dev"}} --{{end}}'
-  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.1
-  TAG:
+  SHARED_BINARY: bin/{{.APP}}
+  SHARED_DB_PORT: '{{.DB_PORT | default "5432"}}'
+  SHARED_DEV_PORT: '{{.DEV_PORT | default "8080"}}'
+  SHARED_DEV_APP_PORT: '{{.DEV_APP_PORT | default "8081"}}'
+  SHARED_TEST_DB_PORT: '{{.TEST_DB_PORT | default "55432"}}'
+  SHARED_TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.SHARED_TEST_DB_PORT}}/test?sslmode=disable
+  SHARED_PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
+  SHARED_SECRETS: '{{if .INFISICAL_PROJECT}}infisical run --projectId={{.INFISICAL_PROJECT}} --env={{.INFISICAL_ENV | default "dev"}} --{{end}}'
+  SHARED_STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.1
+  SHARED_TAG:
     sh: (git describe --tags --always --dirty=-dev 2>/dev/null || echo dev) | sed 's/^v//'
   # The disposable test database. Its data lives in memory and disappears with it.
-  TEST_COMPOSE: |
+  SHARED_TEST_COMPOSE: |
     services:
       postgres:
         image: postgres:18-alpine
@@ -45,7 +47,7 @@ vars:
           POSTGRES_PASSWORD: test-only
           POSTGRES_DB: test
         ports:
-          - 127.0.0.1:{{.TEST_DB_PORT}}:5432
+          - 127.0.0.1:{{.SHARED_TEST_DB_PORT}}:5432
         tmpfs:
           - /var/lib/postgresql
         healthcheck:
@@ -58,14 +60,14 @@ tasks:
   # Develop -------------------------------------------------------------------
 
   dev:
-    desc: Serve the app with live reload on http://localhost:{{.DEV_PORT}}
+    desc: Serve the app with live reload on http://localhost:{{.SHARED_DEV_PORT}}
     dir: '{{.ROOT_DIR}}'
     cmds:
       - go tool templ generate
       - >-
-        {{.ENV_PREFIX}}_ADDR=127.0.0.1:{{.DEV_APP_PORT}} {{.SECRETS}}
+        {{.ENV_PREFIX}}_ADDR=127.0.0.1:{{.SHARED_DEV_APP_PORT}} {{.SHARED_SECRETS}}
         go tool templ generate --watch
-        --proxy=http://127.0.0.1:{{.DEV_APP_PORT}} --proxybind=127.0.0.1 --proxyport={{.DEV_PORT}}
+        --proxy=http://127.0.0.1:{{.SHARED_DEV_APP_PORT}} --proxybind=127.0.0.1 --proxyport={{.SHARED_DEV_PORT}}
         --open-browser=false
         --watch-pattern='(.+\.go$)|(.+\.templ$)|(.+\.css$)|(.+\.js$)|(.+\.sql$)'
         --cmd='go run . serve'
@@ -86,7 +88,7 @@ tasks:
     desc: 'Run an app command, for example: task run -- migrate status'
     dir: '{{.ROOT_DIR}}'
     cmds:
-      - '{{.SECRETS}} go run . {{.CLI_ARGS}}'
+      - '{{.SHARED_SECRETS}} go run . {{.CLI_ARGS}}'
 
   # Local database --------------------------------------------------------------
 
@@ -94,7 +96,7 @@ tasks:
     desc: Start the local development database
     dir: '{{.ROOT_DIR}}'
     env:
-      DB_PORT: '{{.DB_PORT}}'
+      DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
       - docker compose up -d --wait postgres
 
@@ -102,7 +104,7 @@ tasks:
     desc: Stop the local development database and keep its data
     dir: '{{.ROOT_DIR}}'
     env:
-      DB_PORT: '{{.DB_PORT}}'
+      DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
       - docker compose down
 
@@ -110,7 +112,7 @@ tasks:
     desc: Follow the local database's logs
     dir: '{{.ROOT_DIR}}'
     env:
-      DB_PORT: '{{.DB_PORT}}'
+      DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
       - docker compose logs -f postgres
 
@@ -119,7 +121,7 @@ tasks:
     dir: '{{.ROOT_DIR}}'
     interactive: true
     env:
-      DB_PORT: '{{.DB_PORT}}'
+      DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
       - docker compose exec postgres psql -U {{.APP}} {{.APP}}
 
@@ -128,7 +130,7 @@ tasks:
     dir: '{{.ROOT_DIR}}'
     prompt: This deletes the local {{.APP}} database and all its data. Continue?
     env:
-      DB_PORT: '{{.DB_PORT}}'
+      DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
       - docker compose down --volumes
 
@@ -136,7 +138,7 @@ tasks:
     desc: Apply pending migrations to the database in {{.ENV_PREFIX}}_DATABASE_URL
     dir: '{{.ROOT_DIR}}'
     cmds:
-      - '{{.SECRETS}} go run . migrate'
+      - '{{.SHARED_SECRETS}} go run . migrate'
 
   # Quality -------------------------------------------------------------------
 
@@ -154,7 +156,7 @@ tasks:
       - task: test:db:down
       - task: test:db:up
       - >-
-        {{.ENV_PREFIX}}_DATABASE_URL='{{.TEST_DATABASE_URL}}' TEST_DATABASE_URL='{{.TEST_DATABASE_URL}}'
+        {{.ENV_PREFIX}}_DATABASE_URL='{{.SHARED_TEST_DATABASE_URL}}' TEST_DATABASE_URL='{{.SHARED_TEST_DATABASE_URL}}'
         go test -count=1 -tags integration {{.CLI_ARGS | default "./..."}}
 
   test:db:up:
@@ -163,7 +165,7 @@ tasks:
     cmds:
       - |
         cat <<'EOF' | docker compose -p {{.APP}}-test -f - up -d --wait --wait-timeout 60
-        {{.TEST_COMPOSE}}
+        {{.SHARED_TEST_COMPOSE}}
         EOF
 
   test:db:down:
@@ -172,7 +174,7 @@ tasks:
     cmds:
       - |
         cat <<'EOF' | docker compose -p {{.APP}}-test -f - down --volumes --remove-orphans
-        {{.TEST_COMPOSE}}
+        {{.SHARED_TEST_COMPOSE}}
         EOF
 
   check:
@@ -186,7 +188,7 @@ tasks:
           echo "Run: task framework:update VERSION=$required"; exit 1
         fi
       - go vet ./...
-      - go run {{.STATICCHECK}} ./...
+      - go run {{.SHARED_STATICCHECK}} ./...
       - |
         unformatted=$(gofmt -l .)
         if [ -n "$unformatted" ]; then
@@ -205,10 +207,10 @@ tasks:
   # Build ---------------------------------------------------------------------
 
   build:
-    desc: Build the app's binary into {{.BINARY}}
+    desc: Build the app's binary into {{.SHARED_BINARY}}
     dir: '{{.ROOT_DIR}}'
     cmds:
-      - CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o {{.BINARY}} .
+      - CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o {{.SHARED_BINARY}} .
 
   container:binaries:
     internal: true
@@ -227,7 +229,7 @@ tasks:
     cmds:
       - task: container:binaries
         vars: {TARGETS: '{{.LOCAL_PLATFORM}}'}
-      - docker buildx build --platform {{.LOCAL_PLATFORM}} -f Containerfile -t {{.IMAGE}}:{{.TAG}} --load .
+      - docker buildx build --platform {{.LOCAL_PLATFORM}} -f Containerfile -t {{.IMAGE}}:{{.SHARED_TAG}} --load .
 
   container:push:
     desc: Build the image for PLATFORMS and push it to REGISTRY, tagged from git describe and latest
@@ -236,10 +238,10 @@ tasks:
       vars: [REGISTRY]
     cmds:
       - task: container:binaries
-        vars: {TARGETS: '{{.PLATFORMS}}'}
+        vars: {TARGETS: '{{.SHARED_PLATFORMS}}'}
       - >-
-        docker buildx build --platform {{.PLATFORMS}} -f Containerfile
-        -t {{.REGISTRY}}/{{.IMAGE}}:{{.TAG}} -t {{.REGISTRY}}/{{.IMAGE}}:latest --push .
+        docker buildx build --platform {{.SHARED_PLATFORMS}} -f Containerfile
+        -t {{.REGISTRY}}/{{.IMAGE}}:{{.SHARED_TAG}} -t {{.REGISTRY}}/{{.IMAGE}}:latest --push .
 
   # Framework -----------------------------------------------------------------
 

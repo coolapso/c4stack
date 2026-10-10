@@ -51,6 +51,7 @@ tasks:
     desc: Run unit and integration tests against a disposable PostgreSQL
     cmds:
       - task: app:test:integration
+        vars: {CLI_ARGS: '{{.CLI_ARGS}}'}
 
   test:app:
     desc: Generate the starter app from this checkout, run its tasks and serve it end to end

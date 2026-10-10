@@ -63,6 +63,25 @@ func TestStarterApp(t *testing.T) {
 	sh(nil, "task", "test")
 	sh(nil, "task", "check")
 
+	// The app's own settings reach the shared tasks.
+	taskfile, err := os.ReadFile(filepath.Join(dir, "Taskfile.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := strings.Replace(string(taskfile), "  IMAGE: acme\n", "  IMAGE: acme\n  TEST_DB_PORT: '55999'\n  PLATFORMS: linux/riscv64\n", 1)
+	if err := os.WriteFile(filepath.Join(dir, "Taskfile.yml"), []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := sh(nil, "task", "--dry", "test:db:up"); !strings.Contains(out, "127.0.0.1:55999:5432") {
+		t.Errorf("TEST_DB_PORT did not reach the shared tasks:\n%s", out)
+	}
+	if out := sh(nil, "task", "--dry", "container:push", "REGISTRY=registry.example"); !strings.Contains(out, "--platform linux/riscv64") {
+		t.Errorf("PLATFORMS did not reach the shared tasks:\n%s", out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Taskfile.yml"), taskfile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	// Subdirectories run shared tasks from the app's root.
 	if err := os.MkdirAll(filepath.Join(dir, "static", "deep"), 0o755); err != nil {
 		t.Fatal(err)
@@ -177,7 +196,7 @@ func TestStarterApp(t *testing.T) {
 	req.Header.Set("Origin", public)
 	req.AddCookie(session)
 	req.AddCookie(csrf)
-	resp, err := client.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
