@@ -1,0 +1,35 @@
+# Linters that catch bugs. Formatting is gofmt's job; there are deliberately no
+# line-length or function-length linters.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - nilerr
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      # Deferred cleanup whose error has no one to report to.
+      exclude-functions:
+        - (io.ReadCloser).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Conn).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*text/tabwriter.Writer).Flush
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    rules:
+      # Test servers and fakes ignore write errors on purpose.
+      - path: _test\.go
+        linters: [errcheck, bodyclose]

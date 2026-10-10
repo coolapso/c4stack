@@ -1,0 +1,45 @@
+# Tasks for developing C4Stack. Apps get their shared tasks from taskfiles/app.yml
+# through their own Taskfile; this file reuses some of them.
+version: '3'
+
+vars:
+  APP: c4stack
+  ENV_PREFIX: C4STACK
+  # A port of its own, so the framework's tests can run next to an app's.
+  TEST_DB_PORT: '55433'
+  TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.TEST_DB_PORT}}/test?sslmode=disable
+
+includes:
+  app:
+    taskfile: taskfiles/app.yml
+    internal: true
+
+tasks:
+  check:
+    desc: Vet, lint, and check formatting, module tidiness and generated code
+    cmds:
+      - task: app:check
+      - golangci-lint run --build-tags integration,apptest ./...
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  test:integration:
+    desc: Run unit and integration tests against a disposable PostgreSQL
+    cmds:
+      - task: app:test:integration
+
+  test:app:
+    desc: Generate the starter app from this checkout, run its tasks and serve it end to end
+    cmds:
+      - defer: {task: app:test:db:down}
+      - task: app:test:db:down
+      - task: app:test:db:up
+      - TEST_DATABASE_URL='{{.TEST_DATABASE_URL}}' go test -count=1 -tags apptest -run TestStarterApp ./internal/scaffold/
+
+  cli:build:
+    desc: Build the generator into bin/c4stack
+    cmds:
+      - go build -o bin/c4stack ./cmd/c4stack
