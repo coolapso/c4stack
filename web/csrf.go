@@ -63,9 +63,10 @@ func CSRFToken(c *gin.Context) string {
 // CSRF rejects state-changing requests that lack a valid CSRF token or come from
 // another origin. Use it on public routes with forms; accounts.RequireSignIn already
 // includes it. API-key routes and webhooks must not use it.
+//
+// Other middleware can call CSRF directly and check c.IsAborted afterwards.
 func CSRF(c *gin.Context) {
 	if !unsafeMethod(c.Request.Method) {
-		c.Next()
 		return
 	}
 	st := current(c)
@@ -88,9 +89,7 @@ func CSRF(c *gin.Context) {
 	want := st.settings.csrfToken(st.csrfValue)
 	if !hmac.Equal([]byte(token), []byte(want)) {
 		c.AbortWithStatus(http.StatusForbidden)
-		return
 	}
-	c.Next()
 }
 
 // parseForm parses a urlencoded or multipart body. ParseMultipartForm alone would hide

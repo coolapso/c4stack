@@ -1,0 +1,113 @@
+package accounts
+
+import "github.com/coolapso/c4stack/ui"
+
+templ settingsPage(v settingsView) {
+	<div class="page-header">
+		<h1>Account settings</h1>
+	</div>
+	if v.notice != "" {
+		<p class="notice warning" role="alert">{ v.notice }</p>
+	}
+	if v.profile != nil {
+		@v.profile
+	} else {
+		<section class="panel" aria-labelledby="email-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="email-title">Email address</h2>
+				</div>
+			</div>
+			if v.account.Email != "" {
+				<p><strong>{ v.account.Email }</strong></p>
+			} else {
+				<p class="muted">Your sign-in provider has no verified address for you.</p>
+			}
+		</section>
+	}
+	<section class="panel" aria-labelledby="sign-out-title">
+		<div class="panel-header">
+			<div>
+				<h2 id="sign-out-title">Sign out</h2>
+				<p>End your session in this browser.</p>
+			</div>
+			<form method="post" action={ templ.SafeURL(v.base + "/logout") } data-busy-form>
+				@ui.CSRFField(v.c)
+				<button type="submit" class="btn small">
+					Sign out
+					@ui.Spinner()
+				</button>
+			</form>
+		</div>
+	</section>
+	<section class="panel danger" aria-labelledby="delete-title">
+		<div class="panel-header">
+			<div>
+				<h2 id="delete-title">Delete account</h2>
+				<p>Permanently remove your account and its data. This cannot be undone.</p>
+			</div>
+			if v.recent {
+				<button type="button" class="btn small danger" data-dialog-open="delete-account-dialog">Delete account</button>
+			}
+		</div>
+		if !v.recent {
+			<form class="cluster" method="post" action={ templ.SafeURL(v.base + "/logout") } data-busy-form>
+				@ui.CSRFField(v.c)
+				<input type="hidden" name="next" value={ v.signInAgain }/>
+				<p class="muted">To delete your account, sign in again first.</p>
+				<button type="submit" class="btn small">
+					Sign in again
+					@ui.Spinner()
+				</button>
+			</form>
+		}
+	</section>
+	if v.recent {
+		@ui.Dialog(ui.DialogProps{ID: "delete-account-dialog", Title: "Delete your account?", Danger: true, Autoshow: v.deleteError != ""}) {
+			<p>This permanently removes your account and its data. Records the law requires us to keep lose their link to you.</p>
+			<form class="stack" method="post" action={ templ.SafeURL(v.base + "/delete") } data-busy-form>
+				@ui.CSRFField(v.c)
+				<div class="field">
+					<label for="delete-confirmation">Type DELETE to confirm</label>
+					<input
+						id="delete-confirmation"
+						name="confirmation"
+						type="text"
+						autocomplete="off"
+						autocapitalize="characters"
+						spellcheck="false"
+						required
+						autofocus
+						if v.deleteError != "" {
+							aria-invalid="true"
+						}
+					/>
+					if v.deleteError != "" {
+						<p class="field-error" role="alert">{ v.deleteError }</p>
+					}
+				</div>
+				<div class="dialog-actions">
+					<button type="button" class="btn" data-dialog-close>Keep my account</button>
+					<button type="submit" class="btn danger">
+						Delete account
+						@ui.Spinner()
+					</button>
+				</div>
+			</form>
+		}
+	}
+}
+
+templ deletedPage(cleanupPending bool) {
+	<div class="narrow stack">
+		<div class="page-header">
+			<h1>Your account was deleted</h1>
+		</div>
+		if cleanupPending {
+			<p class="notice warning" role="alert">You can no longer sign in, but removing the rest of your data did not finish. We will complete it; you do not need to do anything.</p>
+		} else {
+			<p class="lead">Your account and its data are gone.</p>
+		}
+		<p><a href="/">Back to the home page</a></p>
+	</div>
+}
