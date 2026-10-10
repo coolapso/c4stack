@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -67,7 +68,7 @@ func (s *settings) recoverPanic(c *gin.Context) {
 		if v == nil {
 			return
 		}
-		if v == http.ErrAbortHandler {
+		if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 			panic(v)
 		}
 		current(c).logger.Error("request panic",

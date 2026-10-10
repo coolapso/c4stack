@@ -390,7 +390,7 @@ func (h *Hanko) showDialog(c *gin.Context, dialog templ.Component) {
 }
 
 func (h *Hanko) profileFailure(c *gin.Context, step string, err error) {
-	if err == errSessionRejected {
+	if errors.Is(err, errSessionRejected) {
 		redirect(c, h.loginURL(h.profile.routes(), ""))
 		return
 	}

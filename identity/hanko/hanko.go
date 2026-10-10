@@ -73,7 +73,8 @@ func New(cfg Config) (*Hanko, error) {
 	if api.User != nil || api.RawQuery != "" || api.Fragment != "" {
 		return nil, errors.New("hanko: the API URL must not contain credentials, a query or a fragment")
 	}
-	if api.Scheme != "https" && !(api.Scheme == "http" && loopback(api.Hostname())) {
+	secure := api.Scheme == "https" || (api.Scheme == "http" && loopback(api.Hostname()))
+	if !secure {
 		return nil, errors.New("hanko: the API URL must use https unless the host is loopback")
 	}
 	signedIn := cfg.SignedInPath

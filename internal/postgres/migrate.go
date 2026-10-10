@@ -171,7 +171,11 @@ func Migrate(ctx context.Context, db *sql.DB, sets []Set, logger *slog.Logger) e
 	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, int64(lockKey)); err != nil {
 		return fmt.Errorf("postgres: take the migration lock: %w", err)
 	}
-	defer conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, int64(lockKey))
+	defer func() {
+		// Closing the connection releases the lock too; unlocking keeps the pooled
+		// connection clean.
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, int64(lockKey))
+	}()
 
 	if _, err := conn.ExecContext(ctx, createTable); err != nil {
 		return fmt.Errorf("postgres: create schema_migrations: %w", err)

@@ -111,7 +111,7 @@ func Generate(opts Options) error {
 			return err
 		}
 		if _, err := f.Write(out); err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 		return f.Close()
@@ -187,15 +187,12 @@ func localCheckout(dir, appDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(filepath.Join(parent, filepath.Base(appAbs)), abs)
-	if err != nil {
-		return filepath.ToSlash(abs), nil
-	}
 	// A nearby checkout, such as a sibling directory, is written relative to the app;
 	// anything further away is written as an absolute path.
+	rel, err := filepath.Rel(filepath.Join(parent, filepath.Base(appAbs)), abs)
 	rel = filepath.ToSlash(rel)
-	if strings.Count(rel, "../") > 2 {
-		return filepath.ToSlash(abs), nil
+	if err != nil || strings.Count(rel, "../") > 2 {
+		return filepath.ToSlash(abs), nil //nolint:nilerr // an absolute path always works
 	}
 	if rel != ".." && !strings.HasPrefix(rel, "../") {
 		rel = "./" + rel
