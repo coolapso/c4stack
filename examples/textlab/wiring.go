@@ -73,7 +73,7 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 			Sender:     p.email,
 			Policy:     expiry.Policy{InactiveMonths: 12, NoticeDays: 30},
 			AppName:    "Textlab",
-			CreditsURL: cfg.PublicURL + "/console/credits",
+			CreditsURL: cfg.PublicURL + "/account/credits",
 		}); err != nil {
 			return nil, err
 		}
@@ -101,12 +101,13 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 		p.login.Mount(r, t.layout)
 	}
 
-	console := r.Group("/console", accts.RequireSignIn)
+	// The account pages, and the console's own signed-in pages beside them.
+	accts.Mount(r, t.layout)
+	console := r.Group("/account", accts.RequireSignIn)
 	console.GET("", t.overview)
 	console.GET("/jobs", t.jobs)
-	accts.Mount(console.Group("/settings"), t.layout)
-	keys.Mount(console.Group("/keys"), t.layout)
-	cr.Mount(console.Group("/credits"), t.layout)
+	keys.Mount(console, t.layout)
+	cr.Mount(console, t.layout)
 
 	r.POST("/webhooks/payments", cr.Webhook)
 

@@ -32,7 +32,7 @@ type browser struct {
 
 func newBrowser(t *testing.T, h http.Handler) *browser {
 	b := &browser{t: t, handler: h}
-	rec := b.do(http.MethodGet, "/console/keys", nil, nil)
+	rec := b.do(http.MethodGet, "/account/api-keys", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("console: %d", rec.Code)
 	}
@@ -92,12 +92,12 @@ func TestTextlab(t *testing.T) {
 	b := newBrowser(t, h)
 
 	// The default keys page creates a key inside Textlab's own layout.
-	rec := b.do(http.MethodPost, "/console/keys", url.Values{"name": {"CI"}}, http.Header{"Hx-Request": {"true"}})
+	rec := b.do(http.MethodPost, "/account/api-keys", url.Values{"name": {"CI"}}, http.Header{"Hx-Request": {"true"}})
 	key := regexp.MustCompile(`tl_[A-Za-z0-9_-]{43}`).FindString(rec.Body.String())
 	if key == "" {
 		t.Fatalf("no key in %s", rec.Body.String())
 	}
-	if page := b.do(http.MethodGet, "/console/keys", nil, nil).Body.String(); !strings.Contains(page, `class="console"`) || !strings.Contains(page, "CI") {
+	if page := b.do(http.MethodGet, "/account/api-keys", nil, nil).Body.String(); !strings.Contains(page, `class="console"`) || !strings.Contains(page, "CI") {
 		t.Fatal("the keys page is not in the console layout")
 	}
 
@@ -110,7 +110,7 @@ func TestTextlab(t *testing.T) {
 	}
 
 	// Buy €10 of credit: the checkout redirect, then the provider's signed webhook.
-	rec = b.do(http.MethodPost, "/console/credits/checkout", url.Values{"amount": {"10"}}, nil)
+	rec = b.do(http.MethodPost, "/account/credits", url.Values{"amount": {"10"}}, nil)
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://pay.example/") {
 		t.Fatalf("checkout: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -161,12 +161,12 @@ func TestTextlab(t *testing.T) {
 	if rec := api(h, http.MethodPost, "/api/v1/jobs/00000000-0000-0000-0000-000000000000/complete", key, nil, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown job: %d", rec.Code)
 	}
-	if page := b.do(http.MethodGet, "/console/jobs", nil, nil).Body.String(); !strings.Contains(page, "Done") {
+	if page := b.do(http.MethodGet, "/account/jobs", nil, nil).Body.String(); !strings.Contains(page, "Done") {
 		t.Fatal("the jobs page does not show the job")
 	}
 
 	// Deleting the account removes its jobs and keys and forfeits its credit.
-	if rec := b.do(http.MethodPost, "/console/settings/delete", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusOK {
+	if rec := b.do(http.MethodPost, "/account/delete", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusSeeOther {
 		t.Fatalf("delete: %d", rec.Code)
 	}
 	var jobs, keys int

@@ -12,14 +12,13 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
 )
 
 // TestBrowser drives the default pages inside Textlab's layout in headless Chromium,
-// where HTMX and the page script matter: the key dialog, the one-time key reveal, the
-// revoke confirmation and the live price quote. Any console error, uncaught exception
+// where HTMX and the page script matter: the key dialogs, the one-time key reveal, the
+// list's refresh after a revocation, and the live price quote. Any console error, uncaught exception
 // or CSP violation on the way fails the test.
 func TestBrowser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -38,7 +37,7 @@ func TestBrowser(t *testing.T) {
 	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// Collect console problems, and accept the revoke confirmation when it opens.
+	// Collect console problems.
 	var mu sync.Mutex
 	var problems []string
 	messages := chromedp.Console(ctx)
@@ -54,26 +53,17 @@ func TestBrowser(t *testing.T) {
 			}
 		}
 	}()
-	dialogs := chromedp.Events(ctx, page.JavascriptDialogOpening)
-	go func() {
-		for _, err := range dialogs {
-			if err != nil {
-				return
-			}
-			chromedp.Call(ctx, page.HandleJavaScriptDialog, page.HandleJavaScriptDialogParams{Accept: true})
-		}
-	}()
 
 	if _, err := chromedp.Call(ctx, network.SetCookie, network.SetCookieParams{Name: "session", Value: "ada", URL: public + "/"}); err != nil {
 		t.Fatal(err)
 	}
 	err := chromedp.Do(ctx,
-		chromedp.Navigate(public+"/console/keys"),
+		chromedp.Navigate(public+"/account/api-keys"),
 		chromedp.WaitVisible(`.console-side`),
-		chromedp.Click(`button[data-dialog-open="key-create-dialog"]`),
-		chromedp.WaitVisible(`#key-create-dialog`),
-		chromedp.SendKeys(`#key-name`, "Laptop"),
-		chromedp.Click(`#key-create-dialog button[type="submit"]`),
+		chromedp.Click(`#create-key-button`),
+		chromedp.WaitVisible(`#create-key-dialog`),
+		chromedp.SendKeys(`#create-key-name`, "Laptop"),
+		chromedp.Click(`#create-key-dialog button[type="submit"]`),
 		chromedp.WaitVisible(`#key-reveal-dialog`),
 	)
 	if err != nil {
@@ -89,12 +79,12 @@ func TestBrowser(t *testing.T) {
 	err = chromedp.Do(ctx,
 		chromedp.Click(`#key-reveal-dialog .btn.primary`),
 		chromedp.WaitNotPresent(`#key-reveal-dialog`),
-		chromedp.WaitNotVisible(`#key-create-dialog`),
+		chromedp.WaitNotVisible(`#create-key-dialog`),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := chromedp.Run(ctx, chromedp.Text(`#key-list`))
+	list, err := chromedp.Run(ctx, chromedp.Text(`#keys-list`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +93,12 @@ func TestBrowser(t *testing.T) {
 	}
 
 	err = chromedp.Do(ctx,
-		chromedp.Click(`#key-list button[type="submit"]`),
-		chromedp.WaitVisible(`#key-list .tag.danger`),
-		chromedp.Navigate(public+"/console/credits"),
+		chromedp.Click(`#keys-list button[data-dialog-open^="revoke-key-"]`),
+		chromedp.WaitVisible(`dialog[id^="revoke-key-"]`),
+		chromedp.Click(`dialog[id^="revoke-key-"] button[type="submit"]`),
+		chromedp.WaitVisible(`#keys-list button[data-dialog-open^="delete-key-"]`),
+		chromedp.Navigate(public+"/account/credits"),
+		chromedp.Clear(`#credit-amount`),
 		chromedp.SendKeys(`#credit-amount`, "10"),
 	)
 	if err != nil {

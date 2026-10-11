@@ -31,16 +31,16 @@ type navLink struct {
 }
 
 var consoleNav = []navLink{
-	{"Overview", "/console"},
-	{"Jobs", "/console/jobs"},
-	{"API keys", "/console/keys"},
-	{"Credits", "/console/credits"},
-	{"Settings", "/console/settings"},
+	{"Overview", "/account"},
+	{"Jobs", "/account/jobs"},
+	{"API keys", "/account/api-keys"},
+	{"Credits", "/account/credits"},
+	{"Settings", "/account/settings"},
 }
 
 func active(c *gin.Context, href string) bool {
 	path := c.Request.URL.Path
-	if href == "/console" {
+	if href == "/account" {
 		return path == href
 	}
 	return path == href || strings.HasPrefix(path, href+"/")

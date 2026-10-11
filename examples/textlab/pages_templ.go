@@ -31,7 +31,7 @@ func homePage() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<section class=\"hero stack\"><h1>Count words for a cent or two</h1><p class=\"lead\">Textlab is an example C4Stack app: a small paid text API with API keys, prepaid credit and jobs that hold credit while they run.</p><p class=\"cluster\"><a class=\"btn primary\" href=\"/console\">Open the console</a></p></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<section class=\"hero stack\"><h1>Count words for a cent or two</h1><p class=\"lead\">Textlab is an example C4Stack app: a small paid text API with API keys, prepaid credit and jobs that hold credit while they run.</p><p class=\"cluster\"><a class=\"btn primary\" href=\"/account\">Open the console</a></p></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -99,7 +99,7 @@ func overviewPage(s credits.Summary, activeKeys int, jobs []job) templ.Component
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</span></div></div></section><section class=\"panel\"><div class=\"panel-header\"><div><h2>Recent jobs</h2></div><a class=\"btn small\" href=\"/console/jobs\">All jobs</a></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</span></div></div></section><section class=\"panel\"><div class=\"panel-header\"><div><h2>Recent jobs</h2></div><a class=\"btn small\" href=\"/account/jobs\">All jobs</a></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

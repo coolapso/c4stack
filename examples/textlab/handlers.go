@@ -208,7 +208,7 @@ func (t *textlab) createJob(c *gin.Context) {
 
 var errJobNotFound = errors.New("job not found")
 
-// completeJob releases the hold and charges the job in one transaction. Completing a
+// completeJob settles the hold and charges the job in one transaction. Completing a
 // job twice charges it once.
 func (t *textlab) completeJob(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -236,7 +236,7 @@ func (t *textlab) completeJob(c *gin.Context) {
 		); err != nil {
 			return err
 		}
-		return tx.Debit(charged, "job:"+id, "Text job")
+		return tx.Capture(charged, "job:"+id, "Text job")
 	})
 	if errors.Is(err, errJobNotFound) {
 		apiError(c, http.StatusNotFound, "not_found", "No such job.")
