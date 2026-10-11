@@ -14,16 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// The pages' paths, relative to the router Mount gets.
-const (
-	logoutPath       = "/logout"
-	unverifiedPath   = "/auth/email-unverified"
-	settingsPath     = "/account/settings"
-	deletePath       = "/account/delete"
-	deletedPath      = "/account/deleted"
-	emailChangedPath = "/account/email-changed"
-)
-
 // profileUI is the optional profile management a provider can offer. The settings
 // page embeds it, and its routes go under the settings page's path.
 type profileUI interface {
@@ -32,55 +22,84 @@ type profileUI interface {
 	ProfileSection(c *gin.Context) templ.Component
 }
 
-// Mount adds the account pages to r, usually the app's engine:
-//   - POST /logout signs out and continues to a local "next" path, or "/".
-//   - GET /auth/email-unverified asks an identity without a verified email to confirm it.
-//   - GET /account/settings shows the email address, the provider's profile UI when it
-//     has one, signing out and account deletion.
-//   - GET and POST /account/delete confirm and delete the account.
-//   - GET /account/deleted and /account/email-changed confirm those changes after the
-//     session ended.
+// Mount adds every account page to r, usually the app's engine, at Config.Paths:
+//   - POST Logout signs out and continues to a local "next" path, or "/".
+//   - GET Unverified asks an identity without a verified email to confirm it.
+//   - GET Settings shows the email address, the provider's profile UI when it has one,
+//     signing out and account deletion. The profile UI's routes go under it.
+//   - GET and POST Delete confirm and delete the account.
+//   - GET Deleted and EmailChanged confirm those changes after the session ended.
 //
-// The /account pages use RequireSignIn. Apps add their own signed-in pages in a group
-// that uses it too.
+// The settings and delete pages use RequireSignIn. When r is a group, every path must be
+// under its prefix. To serve one of the pages yourself, register the others with Pages
+// instead.
 func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) {
-	if s.idp == nil {
-		panic("accounts: Mount needs an identity provider")
-	}
-	root := basePath(r)
-	p := pages{s: s, layout: layout, root: root}
-	r.POST(logoutPath, web.CSRF, p.logout)
-	r.GET(unverifiedPath, p.unverified)
-	r.GET(deletedPath, p.deleted)
-	r.GET(emailChangedPath, p.emailChanged)
-
-	account := r.Group("", s.RequireSignIn)
-	settings := account.Group(settingsPath)
-	if profile, ok := s.idp.(profileUI); ok {
-		settings = settings.Group("", web.AllowCSP(profile.ProfileCSP()))
-		profile.MountProfile(settings, layout, root+logoutPath, root+emailChangedPath, func(c *gin.Context, email string) error {
-			id, _ := identity.FromContext(c.Request.Context())
-			return s.setEmail(c.Request.Context(), Current(c).ID, id.Subject, email)
-		})
-		p.profile = profile
-	}
-	settings.GET("", p.settings)
-	account.GET(deletePath, p.deletePage)
-	account.POST(deletePath, p.delete)
+	p := s.Pages(layout)
+	paths := s.cfg.Paths
+	rel := relativeTo(r)
+	r.POST(rel(paths.Logout), web.CSRF, p.Logout)
+	r.GET(rel(paths.Unverified), p.Unverified)
+	r.GET(rel(paths.Deleted), p.Deleted)
+	r.GET(rel(paths.EmailChanged), p.EmailChanged)
+	settings := r.Group(rel(paths.Settings), s.RequireSignIn)
+	p.MountProfile(settings)
+	settings.GET("", p.Settings)
+	r.GET(rel(paths.Delete), s.RequireSignIn, p.DeleteForm)
+	r.POST(rel(paths.Delete), s.RequireSignIn, p.Delete)
 }
 
-func basePath(r gin.IRouter) string {
+// relativeTo returns a function that turns a URL path into a route path relative to r.
+// It panics for a path outside r's prefix, which is a programming error.
+func relativeTo(r gin.IRouter) func(string) string {
+	base := ""
 	if g, ok := r.(interface{ BasePath() string }); ok {
-		return strings.TrimSuffix(g.BasePath(), "/")
+		base = strings.TrimSuffix(g.BasePath(), "/")
 	}
-	return ""
+	return func(path string) string {
+		if base == "" {
+			return path
+		}
+		if path != base && !strings.HasPrefix(path, base+"/") {
+			panic("accounts: the path " + path + " is not under " + base)
+		}
+		return strings.TrimPrefix(path, base)
+	}
 }
 
-type pages struct {
+// Pages are the account pages' handlers, for apps that register some of them
+// themselves. Register each at its path in Config.Paths: the pages link to each other
+// there. Settings, DeleteForm and Delete need RequireSignIn, and Logout needs web.CSRF.
+type Pages struct {
 	s       *Accounts
 	layout  ui.Layout
-	root    string
 	profile profileUI
+}
+
+// Pages returns the account pages rendered in layout. It panics without an identity
+// provider, which is a programming error.
+func (s *Accounts) Pages(layout ui.Layout) *Pages {
+	if s.idp == nil {
+		panic("accounts: the account pages need an identity provider")
+	}
+	p := &Pages{s: s, layout: layout}
+	if profile, ok := s.idp.(profileUI); ok {
+		p.profile = profile
+	}
+	return p
+}
+
+// MountProfile adds the provider's profile UI routes, if it has any, to settings: a
+// group at the settings path that uses RequireSignIn. The Settings page embeds the UI.
+func (p *Pages) MountProfile(settings gin.IRouter) {
+	if p.profile == nil {
+		return
+	}
+	paths := p.s.cfg.Paths
+	p.profile.MountProfile(settings.Group("", web.AllowCSP(p.profile.ProfileCSP())), p.layout, paths.Logout, paths.EmailChanged,
+		func(c *gin.Context, email string) error {
+			id, _ := identity.FromContext(c.Request.Context())
+			return p.s.setEmail(c.Request.Context(), Current(c).ID, id.Subject, email)
+		})
 }
 
 // settingsView is what the settings and delete pages show.
@@ -88,7 +107,7 @@ type settingsView struct {
 	c       *gin.Context
 	account Account
 	profile templ.Component
-	root    string
+	paths   Paths
 	recent  bool
 	// signInAgain is the sign-out form's next path when deletion needs a fresh sign-in.
 	signInAgain string
@@ -98,18 +117,20 @@ type settingsView struct {
 	notice string
 }
 
-func (p pages) view(c *gin.Context) settingsView {
+func (p *Pages) view(c *gin.Context) settingsView {
 	id, _ := identity.FromContext(c.Request.Context())
+	paths := p.s.cfg.Paths
 	return settingsView{
 		c:           c,
 		account:     Current(c),
-		root:        p.root,
+		paths:       paths,
 		recent:      id.Recent(time.Now()),
-		signInAgain: p.s.cfg.LoginPath + "?next=" + url.QueryEscape(p.root+deletePath),
+		signInAgain: paths.Login + "?next=" + url.QueryEscape(paths.Delete),
 	}
 }
 
-func (p pages) settings(c *gin.Context) {
+// Settings is the settings page.
+func (p *Pages) Settings(c *gin.Context) {
 	v := p.view(c)
 	if p.profile != nil {
 		v.profile = p.profile.ProfileSection(c)
@@ -117,11 +138,13 @@ func (p pages) settings(c *gin.Context) {
 	p.layout.Render(c, http.StatusOK, "Account settings", settingsPage(v))
 }
 
-func (p pages) deletePage(c *gin.Context) {
+// DeleteForm asks to confirm the deletion.
+func (p *Pages) DeleteForm(c *gin.Context) {
 	p.layout.Render(c, http.StatusOK, "Delete account", deletePage(p.view(c)))
 }
 
-func (p pages) delete(c *gin.Context) {
+// Delete deletes the account once the user typed DELETE after a recent sign-in.
+func (p *Pages) Delete(c *gin.Context) {
 	v := p.view(c)
 	if c.PostForm("confirmation") != "DELETE" {
 		v.deleteError = "Type DELETE to confirm."
@@ -139,22 +162,23 @@ func (p pages) delete(c *gin.Context) {
 		v.notice = "Your account could not be deleted right now. Nothing was removed. Try again in a moment."
 		p.layout.Render(c, http.StatusBadGateway, "Delete account", deletePage(v))
 	case errors.Is(err, ErrCleanupPending):
-		p.layout.Render(c, http.StatusInternalServerError, "Account deleted", deletedPage(p.root, true))
+		p.layout.Render(c, http.StatusInternalServerError, "Account deleted", deletedPage(true))
 	case err != nil:
 		web.Log(c).Error("account deletion failed", "error", err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 	default:
-		c.Redirect(http.StatusSeeOther, p.root+deletedPath)
+		c.Redirect(http.StatusSeeOther, p.s.cfg.Paths.Deleted)
 	}
 }
 
-func (p pages) logout(c *gin.Context) {
+// Logout signs out and continues to a local "next" path, or "/".
+func (p *Pages) Logout(c *gin.Context) {
 	if err := p.s.idp.Logout(c.Writer, c.Request); err != nil {
 		web.Log(c).Warn("signing out at the identity provider failed; the browser session was cleared", "error", err)
 	}
 	next := c.PostForm("next")
 	if !localPath(next) {
-		next = p.root + "/"
+		next = "/"
 	}
 	if c.GetHeader("HX-Request") == "true" {
 		c.Header("HX-Redirect", next)
@@ -164,15 +188,19 @@ func (p pages) logout(c *gin.Context) {
 	c.Redirect(http.StatusSeeOther, next)
 }
 
-func (p pages) unverified(c *gin.Context) {
+// Unverified asks an identity without a verified email to confirm its address.
+func (p *Pages) Unverified(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	p.layout.Render(c, http.StatusOK, "Confirm your email", unverifiedPage(c, p.root, p.s.cfg.LoginPath))
+	p.layout.Render(c, http.StatusOK, "Confirm your email", unverifiedPage(c, p.s.cfg.Paths))
 }
 
-func (p pages) deleted(c *gin.Context) {
-	p.layout.Render(c, http.StatusOK, "Account deleted", deletedPage(p.root, false))
+// Deleted confirms a deletion. With "unfinished", it says that the deletion of the
+// address's account has not finished yet.
+func (p *Pages) Deleted(c *gin.Context) {
+	p.layout.Render(c, http.StatusOK, "Account deleted", deletedPage(c.Query("unfinished") != ""))
 }
 
-func (p pages) emailChanged(c *gin.Context) {
-	p.layout.Render(c, http.StatusOK, "Email updated", emailChangedPage(p.s.cfg.LoginPath))
+// EmailChanged confirms an email change, after which the user signs in again.
+func (p *Pages) EmailChanged(c *gin.Context) {
+	p.layout.Render(c, http.StatusOK, "Email updated", emailChangedPage(p.s.cfg.Paths.Login))
 }

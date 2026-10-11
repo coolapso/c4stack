@@ -39,7 +39,7 @@ func setup(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return err
 	}
-	accts, err := accounts.New(a, idp, accounts.Config{LoginPath: "/login"})
+	accts, err := accounts.New(a, idp, accounts.Config{})
 	if err != nil {
 		return err
 	}

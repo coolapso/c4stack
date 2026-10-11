@@ -39,13 +39,21 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 	}
 	if id.Email == "" || !id.EmailVerified {
 		c.Header("Cache-Control", "no-store")
-		redirect(c, unverifiedPath, http.StatusForbidden)
+		redirect(c, s.cfg.Paths.Unverified, http.StatusForbidden)
 		return
 	}
 	account, err := s.resolve(c.Request.Context(), id)
-	if errors.Is(err, errDeleted) {
+	switch {
+	case errors.Is(err, errDeleted):
 		_ = s.idp.Logout(c.Writer, c.Request)
 		s.toLogin(c)
+		return
+	case errors.Is(err, errDeletionPending):
+		c.Header("Cache-Control", "no-store")
+		redirect(c, s.cfg.Paths.Deleted+"?unfinished=1", http.StatusConflict)
+		return
+	case errors.Is(err, errStaleAddress):
+		c.AbortWithStatus(http.StatusConflict)
 		return
 	}
 	if err != nil {
@@ -59,7 +67,7 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 }
 
 func (s *Accounts) toLogin(c *gin.Context) {
-	target := s.cfg.LoginPath
+	target := s.cfg.Paths.Login
 	if c.Request.Method == http.MethodGet {
 		target += "?next=" + url.QueryEscape(c.Request.URL.RequestURI())
 	}

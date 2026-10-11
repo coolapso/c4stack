@@ -18,7 +18,8 @@ var (
 	ErrNotDeleted = errors.New("accounts: the identity provider did not delete the account")
 	// ErrCleanupPending means the identity was deleted at the provider but the local
 	// data was not. An operator must run accounts delete-local for the account; if its
-	// address signs up again first, the sign-up finishes the deletion.
+	// address signs up again first, the sign-up finishes a deletion the provider's
+	// confirmation was recorded for.
 	ErrCleanupPending = errors.New("accounts: local cleanup is pending")
 )
 
@@ -27,8 +28,9 @@ var (
 // It continues if the browser disconnects, and clears the browser session afterwards.
 //
 // The two systems are not atomic. The account is marked before the provider is asked,
-// and the mark is cleared if the provider refuses. If the local transaction fails after
-// the provider deleted the identity, Delete logs the account ID and returns
+// the mark is cleared if the provider refuses, and the provider's confirmation is
+// recorded before the local data is deleted. If the local transaction fails after the
+// provider deleted the identity, Delete logs the account ID and returns
 // ErrCleanupPending.
 func (s *Accounts) Delete(c *gin.Context) error {
 	if s.idp == nil {
@@ -55,9 +57,14 @@ func (s *Accounts) Delete(c *gin.Context) error {
 		return fmt.Errorf("%w: %w", ErrNotDeleted, err)
 	}
 	_ = s.idp.Logout(c.Writer, c.Request)
+	_, confirmErr := s.app.DB().ExecContext(ctx, `
+		UPDATE accounts
+		SET deletion_confirmed_at = now()
+		WHERE id = $1`, account.ID,
+	)
 	if err := s.deleteLocal(ctx, account.ID); err != nil {
 		web.Log(c).Error("the identity was deleted but local cleanup failed; run accounts delete-local",
-			"account_id", account.ID, "error", err)
+			"account_id", account.ID, "confirmation_recorded", confirmErr == nil, "error", err)
 		return fmt.Errorf("%w: %w", ErrCleanupPending, err)
 	}
 	return nil

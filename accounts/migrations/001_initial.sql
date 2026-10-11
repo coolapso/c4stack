@@ -9,10 +9,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Set before the identity provider is asked to delete the account, and cleared if it
--- does not. A new identity with the same email finishes the deletion instead of
--- joining the account.
+-- deletion_started_at is set before the identity provider is asked to delete the
+-- account, and cleared if it refuses. deletion_confirmed_at is set once it confirms.
+-- A sign-up with the account's address finishes a confirmed deletion, and waits while
+-- one is unconfirmed.
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS deletion_started_at timestamptz;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS deletion_confirmed_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS account_identities (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

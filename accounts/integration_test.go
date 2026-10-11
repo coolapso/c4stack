@@ -335,7 +335,7 @@ func TestLocalFailureAfterProviderDeletion(t *testing.T) {
 	f.hookErr = errors.New("app table locked")
 
 	rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "did not finish") {
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "has not finished") {
 		t.Fatalf("local failure: %d", rec.Code)
 	}
 	if len(f.idp.deleted) != 1 || f.count(t, `SELECT count(*) FROM accounts WHERE deletion_started_at IS NOT NULL`) != 1 {
@@ -355,7 +355,7 @@ func TestLocalFailureAfterProviderDeletion(t *testing.T) {
 	}
 }
 
-func TestSignUpFinishesAnUnfinishedDeletion(t *testing.T) {
+func TestSignUpFinishesAConfirmedDeletion(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	account, _ := f.accounts.resolve(ctx, f.idp.sessions["ada"])
@@ -365,6 +365,9 @@ func TestSignUpFinishesAnUnfinishedDeletion(t *testing.T) {
 	f.hookErr = errors.New("app table locked")
 	f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil)
 	f.hookErr = nil
+	if f.count(t, `SELECT count(*) FROM accounts WHERE deletion_confirmed_at IS NOT NULL`) != 1 {
+		t.Fatal("the provider's confirmation was not recorded")
+	}
 
 	again, err := f.accounts.resolve(ctx, identity.Identity{Subject: "ada-2", Email: "ada@example.com", EmailVerified: true})
 	if err != nil || again.ID == account.ID {
@@ -372,6 +375,96 @@ func TestSignUpFinishesAnUnfinishedDeletion(t *testing.T) {
 	}
 	if f.count(t, `SELECT count(*) FROM notes`) != 0 || f.count(t, `SELECT count(*) FROM accounts`) != 1 || len(f.hooked) != 2 {
 		t.Fatalf("the unfinished deletion was not finished: hooks %v", f.hooked)
+	}
+}
+
+// A sign-up must not delete an account whose deletion the provider has not confirmed,
+// even when it comes from another provider while the first is still deciding.
+func TestSignUpWaitsForAnUnconfirmedDeletion(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _ := f.accounts.resolve(ctx, f.idp.sessions["ada"])
+	if _, err := f.a.DB().ExecContext(ctx, `INSERT INTO notes VALUES ($1, 'personal')`, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.a.DB().ExecContext(ctx, `UPDATE accounts SET deletion_started_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	other := &Accounts{app: f.a, idp: &testIdentity{name: "other"}, cfg: f.accounts.cfg}
+	if _, err := other.resolve(ctx, identity.Identity{Subject: "x", Email: "ada@example.com", EmailVerified: true}); !errors.Is(err, errDeletionPending) {
+		t.Fatalf("sign-up during an unconfirmed deletion: %v", err)
+	}
+	if f.count(t, `SELECT count(*) FROM notes`) != 1 || len(f.hooked) != 0 {
+		t.Fatal("a sign-up deleted an account the provider had not confirmed deleting")
+	}
+	f.idp.sessions["newcomer"] = identity.Identity{Subject: "newcomer", Email: "ada@example.com", EmailVerified: true, SignedInAt: time.Now()}
+	if rec := f.do(http.MethodGet, "/account", "newcomer", nil, nil); rec.Header().Get("Location") != "/account/deleted?unfinished=1" {
+		t.Fatalf("sign-up page: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// The provider refuses; the owner signs in again and keeps everything.
+	if got, err := f.accounts.resolve(ctx, f.idp.sessions["ada"]); err != nil || got.ID != account.ID {
+		t.Fatalf("owner's sign-in: %v", err)
+	}
+	if b, _ := other.resolve(ctx, identity.Identity{Subject: "x", Email: "ada@example.com", EmailVerified: true}); b.ID != account.ID {
+		t.Fatal("after the mark cleared, a new identity did not join the account")
+	}
+}
+
+func TestAnotherIdentityFinishesAConfirmedDeletion(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _ := f.accounts.resolve(ctx, f.idp.sessions["ada"])
+	second := identity.Identity{Subject: "ada-elsewhere", Email: "ada@example.com", EmailVerified: true}
+	f.accounts.resolve(ctx, second)
+	if _, err := f.a.DB().ExecContext(ctx, `UPDATE accounts SET deletion_started_at = now(), deletion_confirmed_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.accounts.resolve(ctx, second); !errors.Is(err, errDeleted) {
+		t.Fatalf("sign-in to a confirmed deletion: %v", err)
+	}
+	if _, err := f.accounts.Get(ctx, account.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatal("the deletion was not finished")
+	}
+}
+
+// When an identity's verified address changes, the account's primary address follows,
+// so the old address no longer leads a new identity to the account.
+func TestThePrimaryAddressFollowsItsIdentity(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	a, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "a", Email: "old@example.com", EmailVerified: true})
+	moved, err := f.accounts.resolve(ctx, identity.Identity{Subject: "a", Email: "new@example.com", EmailVerified: true})
+	if err != nil || moved.ID != a.ID || moved.Email != "new@example.com" {
+		t.Fatalf("after the change: %+v %v", moved, err)
+	}
+	b, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "b", Email: "old@example.com", EmailVerified: true})
+	if b.ID == "" || b.ID == a.ID {
+		t.Fatal("the old address led a new identity to the account")
+	}
+	c, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "c", Email: "new@example.com", EmailVerified: true})
+	if c.ID != a.ID {
+		t.Fatal("the new address did not lead to the account")
+	}
+
+	// The new address already belongs to another account: the primary address stays,
+	// and the old address is turned away rather than joined.
+	d, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "d", Email: "d@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "d", Email: "taken@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "t", Email: "taken@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "d", Email: "taken@example.com", EmailVerified: true})
+	if got, _ := f.accounts.Get(ctx, d.ID); got.Email != "taken@example.com" {
+		t.Fatalf("d's primary address: %q", got.Email)
+	}
+	e, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "e", Email: "e@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "e", Email: "c@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "c2", Email: "c@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "e", Email: "taken@example.com", EmailVerified: true})
+	if got, _ := f.accounts.Get(ctx, e.ID); got.Email != "c@example.com" {
+		t.Fatalf("e's primary address: %q", got.Email)
+	}
+	if _, err := f.accounts.resolve(ctx, identity.Identity{Subject: "late", Email: "e@example.com", EmailVerified: true}); err != nil {
+		t.Fatalf("a free old address: %v", err)
 	}
 }
 
@@ -427,7 +520,8 @@ func TestLogout(t *testing.T) {
 	}
 }
 
-// An app can mount the default pages under a prefix and render them in its own layout.
+// An app can move the pages, mount them under a prefix and render them in its own
+// layout.
 func TestPagesInACustomLayoutAndPlace(t *testing.T) {
 	f := newFixture(t)
 	custom := ui.Layout{
@@ -443,15 +537,59 @@ func TestPagesInACustomLayoutAndPlace(t *testing.T) {
 			})
 		},
 	}
-	f.accounts.Mount(f.r.Group("/me"), custom)
+	moved, err := New(f.a, f.idp, Config{Paths: Paths{
+		Login: "/me/sign-in", Logout: "/me/sign-out", Unverified: "/me/confirm",
+		Settings: "/me/preferences", Delete: "/me/close", Deleted: "/me/closed", EmailChanged: "/me/moved",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved.Mount(f.r.Group("/me"), custom)
 
-	body := f.do(http.MethodGet, "/me/account/settings", "ada", nil, nil).Body.String()
-	for _, want := range []string{`class="my-own-layout"`, `action="/me/logout"`, `href="/me/account/delete"`, "ada@example.com"} {
+	body := f.do(http.MethodGet, "/me/preferences", "ada", nil, nil).Body.String()
+	for _, want := range []string{`class="my-own-layout"`, `action="/me/sign-out"`, `href="/me/close"`, "ada@example.com"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
-	if rec := f.do(http.MethodPost, "/me/logout", "ada", nil, nil); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/me/" {
-		t.Fatalf("relocated logout: %d %q", rec.Code, rec.Header().Get("Location"))
+	if rec := f.do(http.MethodGet, "/me/preferences", "", nil, nil); rec.Header().Get("Location") != "/me/sign-in?next=%2Fme%2Fpreferences" {
+		t.Fatalf("visitor: %q", rec.Header().Get("Location"))
+	}
+	f.idp.sessions["unverified"] = identity.Identity{Subject: "u", Email: "u@example.com", SignedInAt: time.Now()}
+	if rec := f.do(http.MethodGet, "/me/preferences", "unverified", nil, nil); rec.Header().Get("Location") != "/me/confirm" {
+		t.Fatalf("unverified: %q", rec.Header().Get("Location"))
+	}
+	if rec := f.do(http.MethodPost, "/me/sign-out", "ada", nil, nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("moved logout: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodPost, "/me/close", "ada", url.Values{"confirmation": {"DELETE"}}, nil); rec.Header().Get("Location") != "/me/closed" {
+		t.Fatalf("moved deletion: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("mounting a page outside the group's prefix did not panic")
+		}
+	}()
+	f.accounts.Mount(f.r.Group("/elsewhere"), custom)
+}
+
+// An app can serve one account page itself and keep the others.
+func TestReplaceOnePage(t *testing.T) {
+	f := newFixture(t)
+	r, _ := web.New(web.Config{PublicURL: "http://localhost:8080", SecretKey: strings.Repeat("s", 32)})
+	f.r = r
+	r.GET("/token", func(c *gin.Context) { c.String(http.StatusOK, web.CSRFToken(c)) })
+	p := f.accounts.Pages(ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets")))
+	paths := f.accounts.cfg.Paths
+	r.GET(paths.Settings, f.accounts.RequireSignIn, func(c *gin.Context) { c.String(http.StatusOK, "my settings") })
+	r.GET(paths.Delete, f.accounts.RequireSignIn, p.DeleteForm)
+	r.POST(paths.Delete, f.accounts.RequireSignIn, p.Delete)
+	r.GET(paths.Deleted, p.Deleted)
+	if body := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String(); body != "my settings" {
+		t.Fatalf("own page: %q", body)
+	}
+	if rec := f.do(http.MethodGet, "/account/delete", "ada", nil, nil); !strings.Contains(rec.Body.String(), "Type DELETE to confirm") {
+		t.Fatalf("kept page: %d", rec.Code)
 	}
 }

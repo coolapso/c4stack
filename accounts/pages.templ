@@ -28,7 +28,7 @@ templ settingsPage(v settingsView) {
 				<h2 id="delete-title">Delete account</h2>
 				<p>Permanently remove your account and its data. Records the law requires us to keep lose their link to you.</p>
 			</div>
-			<a class="btn small danger" href={ templ.SafeURL(v.root + deletePath) } data-dialog-open="delete-account-dialog">Delete account</a>
+			<a class="btn small danger" href={ templ.SafeURL(v.paths.Delete) } data-dialog-open="delete-account-dialog">Delete account</a>
 		</div>
 	</section>
 	<div class="cluster">
@@ -65,7 +65,7 @@ templ deleteForm(v settingsView, inDialog bool) {
 		</div>
 	} else {
 		<p>This permanently removes your account and its data, and any remaining credit is lost. Records the law requires us to keep lose their link to you.</p>
-		<form class="stack" method="post" action={ templ.SafeURL(v.root + deletePath) } data-busy-form>
+		<form class="stack" method="post" action={ templ.SafeURL(v.paths.Delete) } data-busy-form>
 			@ui.CSRFField(v.c)
 			<div class="field">
 				<label for="delete-confirmation">Type DELETE to confirm</label>
@@ -90,7 +90,7 @@ templ deleteForm(v settingsView, inDialog bool) {
 				if inDialog {
 					<button type="button" class="btn" data-dialog-close>Keep my account</button>
 				} else {
-					<a class="btn" href={ templ.SafeURL(v.root + settingsPath) }>Keep my account</a>
+					<a class="btn" href={ templ.SafeURL(v.paths.Settings) }>Keep my account</a>
 				}
 				<button type="submit" class="btn danger">
 					Delete account
@@ -102,7 +102,7 @@ templ deleteForm(v settingsView, inDialog bool) {
 }
 
 templ signOutForm(v settingsView, next, label, class string) {
-	<form method="post" action={ templ.SafeURL(v.root + logoutPath) } data-busy-form>
+	<form method="post" action={ templ.SafeURL(v.paths.Logout) } data-busy-form>
 		@ui.CSRFField(v.c)
 		if next != "" {
 			<input type="hidden" name="next" value={ next }/>
@@ -114,18 +114,18 @@ templ signOutForm(v settingsView, next, label, class string) {
 	</form>
 }
 
-templ deletedPage(root string, cleanupPending bool) {
+templ deletedPage(cleanupPending bool) {
 	<div class="narrow stack">
 		<div class="page-header">
 			<h1>Your account is deleted</h1>
 		</div>
 		if cleanupPending {
-			<p class="notice warning" role="alert">You can no longer sign in, but removing the rest of your data did not finish. We will complete it; you do not need to do anything.</p>
+			<p class="notice warning" role="alert">Removing your account's data has not finished. We will complete it; you do not need to do anything. You can sign up again once it is done.</p>
 		} else {
 			<p class="lead">Your account and its data are gone.</p>
 		}
 		<div class="cluster">
-			<a class="btn primary" href={ templ.SafeURL(root + "/") }>Back to the home page</a>
+			<a class="btn primary" href="/">Back to the home page</a>
 		</div>
 	</div>
 }
@@ -142,22 +142,22 @@ templ emailChangedPage(loginPath string) {
 	</div>
 }
 
-templ unverifiedPage(c *gin.Context, root, loginPath string) {
+templ unverifiedPage(c *gin.Context, paths Paths) {
 	<div class="narrow stack">
 		<div class="page-header">
 			<h1>Confirm your email first</h1>
 		</div>
 		<p class="lead">Your email address is not confirmed yet. Confirm it from the message in your inbox, then sign in again to open your account.</p>
 		<div class="cluster">
-			<form method="post" action={ templ.SafeURL(root + logoutPath) } data-busy-form>
+			<form method="post" action={ templ.SafeURL(paths.Logout) } data-busy-form>
 				@ui.CSRFField(c)
-				<input type="hidden" name="next" value={ loginPath }/>
+				<input type="hidden" name="next" value={ paths.Login }/>
 				<button type="submit" class="btn primary">
 					Sign in again
 					@ui.Spinner()
 				</button>
 			</form>
-			<a class="btn ghost" href={ templ.SafeURL(root + "/") }>Back to the home page</a>
+			<a class="btn ghost" href="/">Back to the home page</a>
 		</div>
 	</div>
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/coolapso/c4stack/app"
 	"github.com/coolapso/c4stack/identity"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 //go:embed migrations/*.sql
@@ -51,11 +52,44 @@ type Account struct {
 	CreatedAt time.Time
 }
 
+// Paths are where the account pages live, as URL paths. RequireSignIn and the pages use
+// them for every redirect and link. A zero field takes the default shown.
+type Paths struct {
+	Login        string // "/login", the identity provider's sign-in page
+	Logout       string // "/logout"
+	Unverified   string // "/auth/email-unverified"
+	Settings     string // "/account/settings"
+	Delete       string // "/account/delete"
+	Deleted      string // "/account/deleted"
+	EmailChanged string // "/account/email-changed"
+}
+
+func (p *Paths) defaults() error {
+	for _, f := range []struct {
+		path *string
+		def  string
+	}{
+		{&p.Login, "/login"},
+		{&p.Logout, "/logout"},
+		{&p.Unverified, "/auth/email-unverified"},
+		{&p.Settings, "/account/settings"},
+		{&p.Delete, "/account/delete"},
+		{&p.Deleted, "/account/deleted"},
+		{&p.EmailChanged, "/account/email-changed"},
+	} {
+		if *f.path == "" {
+			*f.path = f.def
+		}
+		if !localPath(*f.path) {
+			return fmt.Errorf("accounts: %q is not a local path", *f.path)
+		}
+	}
+	return nil
+}
+
 // Config configures the module.
 type Config struct {
-	// LoginPath is where RequireSignIn sends visitors without a session. Zero means
-	// "/login".
-	LoginPath string
+	Paths Paths
 }
 
 // Accounts is the accounts module.
@@ -76,11 +110,8 @@ func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) {
 	if err := a.Require(Migrations); err != nil {
 		return nil, err
 	}
-	if cfg.LoginPath == "" {
-		cfg.LoginPath = "/login"
-	}
-	if !localPath(cfg.LoginPath) {
-		return nil, errors.New("accounts: the login path must be a local path")
+	if err := cfg.Paths.defaults(); err != nil {
+		return nil, err
 	}
 	s := &Accounts{app: a, idp: idp, cfg: cfg}
 	a.Command(app.Command{
@@ -116,49 +147,93 @@ func (s *Accounts) Get(ctx context.Context, id string) (Account, error) {
 	return a, err
 }
 
-// errDeleted means the identity's account was deleted and must not be recreated.
-var errDeleted = errors.New("accounts: the identity was deleted")
+var (
+	// errDeleted means the identity's account was deleted and must not be recreated.
+	errDeleted = errors.New("accounts: the identity was deleted")
+	// errDeletionPending means the address belongs to an account whose deletion the
+	// identity provider has not confirmed yet.
+	errDeletionPending = errors.New("accounts: the address's account is being deleted")
+	// errStaleAddress means the address is an account's primary address, but none of
+	// the account's identities verifies it any more.
+	errStaleAddress = errors.New("accounts: the address belongs to an account that no longer uses it")
+)
 
 // resolve returns the account of a verified identity, joining or creating one on its
-// first sign-in. It keeps the identity's address current.
+// first sign-in. It keeps the identity's address current, and the account's primary
+// address with it.
 func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, error) {
 	provider := s.idp.Name()
 	var a Account
 	var email string
-	var verified, deleting bool
+	var verified, started, confirmed bool
 	err := s.app.DB().QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, a.created_at, a.deletion_started_at IS NOT NULL,
+		SELECT a.id, a.primary_email, a.created_at,
+		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
 		       i.email, i.email_verified
 		FROM account_identities i
 		JOIN accounts a ON a.id = i.account_id
 		WHERE i.provider = $1 AND i.subject = $2`, provider, id.Subject,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt, &deleting, &email, &verified)
+	).Scan(&a.ID, &a.Email, &a.CreatedAt, &started, &confirmed, &email, &verified)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return s.join(ctx, provider, id)
 	case err != nil:
 		return Account{}, err
+	case confirmed:
+		// The provider confirmed the account's deletion through another of its
+		// identities, and the local cleanup did not finish. Finish it.
+		if err := s.deleteLocal(ctx, a.ID); err != nil && !errors.Is(err, ErrNotFound) {
+			return Account{}, err
+		}
+		return Account{}, errDeleted
 	}
 	if email != id.Email || verified != id.EmailVerified {
-		if _, err := s.app.DB().ExecContext(ctx, `
-			UPDATE account_identities
-			SET email = $3, email_verified = $4, updated_at = now()
-			WHERE provider = $1 AND subject = $2`, provider, id.Subject, id.Email, id.EmailVerified,
-		); err != nil {
+		if err := s.updateAddress(ctx, provider, id, &a, email); err != nil {
 			return Account{}, err
 		}
 	}
-	if deleting {
+	if started {
 		// The identity still signs in, so the provider did not delete it.
 		if _, err := s.app.DB().ExecContext(ctx, `
 			UPDATE accounts
 			SET deletion_started_at = NULL
-			WHERE id = $1`, a.ID,
+			WHERE id = $1 AND deletion_confirmed_at IS NULL`, a.ID,
 		); err != nil {
 			return Account{}, err
 		}
 	}
 	return a, nil
+}
+
+// updateAddress records an identity's new address. When the identity held the account's
+// primary address, the primary address follows it, so the old address no longer leads
+// a new identity to the account.
+func (s *Accounts) updateAddress(ctx context.Context, provider string, id identity.Identity, a *Account, previous string) error {
+	if _, err := s.app.DB().ExecContext(ctx, `
+		UPDATE account_identities
+		SET email = $3, email_verified = $4, updated_at = now()
+		WHERE provider = $1 AND subject = $2`, provider, id.Subject, id.Email, id.EmailVerified,
+	); err != nil {
+		return err
+	}
+	if !id.EmailVerified || previous != a.Email || id.Email == a.Email {
+		return nil
+	}
+	_, err := s.app.DB().ExecContext(ctx, `
+		UPDATE accounts
+		SET primary_email = $3, updated_at = now()
+		WHERE id = $1 AND primary_email = $2`, a.ID, previous, id.Email,
+	)
+	if isUniqueViolation(err) {
+		// Another account has the new address. The old one stays primary, and a new
+		// identity with it is turned away rather than joined.
+		s.app.Log().Warn("an identity's new address belongs to another account", "account_id", a.ID)
+		return nil
+	}
+	if err == nil {
+		a.Email = id.Email
+	}
+	return err
 }
 
 // join adds a new identity to the account with its verified email, or to a new account.
@@ -204,26 +279,37 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 		return Account{}, err
 	}
 
-	var deleting bool
+	var started, confirmed, current bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, primary_email, created_at, deletion_started_at IS NOT NULL
-		FROM accounts
-		WHERE primary_email = $1
+		SELECT a.id, a.primary_email, a.created_at,
+		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
+		       EXISTS (
+		           SELECT 1
+		           FROM account_identities i
+		           WHERE i.account_id = a.id AND i.email = a.primary_email AND i.email_verified
+		       )
+		FROM accounts a
+		WHERE a.primary_email = $1
 		FOR UPDATE`, id.Email,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt, &deleting)
+	).Scan(&a.ID, &a.Email, &a.CreatedAt, &started, &confirmed, &current)
 	found := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Account{}, err
 	}
-	if found && deleting {
-		// The account's owner asked to delete it, and the provider now lets a new
-		// identity use the address, so the provider deleted the old one. Finish the
-		// deletion and start a new account.
+	switch {
+	case found && confirmed:
+		// The provider confirmed this account's deletion and the local cleanup did not
+		// finish. Finish it, and start a new account.
 		if err := s.deleteTx(ctx, tx, a.ID); err != nil {
 			return Account{}, err
 		}
 		s.app.Log().Info("finished deleting an account when its address signed up again", "account_id", a.ID)
 		found = false
+	case found && started:
+		return Account{}, errDeletionPending
+	case found && !current:
+		s.app.Log().Warn("a new identity's address is the primary address of an account none of whose identities uses it; an operator must decide", "account_id", a.ID)
+		return Account{}, errStaleAddress
 	}
 	if !found {
 		if err := tx.QueryRowContext(ctx, `
@@ -241,6 +327,11 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 		return Account{}, err
 	}
 	return a, tx.Commit()
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // lock takes a transaction-scoped advisory lock on a name.
