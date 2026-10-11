@@ -326,24 +326,8 @@ func adopt(ctx context.Context, conn *sql.Conn, sets []Set, files map[string][]m
 	}
 	// The single history's keys, such as a unique version or name, would stop two
 	// namespaces from both having a version 1.
-	keys, err := tx.QueryContext(ctx, `
-		SELECT conname
-		FROM pg_constraint
-		WHERE conrelid = 'schema_migrations'::regclass AND contype IN ('p', 'u')`)
+	names, err := registryKeys(ctx, tx)
 	if err != nil {
-		return err
-	}
-	var names []string
-	for keys.Next() {
-		var name string
-		if err := keys.Scan(&name); err != nil {
-			keys.Close()
-			return err
-		}
-		names = append(names, name)
-	}
-	keys.Close()
-	if err := keys.Err(); err != nil {
 		return err
 	}
 	for _, name := range names {
@@ -358,6 +342,28 @@ func adopt(ctx context.Context, conn *sql.Conn, sets []Set, files map[string][]m
 		return err
 	}
 	return tx.Commit()
+}
+
+// registryKeys returns the names of schema_migrations' primary key and unique
+// constraints.
+func registryKeys(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT conname
+		FROM pg_constraint
+		WHERE conrelid = 'schema_migrations'::regclass AND contype IN ('p', 'u')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
 }
 
 func quoteIdent(name string) string {

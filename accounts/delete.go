@@ -96,26 +96,8 @@ func (s *Accounts) deleteTx(ctx context.Context, tx *sql.Tx, accountID string) e
 	if err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT provider, subject
-		FROM account_identities
-		WHERE account_id = $1
-		ORDER BY provider, subject`, accountID,
-	)
+	identities, err := identitiesOf(ctx, tx, accountID)
 	if err != nil {
-		return err
-	}
-	var identities [][2]string
-	for rows.Next() {
-		var provider, subject string
-		if err := rows.Scan(&provider, &subject); err != nil {
-			rows.Close()
-			return err
-		}
-		identities = append(identities, [2]string{provider, subject})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 	for _, i := range identities {
@@ -140,6 +122,29 @@ func (s *Accounts) deleteTx(ctx context.Context, tx *sql.Tx, accountID string) e
 		WHERE id = $1`, accountID,
 	)
 	return err
+}
+
+// identitiesOf returns the provider and subject of each of an account's identities.
+func identitiesOf(ctx context.Context, tx *sql.Tx, accountID string) ([][2]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT provider, subject
+		FROM account_identities
+		WHERE account_id = $1
+		ORDER BY provider, subject`, accountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var identities [][2]string
+	for rows.Next() {
+		var provider, subject string
+		if err := rows.Scan(&provider, &subject); err != nil {
+			return nil, err
+		}
+		identities = append(identities, [2]string{provider, subject})
+	}
+	return identities, rows.Err()
 }
 
 func (s *Accounts) deleteLocalCommand(ctx context.Context, args []string) error {

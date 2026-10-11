@@ -199,37 +199,8 @@ type due struct {
 func (x *Expiry) warnAll(ctx context.Context, now time.Time, r *Result) error {
 	after := ""
 	for {
-		rows, err := x.app.DB().QueryContext(ctx, `
-			WITH activity AS (`+activity+`)
-			SELECT a.id, a.primary_email, c.balance, c.last_activity,
-			       GREATEST(
-			           c.last_activity + make_interval(months => $1),
-			           $3::timestamptz + make_interval(days => $2)
-			       )
-			FROM activity c
-			JOIN accounts a ON a.id = c.account_id
-			WHERE c.balance > 0
-			    AND c.last_activity + make_interval(months => $1) - make_interval(days => $2) <= $3
-			    AND (a.credit_expiry_warned_at IS NULL OR a.credit_expiry_warned_at < c.last_activity)
-			    AND a.id::text > $4
-			ORDER BY a.id::text
-			LIMIT $5`,
-			x.cfg.Policy.InactiveMonths, x.cfg.Policy.NoticeDays, now, after, batchSize,
-		)
+		batch, err := x.dueWarnings(ctx, now, after)
 		if err != nil {
-			return err
-		}
-		var batch []due
-		for rows.Next() {
-			var d due
-			if err := rows.Scan(&d.accountID, &d.email, &d.balance, &d.lastActivity, &d.expiresAt); err != nil {
-				rows.Close()
-				return err
-			}
-			batch = append(batch, d)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
 			return err
 		}
 		for _, d := range batch {
@@ -245,6 +216,41 @@ func (x *Expiry) warnAll(ctx context.Context, now time.Time, r *Result) error {
 		}
 		after = batch[len(batch)-1].accountID
 	}
+}
+
+// dueWarnings returns the next batch of accounts due for a warning, after the account ID
+// after.
+func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) ([]due, error) {
+	rows, err := x.app.DB().QueryContext(ctx, `
+		WITH activity AS (`+activity+`)
+		SELECT a.id, a.primary_email, c.balance, c.last_activity,
+		       GREATEST(
+		           c.last_activity + make_interval(months => $1),
+		           $3::timestamptz + make_interval(days => $2)
+		       )
+		FROM activity c
+		JOIN accounts a ON a.id = c.account_id
+		WHERE c.balance > 0
+		    AND c.last_activity + make_interval(months => $1) - make_interval(days => $2) <= $3
+		    AND (a.credit_expiry_warned_at IS NULL OR a.credit_expiry_warned_at < c.last_activity)
+		    AND a.id::text > $4
+		ORDER BY a.id::text
+		LIMIT $5`,
+		x.cfg.Policy.InactiveMonths, x.cfg.Policy.NoticeDays, now, after, batchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var batch []due
+	for rows.Next() {
+		var d due
+		if err := rows.Scan(&d.accountID, &d.email, &d.balance, &d.lastActivity, &d.expiresAt); err != nil {
+			return nil, err
+		}
+		batch = append(batch, d)
+	}
+	return batch, rows.Err()
 }
 
 // warn sends one warning and records its delivery. If recording fails, the next run
@@ -283,31 +289,8 @@ const expired = `
 func (x *Expiry) expireAll(ctx context.Context, now time.Time, r *Result) error {
 	after := ""
 	for {
-		rows, err := x.app.DB().QueryContext(ctx, `
-			WITH activity AS (`+activity+`)
-			SELECT a.id
-			FROM activity c
-			JOIN accounts a ON a.id = c.account_id
-			WHERE `+expired+`
-			    AND a.id::text > $4
-			ORDER BY a.id::text
-			LIMIT $5`,
-			x.cfg.Policy.InactiveMonths, x.cfg.Policy.NoticeDays, now, after, batchSize,
-		)
+		batch, err := x.dueExpiries(ctx, now, after)
 		if err != nil {
-			return err
-		}
-		var batch []string
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
-			batch = append(batch, id)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
 			return err
 		}
 		for _, id := range batch {
@@ -325,6 +308,35 @@ func (x *Expiry) expireAll(ctx context.Context, now time.Time, r *Result) error 
 		}
 		after = batch[len(batch)-1]
 	}
+}
+
+// dueExpiries returns the next batch of accounts whose credit is due to expire, after
+// the account ID after.
+func (x *Expiry) dueExpiries(ctx context.Context, now time.Time, after string) ([]string, error) {
+	rows, err := x.app.DB().QueryContext(ctx, `
+		WITH activity AS (`+activity+`)
+		SELECT a.id
+		FROM activity c
+		JOIN accounts a ON a.id = c.account_id
+		WHERE `+expired+`
+		    AND a.id::text > $4
+		ORDER BY a.id::text
+		LIMIT $5`,
+		x.cfg.Policy.InactiveMonths, x.cfg.Policy.NoticeDays, now, after, batchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var batch []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		batch = append(batch, id)
+	}
+	return batch, rows.Err()
 }
 
 // expire removes the account's balance under its lock, after checking that the credit

@@ -289,8 +289,12 @@ func (s *Accounts) setEmail(ctx context.Context, accountID, subject, email strin
 		if err != nil {
 			return fmt.Errorf("accounts: update email: %w", err)
 		}
-		if n, err := res.RowsAffected(); err != nil || n != 1 {
-			return fmt.Errorf("accounts: update email: %d rows, %v", n, err)
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("accounts: update email: %w", err)
+		}
+		if n != 1 {
+			return fmt.Errorf("accounts: updating the email changed %d rows", n)
 		}
 	}
 	return tx.Commit()

@@ -103,7 +103,7 @@ func TestUpgrade(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 	var account string
-	if err := db.QueryRowContext(ctx, `INSERT INTO accounts (provider, subject) VALUES ('hanko', 'ada') RETURNING id`).Scan(&account); err != nil {
+	if err := db.QueryRowContext(ctx, `INSERT INTO accounts (primary_email) VALUES ('ada@example.com') RETURNING id`).Scan(&account); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO notes VALUES ($1, 'kept across the upgrade')`, account); err != nil {
