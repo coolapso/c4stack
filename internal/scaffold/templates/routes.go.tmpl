@@ -39,9 +39,13 @@ func routes(cfg config, idp *hanko.Hanko, accts *accounts.Accounts) (http.Handle
 		layout.Render(c, http.StatusOK, "", homePage())
 	})
 
-	// Sign-in, and the signed-in account pages.
+	// Sign-in, the account pages, and the app's own signed-in pages.
 	idp.Mount(r, layout)
-	accts.Mount(r.Group("/account", accts.RequireSignIn), layout)
+	accts.Mount(r, layout)
+	account := r.Group("/account", accts.RequireSignIn)
+	account.GET("", func(c *gin.Context) {
+		layout.Render(c, http.StatusOK, "Your account", accountPage(accounts.Current(c)))
+	})
 
 	return r, nil
 }

@@ -23,8 +23,10 @@ app was generated, they were:
 
 ## Rules
 
-- Signed-in browser routes go in a group with `accts.RequireSignIn`; public forms use
-  `web.CSRF`. Never protect an API-key route with either.
+- Signed-in browser routes go in the `/account` group in `routes.go`, which uses
+  `accts.RequireSignIn`; public forms use `web.CSRF`. Never protect an API-key route
+  with either. C4Stack's own account pages are under `/account/settings` and
+  `/account/delete`.
 - Read the signed-in account with `accounts.Current(c)`.
 - Render pages with `layout.Render`; forms include `@ui.CSRFField(c)`.
 - New tables with personal data reference `accounts (id) ON DELETE CASCADE`, or are
@@ -32,9 +34,10 @@ app was generated, they were:
 - Never change a migration file once it has been applied anywhere. Add a new file.
 - Enable a module (`apikeys`, `credits`, `credits/expiry`) by adding its `Migrations` to
   the list in `main.go` before the app's own, constructing it in `setup` and mounting
-  its pages.
-- Prices are set on the server. Take credit only with `Debit` and a reference that makes
-  a retry safe; reserve long work with `WithAccount` and the `Holds` function.
+  its pages on the `/account` group.
+- Prices are set on the server. Take credit with `Debit` and a reference that makes a
+  retry safe. For long work, reserve credit in an app table under `WithAccount`, report
+  it through the `Holds` function, and charge it with `Capture` when the work is done.
 - Pass `c.Request.Context()` to database calls, never the `*gin.Context`.
 - To change a shared task, list it under `excludes` in `Taskfile.yml` and define your own.
 - Run `task templ:generate` after editing `.templ` files and commit the generated code.

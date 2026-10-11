@@ -175,7 +175,10 @@ func TestStarterApp(t *testing.T) {
 	}
 
 	session := &http.Cookie{Name: "hanko", Value: "valid"}
-	resp, body = get("/account", session)
+	if resp, body := get("/account", session); resp.StatusCode != http.StatusOK || !strings.Contains(body, "You are signed in as ada@example.com") {
+		t.Fatalf("account: %d", resp.StatusCode)
+	}
+	resp, body = get("/account/settings", session)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "ada@example.com") || !strings.Contains(body, "Delete account") {
 		t.Fatalf("settings: %d", resp.StatusCode)
 	}
@@ -200,10 +203,12 @@ func TestStarterApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(deleted), "Your account was deleted") {
-		t.Fatalf("delete: %d\n%s", resp.StatusCode, deleted)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account/deleted" {
+		t.Fatalf("delete: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, body := get("/account/deleted"); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Your account is deleted") {
+		t.Fatalf("deleted page: %d", resp.StatusCode)
 	}
 	if !hanko.deleted() {
 		t.Fatal("the identity was not deleted at the provider")
