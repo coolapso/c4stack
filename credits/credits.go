@@ -1,10 +1,11 @@
 // Package credits keeps prepaid credit for accounts: a ledger, purchases through a
-// payment provider, and debits the app makes for its work.
+// payment provider, and the charges the app makes for its work.
 //
-// One credit is one EUR cent. Every mutation locks the account row, is idempotent per
-// account and reference, and appends to the ledger; corrections are new entries. Apps
-// that reserve credit for work in progress report those holds through Config.Holds,
-// and use WithAccount to change their own rows under the same lock.
+// One credit is one EUR cent. Every mutation locks the account row and appends to the
+// ledger; corrections are new entries. Purchases and reversals are idempotent per
+// payment, and the app's charges per account and reference. Apps that reserve credit
+// for work in progress report those holds through Config.Holds, and use WithAccount
+// to change their own rows under the same lock.
 package credits
 
 import (
@@ -12,9 +13,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
-	"fmt"
 	"io/fs"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -50,7 +49,8 @@ var (
 
 // Policy holds the business rules for purchases. They are the app's to choose.
 type Policy struct {
-	// MinPurchaseCents and MaxPurchaseCents bound the credit one purchase buys.
+	// MinPurchaseCents and MaxPurchaseCents bound the credit one purchase buys. The
+	// charge, fee included, cannot exceed MaxChargeCents either.
 	MinPurchaseCents int64
 	MaxPurchaseCents int64
 	// FeeBasisPoints and FeeFixedCents add a fee on top of the credit, grossed up so it
@@ -59,11 +59,18 @@ type Policy struct {
 	FeeFixedCents  int64
 }
 
+// MaxChargeCents is the largest charge one purchase can have, fee included.
+const MaxChargeCents = 99_999_999
+
 // Config configures the module.
 type Config struct {
-	// Payments takes purchases.
+	// Payments takes purchases. Nil turns purchases off: the balance and history stay,
+	// the pages say that buying credit is not available, and Webhook answers 404. A
+	// process that only spends credit, such as an API gateway, holds no payment
+	// configuration this way.
 	Payments payments.Provider
-	Policy   Policy
+	// Policy is required with Payments.
+	Policy Policy
 	// Holds reports how much of an account's credit the app has reserved for work in
 	// progress. It runs inside the transaction that holds the account lock, and must
 	// only read. Nil means the app keeps no holds.
@@ -86,14 +93,12 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Credits, error) {
 			return nil, err
 		}
 	}
-	if cfg.Payments == nil {
-		return nil, errors.New("credits: a payment provider is required")
-	}
 	p := cfg.Policy
 	switch {
+	case cfg.Payments == nil:
 	case p.MinPurchaseCents <= 0 || p.MaxPurchaseCents < p.MinPurchaseCents:
 		return nil, errors.New("credits: set MinPurchaseCents above zero and MaxPurchaseCents at least as high")
-	case p.MaxPurchaseCents > 99_999_999:
+	case p.MaxPurchaseCents > MaxChargeCents:
 		return nil, errors.New("credits: MaxPurchaseCents cannot exceed 99,999,999")
 	case p.FeeBasisPoints < 0 || p.FeeBasisPoints >= 10_000 || p.FeeFixedCents < 0:
 		return nil, errors.New("credits: fees must be at least zero, and basis points below 10,000")
@@ -108,11 +113,23 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Credits, error) {
 	return cr, nil
 }
 
+// The ledger's entry kinds.
+const (
+	KindTopUp      = "top_up"     // a purchase
+	KindUsage      = "usage"      // the app's charge for work
+	KindRefund     = "refund"     // a refunded purchase
+	KindChargeback = "chargeback" // a disputed purchase
+	KindAdjustment = "adjustment" // an operator's or the app's correction
+	KindExpiry     = "expiry"     // credit that expired unused
+	KindForfeit    = "forfeit"    // credit left when the account was deleted
+)
+
 // Entry is one ledger entry.
 type Entry struct {
-	ID          int64
+	ID          string
 	Kind        string
 	AmountCents int64
+	// Reference is the app's reference for usage and adjustments, or empty.
 	Reference   string
 	Description string
 	CreatedAt   time.Time
@@ -174,7 +191,7 @@ func (t *Tx) Debit(cents int64, reference, description string) error {
 	if err := checkEntry(reference, description); err != nil {
 		return err
 	}
-	if done, err := t.recorded("debit", -cents, reference); done || err != nil {
+	if done, err := t.recorded(KindUsage, -cents, reference); done || err != nil {
 		return err
 	}
 	avail, err := t.Available()
@@ -184,7 +201,25 @@ func (t *Tx) Debit(cents int64, reference, description string) error {
 	if cents > avail {
 		return ErrInsufficient
 	}
-	return t.insert("debit", -cents, reference, description, nil)
+	return t.insert(KindUsage, -cents, &reference, description)
+}
+
+// Capture charges for work a hold reserved, once the app has settled the hold in the
+// same transaction. Unlike Debit it does not check the available credit: the hold did
+// that when the work started, and finished work is charged even if a refund lowered
+// the balance since. Repeating a capture with the same reference and amount succeeds
+// without charging twice.
+func (t *Tx) Capture(cents int64, reference, description string) error {
+	if cents <= 0 {
+		return ErrInvalid
+	}
+	if err := checkEntry(reference, description); err != nil {
+		return err
+	}
+	if done, err := t.recorded(KindUsage, -cents, reference); done || err != nil {
+		return err
+	}
+	return t.insert(KindUsage, -cents, &reference, description)
 }
 
 // adjust records an operator or app correction, positive or negative. It may take the
@@ -196,22 +231,20 @@ func (t *Tx) adjust(cents int64, reference, description string) error {
 	if err := checkEntry(reference, description); err != nil {
 		return err
 	}
-	if done, err := t.recorded("adjustment", cents, reference); done || err != nil {
+	if done, err := t.recorded(KindAdjustment, cents, reference); done || err != nil {
 		return err
 	}
-	return t.insert("adjustment", cents, reference, description, nil)
+	return t.insert(KindAdjustment, cents, &reference, description)
 }
 
 // Expire removes credit that expired, as one expiry entry. The credits/expiry module
-// calls it; apps take credit with Debit.
-func (t *Tx) Expire(cents int64, reference string) error {
-	if cents <= 0 || !strings.HasPrefix(reference, "expiry:") || len(reference) > 128 {
+// calls it after checking, under the account lock, that the credit is due; apps take
+// credit with Debit.
+func (t *Tx) Expire(cents int64) error {
+	if cents <= 0 {
 		return ErrInvalid
 	}
-	if done, err := t.recorded("expiry", -cents, reference); done || err != nil {
-		return err
-	}
-	return t.insert("expiry", -cents, reference, "Credit expired after inactivity", nil)
+	return t.insert(KindExpiry, -cents, nil, "Credit expired after inactivity")
 }
 
 // recorded reports whether the reference already has the same entry, and returns
@@ -235,27 +268,21 @@ func (t *Tx) recorded(kind string, cents int64, reference string) (bool, error) 
 	return true, nil
 }
 
-func (t *Tx) insert(kind string, cents int64, reference, description string, intentID *string) error {
+// insert appends an entry for the account. Entries for payments are written by the
+// webhook, which sets the payment's columns as well.
+func (t *Tx) insert(kind string, cents int64, reference *string, description string) error {
 	_, err := t.tx.ExecContext(t.ctx, `
-		INSERT INTO credit_ledger (account_id, intent_id, kind, amount_cents, reference, description)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		t.accountID, intentID, kind, cents, reference, description,
+		INSERT INTO credit_ledger (account_id, kind, amount_cents, reference, description)
+		VALUES ($1, $2, $3, $4, $5)`,
+		t.accountID, kind, cents, reference, description,
 	)
 	return err
 }
 
-// reserved are the reference prefixes the framework writes itself.
-var reserved = []string{"purchase:", "refund:", "dispute:", "expiry:", "forfeit:"}
-
 func checkEntry(reference, description string) error {
-	if reference == "" || len(reference) > 128 || !utf8.ValidString(reference) ||
+	if reference == "" || utf8.RuneCountInString(reference) > 128 || !utf8.ValidString(reference) ||
 		utf8.RuneCountInString(description) > 160 || !utf8.ValidString(description) {
 		return ErrInvalid
-	}
-	for _, prefix := range reserved {
-		if strings.HasPrefix(reference, prefix) {
-			return fmt.Errorf("%w: references starting with %q are reserved", ErrInvalid, prefix)
-		}
 	}
 	return nil
 }
@@ -329,35 +356,43 @@ func (cr *Credits) Summary(ctx context.Context, accountID string) (Summary, erro
 	return Summary{BalanceCents: balance, HeldCents: held, AvailableCents: available(balance, held)}, tx.Commit()
 }
 
-// History returns up to limit entries older than the entry with ID before, newest
-// first. Zero before starts at the newest entry. Pass the last entry's ID to continue.
-func (cr *Credits) History(ctx context.Context, accountID string, before int64, limit int) ([]Entry, error) {
-	if limit < 1 || limit > 100 {
-		return nil, errors.New("credits: the history limit must be between 1 and 100")
+// MaxHistoryPage is the last page History serves, so a huge page number cannot make
+// the query skip millions of rows.
+const MaxHistoryPage = 100_000
+
+// History returns one page of an account's entries, newest first, and whether more
+// follow. Pages start at 1.
+func (cr *Credits) History(ctx context.Context, accountID string, page, perPage int) ([]Entry, bool, error) {
+	if perPage < 1 || perPage > 100 {
+		return nil, false, errors.New("credits: perPage must be between 1 and 100")
 	}
-	if before <= 0 {
-		before = 1<<63 - 1
-	}
+	page = min(max(page, 1), MaxHistoryPage)
 	rows, err := cr.app.DB().QueryContext(ctx, `
-		SELECT id, kind, amount_cents, reference, description, created_at
+		SELECT id, kind, amount_cents, COALESCE(reference, ''), description, created_at
 		FROM credit_ledger
-		WHERE account_id = $1 AND id < $2
-		ORDER BY id DESC
-		LIMIT $3`, accountID, before, limit,
+		WHERE account_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2 OFFSET $3`, accountID, perPage+1, (page-1)*perPage,
 	)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var entries []Entry
 	for rows.Next() {
 		var e Entry
 		if err := rows.Scan(&e.ID, &e.Kind, &e.AmountCents, &e.Reference, &e.Description, &e.CreatedAt); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		entries = append(entries, e)
 	}
-	return entries, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(entries) > perPage {
+		return entries[:perPage], true, nil
+	}
+	return entries, false, nil
 }
 
 // forfeit posts a deleted account's positive balance as forfeited. It runs inside the
@@ -369,5 +404,5 @@ func (cr *Credits) forfeit(ctx context.Context, tx *sql.Tx, accountID string) er
 	if err != nil || balance <= 0 {
 		return err
 	}
-	return t.insert("forfeit", -balance, "forfeit:"+accountID, "Credit forfeited when the account was deleted", nil)
+	return t.insert(KindForfeit, -balance, nil, "Credit forfeited when the account was deleted")
 }

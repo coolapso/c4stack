@@ -122,7 +122,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f.r.GET("/token", func(c *gin.Context) { c.String(http.StatusOK, web.CSRFToken(c)) })
-	f.credits.Mount(f.r.Group("/credits", f.accounts.RequireSignIn), ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets")))
+	f.credits.Mount(f.r.Group("/account", f.accounts.RequireSignIn), ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets")))
 	f.r.POST("/webhooks/payments", f.credits.Webhook)
 	f.r.POST("/delete-account", f.accounts.RequireSignIn, func(c *gin.Context) {
 		if err := f.accounts.Delete(c); err != nil {
@@ -144,15 +144,15 @@ func (f *fixture) deleteAccount(t *testing.T, subject string) {
 // account creates an account by signing in as subject.
 func (f *fixture) account(t *testing.T, subject string) string {
 	t.Helper()
-	f.browser(http.MethodGet, "/credits", subject, nil)
+	f.browser(http.MethodGet, "/account/credits", subject, nil)
 	var id string
-	if err := f.a.DB().QueryRow(`SELECT id FROM accounts WHERE subject = $1`, subject).Scan(&id); err != nil {
+	if err := f.a.DB().QueryRow(`SELECT account_id FROM account_identities WHERE subject = $1`, subject).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
 }
 
-func (f *fixture) browser(method, path, session string, form url.Values) *httptest.ResponseRecorder {
+func (f *fixture) browser(method, path, session string, form url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	tok := httptest.NewRecorder()
 	f.r.ServeHTTP(tok, httptest.NewRequest(http.MethodGet, "http://localhost:8080/token", nil))
 	if form == nil {
@@ -166,6 +166,9 @@ func (f *fixture) browser(method, path, session string, form url.Values) *httpte
 		req.AddCookie(c)
 	}
 	req.AddCookie(&http.Cookie{Name: "session", Value: session})
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
 	rec := httptest.NewRecorder()
 	f.r.ServeHTTP(rec, req)
 	return rec
@@ -233,7 +236,7 @@ func TestDebitsAreIdempotentAndBounded(t *testing.T) {
 	if got := f.balance(t, ada); got != 900 {
 		t.Fatalf("balance %d", got)
 	}
-	for _, ref := range []string{"", "purchase:x", "forfeit:x", strings.Repeat("r", 129)} {
+	for _, ref := range []string{"", strings.Repeat("r", 129)} {
 		if err := f.credits.Debit(ctx, ada, 1, ref, ""); !errors.Is(err, ErrInvalid) {
 			t.Errorf("reference %q: %v", ref, err)
 		}
@@ -312,7 +315,7 @@ func TestHoldsAndSharedTransactions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s, _ := f.credits.Summary(ctx, ada); s.BalanceCents != 350 || s.HeldCents != 0 {
-		t.Fatalf("after capture %+v", s)
+		t.Fatalf("after settling %+v", s)
 	}
 	// An error rolls back the app's rows and the ledger together.
 	failure := errors.New("upstream failed")
@@ -347,8 +350,8 @@ func TestLedgerIsAppendOnlyAndAnonymisedOnDeletion(t *testing.T) {
 			t.Errorf("%s succeeded", stmt)
 		}
 	}
-	history, _ := f.credits.History(ctx, ada, 0, 10)
-	if len(history) != 1 || history[0].Description != "Personal note" {
+	history, _, _ := f.credits.History(ctx, ada, 1, 10)
+	if len(history) != 1 || history[0].Description != "Personal note" || history[0].Kind != KindAdjustment {
 		t.Fatalf("history %+v", history)
 	}
 
@@ -452,7 +455,7 @@ func TestWebhooksThatNeedAnOperator(t *testing.T) {
 	}
 	f.webhook(payments.Event{ID: "evt_late_refund", Kind: payments.Refunded, Reference: q.IntentID, AmountCents: q.ChargeCents, Currency: "EUR"}, "valid")
 	var status string
-	f.a.DB().QueryRow(`SELECT status FROM payment_intents WHERE id = $1`, q.IntentID).Scan(&status)
+	f.a.DB().QueryRow(`SELECT provider_status FROM payment_intents WHERE id = $1`, q.IntentID).Scan(&status)
 	if got := f.reviews(t); got[len(got)-1] != "paid_after_account_deleted" || status != "refunded" {
 		t.Fatalf("late payment: reviews %v, status %q", got, status)
 	}
@@ -468,20 +471,63 @@ func TestWebhooksThatNeedAnOperator(t *testing.T) {
 	}
 }
 
-func TestHistoryPagesStayStable(t *testing.T) {
+func TestCaptureSettlesAHeldCharge(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ada := f.account(t, "ada")
+	f.credits.Adjust(ctx, ada, 100, "seed", "")
+	err := f.credits.WithAccount(ctx, ada, func(tx *Tx) error {
+		_, err := tx.SQL().ExecContext(ctx, `INSERT INTO jobs (id, account_id, reserved_cents) VALUES ('a', $1, 100)`, ada)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A correction lowers the balance while the job runs; the finished job is still
+	// charged in full.
+	f.credits.Adjust(ctx, ada, -60, "correction", "")
+	capture := func() error {
+		return f.credits.WithAccount(ctx, ada, func(tx *Tx) error {
+			if _, err := tx.SQL().ExecContext(ctx, `UPDATE jobs SET done = true WHERE id = 'a'`); err != nil {
+				return err
+			}
+			return tx.Capture(100, "job:a", "Job a")
+		})
+	}
+	if err := capture(); err != nil {
+		t.Fatal(err)
+	}
+	if err := capture(); err != nil {
+		t.Fatalf("repeated capture: %v", err)
+	}
+	if s, _ := f.credits.Summary(ctx, ada); s.BalanceCents != -60 || s.AvailableCents != -60 {
+		t.Fatalf("after capture %+v", s)
+	}
+	history, _, _ := f.credits.History(ctx, ada, 1, 10)
+	if history[0].Kind != KindUsage || history[0].Reference != "job:a" || Label(history[0]) != "Job a" {
+		t.Fatalf("history %+v", history)
+	}
+}
+
+func TestHistoryPages(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	ada := f.account(t, "ada")
 	for i := range 25 {
 		f.credits.Adjust(ctx, ada, int64(i+1), "seed:"+string(rune('a'+i)), "")
 	}
-	first, _ := f.credits.History(ctx, ada, 0, 10)
-	f.credits.Adjust(ctx, ada, 100, "new", "")
-	second, _ := f.credits.History(ctx, ada, first[9].ID, 10)
-	if len(second) != 10 || second[0].AmountCents != first[9].AmountCents-1 {
-		t.Fatalf("second page starts at %d after %d", second[0].AmountCents, first[9].AmountCents)
+	first, more, _ := f.credits.History(ctx, ada, 1, 10)
+	if len(first) != 10 || !more || first[0].AmountCents != 25 {
+		t.Fatalf("first page: %d entries, more %v, newest %d", len(first), more, first[0].AmountCents)
 	}
-	if _, err := f.credits.History(ctx, ada, 0, 101); err == nil {
+	last, more, _ := f.credits.History(ctx, ada, 3, 10)
+	if len(last) != 5 || more || last[4].AmountCents != 1 {
+		t.Fatalf("last page: %d entries, more %v", len(last), more)
+	}
+	if same, _, _ := f.credits.History(ctx, ada, 0, 10); same[0].ID != first[0].ID {
+		t.Fatal("page 0 is not the first page")
+	}
+	if _, _, err := f.credits.History(ctx, ada, 1, 101); err == nil {
 		t.Fatal("accepted a page of 101")
 	}
 }
@@ -491,30 +537,102 @@ func TestCreditsPage(t *testing.T) {
 	ada := f.account(t, "ada")
 	f.credits.Adjust(context.Background(), ada, 1234, "seed", "Welcome credit")
 
-	rec := f.browser(http.MethodGet, "/credits", "ada", nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "€12.34") || !strings.Contains(rec.Body.String(), "Welcome credit") {
+	rec := f.browser(http.MethodGet, "/account/credits", "ada", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "€12.34") || !strings.Contains(rec.Body.String(), `hx-get="/account/credits/summary"`) {
 		t.Fatalf("page: %d", rec.Code)
 	}
 	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self' https://pay.example") {
 		t.Errorf("CSP %q", csp)
 	}
-	if body := f.browser(http.MethodGet, "/credits/quote?amount=10", "ada", nil).Body.String(); !strings.Contains(body, "€10.83") {
+	if body := f.browser(http.MethodGet, "/account/credits/summary", "ada", nil).Body.String(); !strings.Contains(body, "Welcome credit") || !strings.Contains(body, "+€12.34") {
+		t.Errorf("transactions: %s", body)
+	}
+	if body := f.browser(http.MethodGet, "/account/credits/balance", "ada", nil).Body.String(); !strings.Contains(body, "€12.34") {
+		t.Errorf("balance: %s", body)
+	}
+	if body := f.browser(http.MethodGet, "/account/credits/quote?amount=10", "ada", nil).Body.String(); !strings.Contains(body, "€10.83") {
 		t.Errorf("quote: %s", body)
 	}
-	if body := f.browser(http.MethodGet, "/credits/quote?amount=1", "ada", nil).Body.String(); !strings.Contains(body, "Buy between") {
+	if body := f.browser(http.MethodGet, "/account/credits/quote?amount=1", "ada", nil).Body.String(); !strings.Contains(body, "Buy between") {
 		t.Errorf("small quote: %s", body)
 	}
-	rec = f.browser(http.MethodPost, "/credits/checkout", "ada", url.Values{"amount": {"10"}})
+	if rec := f.browser(http.MethodGet, "/account/credits/payment-status", "ada", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("status without a purchase: %d", rec.Code)
+	}
+
+	rec = f.browser(http.MethodPost, "/account/credits", "ada", url.Values{"amount": {"10"}})
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://pay.example/") {
 		t.Fatalf("checkout: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
-	if c := f.pay.checkouts[0]; c.AmountCents != 1083 || c.SuccessURL != "http://localhost:8080/credits?checkout=returned" {
+	c := f.pay.checkouts[0]
+	if c.AmountCents != 1083 || c.SuccessURL != "http://localhost:8080/account/credits" {
 		t.Fatalf("checkout %+v", c)
 	}
-	if rec := f.browser(http.MethodPost, "/credits/checkout", "ada", url.Values{"amount": {"lots"}}); rec.Code != http.StatusUnprocessableEntity {
+	var pending *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == pendingCookie {
+			pending = cookie
+		}
+	}
+	if pending == nil {
+		t.Fatal("no pending payment cookie")
+	}
+	if body := f.browser(http.MethodGet, "/account/credits/payment-status", "ada", nil, pending).Body.String(); !strings.Contains(body, "every 2s") {
+		t.Fatalf("pending status: %s", body)
+	}
+	if rec := f.browser(http.MethodGet, "/account/credits/payment-status", "grace", nil, pending); rec.Code != http.StatusNoContent {
+		t.Fatalf("another account's purchase: %d", rec.Code)
+	}
+	f.webhook(payments.Event{ID: "evt", Kind: payments.Paid, Reference: c.Reference, AmountCents: 1083, PaidCents: 1083, Currency: "EUR"}, "valid")
+	rec = f.browser(http.MethodGet, "/account/credits/payment-status", "ada", nil, pending)
+	if !strings.Contains(rec.Body.String(), "Payment confirmed") || rec.Header().Get("HX-Trigger") != "credits-confirmed" {
+		t.Fatalf("confirmed status: %q %s", rec.Header().Get("HX-Trigger"), rec.Body.String())
+	}
+
+	if rec := f.browser(http.MethodPost, "/account/credits", "ada", url.Values{"amount": {"lots"}}); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("bad amount: %d", rec.Code)
 	}
-	if body := f.browser(http.MethodGet, "/credits/status", "ada", nil).Body.String(); !strings.Contains(body, "every 2s") {
-		t.Fatalf("pending status: %s", body)
+	htmx := f.browserHTMX(http.MethodPost, "/account/credits", "ada", url.Values{"amount": {"1"}})
+	if htmx.Code != http.StatusUnprocessableEntity || !strings.Contains(htmx.Body.String(), `id="checkout-error"`) {
+		t.Fatalf("HTMX bad amount: %d %s", htmx.Code, htmx.Body.String())
+	}
+}
+
+func (f *fixture) browserHTMX(method, path, session string, form url.Values) *httptest.ResponseRecorder {
+	tok := httptest.NewRecorder()
+	f.r.ServeHTTP(tok, httptest.NewRequest(http.MethodGet, "http://localhost:8080/token", nil))
+	form.Set(web.CSRFField, tok.Body.String())
+	req := httptest.NewRequest(method, "http://localhost:8080"+path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://localhost:8080")
+	req.Header.Set("HX-Request", "true")
+	for _, c := range tok.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	req.AddCookie(&http.Cookie{Name: "session", Value: session})
+	rec := httptest.NewRecorder()
+	f.r.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestWithoutPayments(t *testing.T) {
+	a := apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{accounts.Migrations, Migrations}})
+	accts, err := accounts.New(a, nil, accounts.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr, err := New(a, accts, Config{})
+	if err != nil {
+		t.Fatalf("credits without payments: %v", err)
+	}
+	if _, err := cr.Quote(1000); !errors.Is(err, ErrPurchasesOff) || cr.Purchasing() {
+		t.Fatalf("quote: %v", err)
+	}
+	r := gin.New()
+	r.POST("/webhook", cr.Webhook)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("{}")))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("webhook: %d", rec.Code)
 	}
 }

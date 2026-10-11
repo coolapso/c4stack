@@ -6,153 +6,227 @@ import (
 	"github.com/coolapso/c4stack/ui"
 )
 
+// confirmed refreshes the balance and the transactions once a payment is confirmed.
+// The status element that received the HX-Trigger was swapped out, so the event is
+// heard on the document.
+const confirmed = "credits-confirmed from:document"
+
 templ creditsPage(v creditsView) {
 	<div class="page-header">
 		<h1>Credits</h1>
 		<p class="lead">Credit pays for what you use. One credit is one euro cent.</p>
 	</div>
-	if v.returned {
-		@statusFragment(v.base, "pending")
-	}
-	<section class="panel" aria-labelledby="balance-title">
-		<h2 id="balance-title" class="sr-only">Balance</h2>
-		<div id="credit-summary" class="grid" hx-get={ v.base + "?summary=1" } hx-trigger="credits-changed from:body" hx-select="#credit-summary" hx-swap="outerHTML">
-			<div class="stat">
-				<span class="stat-label">Available</span>
-				<span class="stat-value">{ FormatEuros(v.summary.AvailableCents) }</span>
+	<div class="grid">
+		<section class="panel" aria-labelledby="balance-title">
+			<h2 id="balance-title" class="stat-label">Available balance</h2>
+			<div id="credit-balance" class="stat-value" hx-get={ v.base + "/balance" } hx-trigger={ confirmed } hx-swap="innerHTML">
+				@balanceValue(v.summary)
 			</div>
-			<div class="stat">
-				<span class="stat-label">Balance</span>
-				<span class="stat-value">{ FormatEuros(v.summary.BalanceCents) }</span>
-			</div>
-			if v.summary.HeldCents > 0 {
-				<div class="stat">
-					<span class="stat-label">Reserved for work in progress</span>
-					<span class="stat-value">{ FormatEuros(v.summary.HeldCents) }</span>
-				</div>
-			}
-		</div>
-	</section>
-	<section class="panel" aria-labelledby="buy-title">
-		<div class="panel-header">
-			<div>
-				<h2 id="buy-title">Buy credit</h2>
-				<p>
-					Between { FormatEuros(v.policy.MinPurchaseCents) } and { FormatEuros(v.policy.MaxPurchaseCents) }.
-					if v.policy.FeeBasisPoints > 0 || v.policy.FeeFixedCents > 0 {
-						A payment fee is added at checkout.
-					}
-				</p>
-			</div>
-		</div>
-		<form class="stack" method="post" action={ templ.SafeURL(v.base + "/checkout") } data-busy-form>
-			@ui.CSRFField(v.c)
-			<div class="form-row">
-				<div class="field">
-					<label for="credit-amount">Amount in euros</label>
-					<input
-						id="credit-amount"
-						name="amount"
-						type="text"
-						inputmode="decimal"
-						autocomplete="off"
-						value={ v.amount }
-						required
-						hx-get={ v.base + "/quote" }
-						hx-trigger="input changed delay:300ms, load"
-						hx-target="#credit-quote"
-						if v.err != "" {
-							aria-invalid="true"
-						}
-						aria-describedby="credit-quote"
-					/>
-				</div>
-				<button type="submit" class="btn primary">
-					Continue to payment
-					@ui.Spinner()
-				</button>
-			</div>
-			<div id="credit-quote" aria-live="polite">
-				if v.err != "" {
-					<p class="field-error" role="alert">{ v.err }</p>
-				}
-			</div>
-		</form>
-	</section>
-	<section class="panel" aria-labelledby="history-title">
-		<h2 id="history-title">History</h2>
-		if len(v.entries) == 0 {
-			<p class="empty">No credit activity yet.</p>
+		</section>
+		if v.purchasing {
+			@purchasePanel(v)
 		} else {
-			<div class="table-wrap">
-				<table class="data-table">
-					<thead>
-						<tr>
-							<th scope="col">Date</th>
-							<th scope="col">Description</th>
-							<th scope="col" class="number">Amount</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, e := range v.entries {
-							<tr>
-								<td>{ e.CreatedAt.UTC().Format("2 Jan 2006 15:04") }</td>
-								<td>{ describe(e) }</td>
-								<td class="number">{ FormatEuros(e.AmountCents) }</td>
-							</tr>
-						}
-					</tbody>
-				</table>
-			</div>
-			if v.older > 0 {
-				<p class="pagination">
-					<a href={ templ.SafeURL(v.base + "?before=" + strconv.FormatInt(v.older, 10)) }>Older entries</a>
-				</p>
-			}
+			<section class="panel" aria-labelledby="buy-title">
+				<h2 id="buy-title">Buying credit is not available</h2>
+				<p>You cannot buy credit right now. Your balance and transactions stay available here.</p>
+			</section>
 		}
+	</div>
+	<h2 id="transactions-title">Transactions</h2>
+	<section id="credit-transactions" aria-labelledby="transactions-title" aria-busy="true" hx-get={ v.base + "/summary" } hx-trigger={ "load, " + confirmed } hx-swap="outerHTML">
+		<p class="muted" role="status">Loading transactions…</p>
 	</section>
+}
+
+templ purchasePanel(v creditsView) {
+	<section class="panel" aria-labelledby="buy-title">
+		<h2 id="buy-title">Buy credit</h2>
+		<p>Choose an amount. You see the cost before you continue.</p>
+		<form
+			id="buy-credit"
+			class="stack"
+			method="post"
+			action={ templ.SafeURL(v.base) }
+			hx-post={ v.base }
+			hx-target="#checkout-error"
+			hx-swap="outerHTML"
+			data-busy-form
+		>
+			@ui.CSRFField(v.c)
+			<div class="field">
+				<label for="credit-amount">Credit to add, in euros</label>
+				<input
+					id="credit-amount"
+					name="amount"
+					type="text"
+					inputmode="decimal"
+					autocomplete="off"
+					value={ v.amount }
+					required
+					hx-get={ v.base + "/quote" }
+					hx-trigger="input changed delay:300ms, load"
+					hx-target="#credit-quote"
+					if v.err != "" {
+						aria-invalid="true"
+					}
+					aria-describedby="credit-quote"
+				/>
+			</div>
+			<div id="credit-quote" aria-live="polite"></div>
+			<button type="submit" class="btn primary">
+				Continue to checkout
+				@ui.Spinner()
+			</button>
+			@checkoutErrorSlot(v.err)
+			<p class="hint">
+				Between { FormatEuros(v.policy.MinPurchaseCents) } and { FormatEuros(v.policy.MaxPurchaseCents) }. Applicable taxes are calculated at checkout.
+			</p>
+		</form>
+		<div id="payment-status" hx-get={ v.base + "/payment-status" } hx-trigger="load" hx-swap="outerHTML"></div>
+	</section>
+}
+
+// checkoutErrorSlot is where a purchase that did not start says why.
+templ checkoutErrorSlot(message string) {
+	<div id="checkout-error" class="dialog-error" role="alert">
+		if message != "" {
+			@ui.FormError(message)
+		}
+	</div>
 }
 
 templ quoteFragment(p priced) {
 	if p.err != "" {
 		<p class="field-error">{ p.err }</p>
-	} else if p.quote.CreditCents > 0 {
-		<p class="muted">
-			{ FormatEuros(p.quote.CreditCents) } of credit
-			if p.quote.FeeCents > 0 {
-				+ { FormatEuros(p.quote.FeeCents) } payment fee
-			}
-			= <strong>{ FormatEuros(p.quote.ChargeCents) }</strong> to pay
-		</p>
+	} else {
+		<dl class="receipt">
+			<div><dt>Credit added to your balance</dt><dd>{ FormatEuros(p.quote.CreditCents) }</dd></div>
+			<div><dt>Payment fee</dt><dd>{ FormatEuros(p.quote.FeeCents) }</dd></div>
+			<div><dt>Total before tax</dt><dd><strong>{ FormatEuros(p.quote.ChargeCents) }</strong></dd></div>
+		</dl>
 	}
 }
 
-// statusFragment reports a purchase after the buyer returns from the checkout. While
-// it is pending, it asks again every two seconds.
-templ statusFragment(base, state string) {
+templ balanceValue(s Summary) {
+	{ FormatEuros(s.AvailableCents) }
+	if s.HeldCents > 0 {
+		<span class="stat-label">{ FormatEuros(s.HeldCents) } reserved for work in progress</span>
+	}
+}
+
+templ balanceUnavailable() {
+	<span class="muted">Unavailable</span>
+}
+
+// paymentStatus reports a purchase started from this browser. While it is unconfirmed,
+// it asks again every two seconds, until a minute has passed.
+templ paymentStatus(base, state string) {
 	switch state {
-		case "paid":
-			<p id="purchase-status" class="notice success" role="status">Payment confirmed. Your credit was added.</p>
-		case "pending":
-			<p id="purchase-status" class="notice" role="status" hx-get={ base + "/status" } hx-trigger="every 2s" hx-swap="outerHTML">
-				Thank you. Waiting for the payment to be confirmed…
-			</p>
+		case "confirmed":
+			<div id="payment-status">
+				<p class="notice success" role="status">Payment confirmed. Your credit is ready to use.</p>
+			</div>
+		case "not-completed":
+			<div id="payment-status">
+				<p class="notice danger" role="status">Your payment was not completed. No credit was added.</p>
+			</div>
+		case "timeout":
+			<div id="payment-status">
+				<p class="notice warning" role="status">Confirmation is taking longer than expected. Your credit appears once the payment is confirmed.</p>
+				<button type="button" class="btn small" hx-get={ base + "/payment-status" } hx-target="#payment-status" hx-swap="outerHTML">
+					Check again
+					@ui.Spinner()
+				</button>
+			</div>
 		default:
-			<p id="purchase-status" class="notice warning" role="status">The payment is taking longer to confirm. Your credit appears here once it is; you can leave this page.</p>
+			<div id="payment-status" hx-get={ base + "/payment-status" } hx-trigger="every 2s" hx-swap="outerHTML">
+				<p class="notice" role="status">
+					if state == "still-confirming" {
+						Still confirming your payment. Your credit appears automatically once it is confirmed.
+					} else {
+						Confirming your payment. Your balance and transactions update automatically.
+					}
+				</p>
+			</div>
 	}
 }
 
-func describe(e Entry) string {
+// transactions is one page of #credit-transactions. It reloads the first page when a
+// payment is confirmed.
+templ transactions(v transactionsView) {
+	<section id="credit-transactions" aria-labelledby="transactions-title" hx-get={ v.base + "/summary" } hx-trigger={ confirmed } hx-swap="outerHTML">
+		switch  {
+			case v.failed:
+				<p class="notice danger" role="alert">Your transactions could not be loaded. Try again in a moment.</p>
+				<button type="button" class="btn small" hx-get={ v.base + "/summary?page=" + strconv.Itoa(v.page) } hx-target="#credit-transactions" hx-swap="outerHTML">
+					Try again
+					@ui.Spinner()
+				</button>
+			case len(v.entries) == 0 && v.page > 1:
+				<p class="empty">You have reached the end of your transactions.</p>
+				<button type="button" class="btn small" hx-get={ v.base + "/summary" } hx-target="#credit-transactions" hx-swap="outerHTML">Back to the first page</button>
+			case len(v.entries) == 0:
+				<p class="empty">No transactions yet. Purchases and the work they pay for appear here.</p>
+			default:
+				<div class="table-wrap">
+					<table class="data-table">
+						<caption class="sr-only">Credit transactions</caption>
+						<thead>
+							<tr>
+								<th scope="col">Transaction</th>
+								<th scope="col">Date (UTC)</th>
+								<th scope="col" class="number">Amount</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, e := range v.entries {
+								<tr>
+									<td>{ Label(e) }</td>
+									<td>{ e.CreatedAt.UTC().Format("2 Jan 2006, 15:04") }</td>
+									<td class="number">{ signed(e.AmountCents) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+				<nav class="pagination cluster" aria-label="Transaction pages">
+					if v.page > 1 {
+						<button type="button" class="btn small" hx-get={ v.base + "/summary?page=" + strconv.Itoa(v.page-1) } hx-target="#credit-transactions" hx-swap="outerHTML">Newer</button>
+					}
+					if v.more {
+						<button type="button" class="btn small" hx-get={ v.base + "/summary?page=" + strconv.Itoa(v.page+1) } hx-target="#credit-transactions" hx-swap="outerHTML">Older</button>
+					}
+				</nav>
+		}
+	</section>
+}
+
+// Label names a ledger entry for people: its description, or what its kind means.
+func Label(e Entry) string {
 	if e.Description != "" {
 		return e.Description
 	}
 	switch e.Kind {
-	case "purchase":
+	case KindTopUp:
 		return "Credit purchase"
-	case "debit":
+	case KindUsage:
 		return "Usage"
-	case "expiry":
-		return "Credit expired"
+	case KindRefund:
+		return "Refund"
+	case KindChargeback:
+		return "Chargeback"
+	case KindExpiry:
+		return "Expired credit"
+	case KindForfeit:
+		return "Forfeited credit"
 	}
 	return "Adjustment"
+}
+
+// signed renders an amount with its sign, such as +€25.00 or −€0.03.
+func signed(cents int64) string {
+	if cents > 0 {
+		return "+" + FormatEuros(cents)
+	}
+	return FormatEuros(cents)
 }

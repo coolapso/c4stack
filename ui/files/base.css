@@ -547,6 +547,32 @@ table {
     font-size: var(--text-sm);
 }
 
+/* A price broken down: credit, fee and total, with the total last. */
+.receipt {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-sm);
+}
+
+.receipt > div {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+}
+
+.receipt > div:last-child {
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--line);
+    color: var(--text);
+}
+
+.receipt dd {
+    margin: 0;
+    font-family: var(--font-mono);
+}
+
 .secret {
     display: block;
     padding: var(--space-3);

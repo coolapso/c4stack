@@ -110,11 +110,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) account(t *testing.T, email string, cents int64) string {
 	t.Helper()
 	var id string
-	var addr sql.NullString
-	if email != "" {
-		addr = sql.NullString{String: email, Valid: true}
-	}
-	if err := f.a.DB().QueryRow(`INSERT INTO accounts (provider, subject, email) VALUES ('test', $1, $2) RETURNING id`, t.Name()+email, addr).Scan(&id); err != nil {
+	if err := f.a.DB().QueryRow(`INSERT INTO accounts (primary_email) VALUES ($1) RETURNING id`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.a.DB().Exec(`
@@ -176,8 +172,8 @@ func TestWarnThenExpire(t *testing.T) {
 	if r := f.run(t); r != (Result{}) {
 		t.Fatalf("second run after expiry: %+v", r)
 	}
-	history, _ := f.credits.History(context.Background(), ada, 0, 5)
-	if history[0].Kind != "expiry" || history[0].AmountCents != -1234 {
+	history, _, _ := f.credits.History(context.Background(), ada, 1, 5)
+	if history[0].Kind != credits.KindExpiry || history[0].AmountCents != -1234 {
 		t.Fatalf("history %+v", history)
 	}
 }
@@ -193,7 +189,7 @@ func TestActivityStartsOver(t *testing.T) {
 	// The user spends some credit after the warning.
 	if _, err := f.a.DB().Exec(`
 		INSERT INTO credit_ledger (account_id, kind, amount_cents, reference, created_at)
-		VALUES ($1, 'debit', -100, 'job', $2)`, ada, f.now); err != nil {
+		VALUES ($1, 'usage', -100, 'job', $2)`, ada, f.now); err != nil {
 		t.Fatal(err)
 	}
 	f.now = start.AddDate(0, 13, 0)
@@ -221,18 +217,17 @@ func TestHoldsDeferExpiry(t *testing.T) {
 func TestFailedDeliveryNeverStartsTheNotice(t *testing.T) {
 	f := newFixture(t)
 	ada := f.account(t, "ada@example.com", 1000)
-	f.account(t, "", 1000) // no verified address: never warned, never expires
 	f.mail.fail = true
 	f.now = start.AddDate(0, 11, 15)
 	if r := f.run(t); r.Failed != 1 || r.Warned != 0 {
 		t.Fatalf("failed delivery: %+v", r)
 	}
+	f.now = start.AddDate(0, 12, 1)
+	if r := f.run(t); r.Failed != 1 || r.Expired != 0 {
+		t.Fatalf("expired without a warning: %+v", r)
+	}
 	f.mail.fail = false
 	f.now = f.now.Add(time.Hour)
-	if r := f.run(t); r.Warned != 0 {
-		t.Fatalf("retried within a day: %+v", r)
-	}
-	f.now = start.AddDate(0, 12, 1)
 	if r := f.run(t); r.Warned != 1 || r.Expired != 0 {
 		t.Fatalf("retry: %+v", r)
 	}
@@ -250,27 +245,15 @@ func TestFailedDeliveryNeverStartsTheNotice(t *testing.T) {
 	}
 }
 
-func TestStaleNoticesAreRenewed(t *testing.T) {
+func TestAnOldWarningStillCounts(t *testing.T) {
 	f := newFixture(t)
 	ada := f.account(t, "ada@example.com", 1000)
 	f.now = start.AddDate(0, 11, 15)
 	f.run(t)
-	// The app did not run for months; the old deadline is long past.
+	// The app did not run for months; the announced date is long past.
 	f.now = start.AddDate(0, 16, 0)
-	if r := f.run(t); r.Warned != 1 || r.Expired != 0 || f.balance(t, ada) != 1000 {
-		t.Fatalf("stale notice: %+v", r)
-	}
-}
-
-func TestAnnouncedDeadlinesNeverShorten(t *testing.T) {
-	f := newFixture(t)
-	ada := f.account(t, "ada@example.com", 1000)
-	f.now = start.AddDate(0, 11, 15)
-	f.run(t)
-	f.expiry.cfg.Policy.NoticeDays = 1
-	f.now = start.AddDate(0, 12, 1)
-	if r := f.run(t); r.Expired != 0 || f.balance(t, ada) != 1000 {
-		t.Fatalf("a shorter notice applied to an announced deadline: %+v", r)
+	if r := f.run(t); r.Warned != 0 || r.Expired != 1 || f.balance(t, ada) != 0 {
+		t.Fatalf("late run: %+v", r)
 	}
 }
 

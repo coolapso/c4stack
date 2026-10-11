@@ -1,7 +1,7 @@
 package credits
 
 import (
-	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -14,21 +14,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Mount adds the credits page under r, which must use accounts.RequireSignIn:
-//   - GET "" shows the balance, a purchase form and the history.
-//   - GET "/quote" prices an amount for the purchase form.
-//   - POST "/checkout" starts a purchase and redirects to the provider's checkout.
-//   - GET "/status" reports the latest purchase after the buyer returns.
+// Mount adds the credits pages under r, which must use accounts.RequireSignIn:
+//   - GET /credits shows the balance, a purchase form and the transactions.
+//   - POST /credits starts a purchase and redirects to the provider's checkout.
+//   - GET /credits/quote prices an amount for the purchase form.
+//   - GET /credits/summary renders one page of transactions ("page", from 1).
+//   - GET /credits/balance renders the available balance.
+//   - GET /credits/payment-status reports a purchase started from this browser after
+//     the buyer returns, or answers 204 when there is none.
 //
 // The pages allow the provider's checkout origin as a form target, because starting a
-// purchase redirects there.
+// purchase redirects there. Without a payment provider they show the balance and
+// transactions, and say that buying credit is not available.
 func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout) {
-	p := creditPages{cr: cr, layout: layout, base: basePath(r)}
-	g := r.Group("", web.AllowCSP(web.CSP{FormActions: []string{cr.payments.CheckoutOrigin()}}))
-	g.GET("", p.page)
-	g.GET("/quote", p.quote)
-	g.POST("/checkout", p.checkout)
-	g.GET("/status", p.status)
+	p := creditPages{cr: cr, layout: layout, base: basePath(r) + "/credits"}
+	if cr.payments != nil {
+		r = r.Group("", web.AllowCSP(web.CSP{FormActions: []string{cr.payments.CheckoutOrigin()}}))
+	}
+	r.GET("/credits", p.page)
+	r.POST("/credits", p.checkout)
+	r.GET("/credits/quote", p.quote)
+	r.GET("/credits/summary", p.summary)
+	r.GET("/credits/balance", p.balance)
+	r.GET("/credits/payment-status", p.paymentStatus)
 }
 
 func basePath(r gin.IRouter) string {
@@ -46,38 +54,41 @@ type creditPages struct {
 
 // creditsView is what the credits page shows.
 type creditsView struct {
-	c        *gin.Context
-	base     string
-	summary  Summary
-	policy   Policy
-	entries  []Entry
-	older    int64 // the before cursor for the next page, or zero
-	returned bool  // the buyer just came back from the checkout
-	amount   string
-	err      string
+	c          *gin.Context
+	base       string
+	summary    Summary
+	policy     Policy
+	purchasing bool
+	amount     string
+	err        string
 }
 
-const historyPage = 25
+// transactionsView is one page of transactions.
+type transactionsView struct {
+	base    string
+	entries []Entry
+	page    int
+	more    bool
+	failed  bool
+}
+
+const transactionsPerPage = 10
+
+func htmx(c *gin.Context) bool {
+	return c.GetHeader("HX-Request") == "true"
+}
 
 func (p creditPages) view(c *gin.Context) (creditsView, error) {
-	id := accounts.Current(c).ID
-	v := creditsView{c: c, base: p.base, policy: p.cr.policy, returned: c.Query("checkout") != ""}
-	summary, err := p.cr.Summary(c.Request.Context(), id)
-	if err != nil {
-		return v, err
-	}
+	v := creditsView{c: c, base: p.base, policy: p.cr.policy, purchasing: p.cr.Purchasing(), amount: defaultAmount(p.cr.policy)}
+	summary, err := p.cr.Summary(c.Request.Context(), accounts.Current(c).ID)
 	v.summary = summary
-	before, _ := strconv.ParseInt(c.Query("before"), 10, 64)
-	entries, err := p.cr.History(c.Request.Context(), id, before, historyPage+1)
-	if err != nil {
-		return v, err
-	}
-	if len(entries) > historyPage {
-		entries = entries[:historyPage]
-		v.older = entries[historyPage-1].ID
-	}
-	v.entries = entries
-	return v, nil
+	return v, err
+}
+
+// defaultAmount is the amount the purchase form starts with: €25, within the policy.
+func defaultAmount(policy Policy) string {
+	cents := min(max(int64(2500), policy.MinPurchaseCents), max(policy.MaxPurchaseCents, policy.MinPurchaseCents))
+	return strings.TrimPrefix(FormatEuros(cents), "€")
 }
 
 func (p creditPages) page(c *gin.Context) {
@@ -100,12 +111,15 @@ type priced struct {
 }
 
 func (p creditPages) price(amount string) priced {
+	if !p.cr.Purchasing() {
+		return priced{err: "Buying credit is not available right now."}
+	}
 	if strings.TrimSpace(amount) == "" {
-		return priced{}
+		return priced{err: "Enter an amount to buy."}
 	}
 	cents, ok := ParseEuros(amount)
 	if !ok {
-		return priced{err: "Enter an amount in euros, such as 10 or 12.50."}
+		return priced{err: "Enter an amount in euros, such as 25.00."}
 	}
 	q, err := p.cr.Quote(cents)
 	if err != nil {
@@ -114,36 +128,32 @@ func (p creditPages) price(amount string) priced {
 	return priced{quote: q}
 }
 
+// pendingCookie remembers the purchase this browser started, so the credits page can
+// report it when the buyer returns from the checkout.
+const pendingCookie = "pending-payment"
+
+type pendingPayment struct {
+	IntentID string `json:"i"`
+	// Since is when the buyer returned and the page first asked for the status.
+	Since int64 `json:"s,omitempty"`
+}
+
 func (p creditPages) checkout(c *gin.Context) {
 	amount := c.PostForm("amount")
 	priced := p.price(amount)
-	if priced.err != "" || priced.quote.CreditCents == 0 {
-		v, err := p.view(c)
-		if err != nil {
-			p.fail(c, err)
-			return
-		}
-		v.amount, v.err = amount, priced.err
-		if v.err == "" {
-			v.err = "Enter an amount to buy."
-		}
-		p.layout.Render(c, http.StatusUnprocessableEntity, "Credits", creditsPage(v))
+	if priced.err != "" {
+		p.checkoutError(c, http.StatusUnprocessableEntity, amount, priced.err)
 		return
 	}
-	success := web.URL(c, p.base+"?checkout=returned")
-	purchase, err := p.cr.Purchase(c.Request.Context(), accounts.Current(c), priced.quote.CreditCents, success)
+	purchase, err := p.cr.Purchase(c.Request.Context(), accounts.Current(c), priced.quote.CreditCents, web.URL(c, p.base))
 	if err != nil {
 		web.Log(c).Error("starting a purchase failed", "error", err)
-		v, verr := p.view(c)
-		if verr != nil {
-			p.fail(c, verr)
-			return
-		}
-		v.amount, v.err = amount, "The payment could not start. Try again in a moment."
-		p.layout.Render(c, http.StatusBadGateway, "Credits", creditsPage(v))
+		p.checkoutError(c, http.StatusBadGateway, amount, "We could not start the checkout. Try again in a moment.")
 		return
 	}
-	if c.GetHeader("HX-Request") == "true" {
+	data, _ := json.Marshal(pendingPayment{IntentID: purchase.IntentID})
+	web.SetSealedCookie(c, pendingCookie, data, 24*time.Hour)
+	if htmx(c) {
 		c.Header("HX-Redirect", purchase.CheckoutURL)
 		c.Status(http.StatusOK)
 		return
@@ -151,36 +161,95 @@ func (p creditPages) checkout(c *gin.Context) {
 	c.Redirect(http.StatusSeeOther, purchase.CheckoutURL)
 }
 
-// status reports the latest purchase: still pending, confirmed, or taking long enough
-// that the buyer should check back later.
-func (p creditPages) status(c *gin.Context) {
-	var status string
-	var created time.Time
-	err := p.cr.app.DB().QueryRowContext(c.Request.Context(), `
-		SELECT status, created_at
-		FROM payment_intents
-		WHERE account_id = $1 AND checkout_id IS NOT NULL
-		ORDER BY created_at DESC
-		LIMIT 1`, accounts.Current(c).ID,
-	).Scan(&status, &created)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+// checkoutError shows why a purchase did not start: below the form for HTMX, or on the
+// page.
+func (p creditPages) checkoutError(c *gin.Context, status int, amount, message string) {
+	if htmx(c) {
+		ui.Render(c, status, checkoutErrorSlot(message))
+		return
+	}
+	v, err := p.view(c)
+	if err != nil {
 		p.fail(c, err)
 		return
 	}
-	switch {
-	case status == "paid":
-		c.Header("HX-Trigger", "credits-changed")
-		ui.Render(c, http.StatusOK, statusFragment(p.base, "paid"))
-	case status == "pending" && time.Since(created) < 2*time.Minute:
-		ui.Render(c, http.StatusOK, statusFragment(p.base, "pending"))
-	default:
-		ui.Render(c, http.StatusOK, statusFragment(p.base, "slow"))
+	v.amount, v.err = amount, message
+	p.layout.Render(c, status, "Credits", creditsPage(v))
+}
+
+func (p creditPages) summary(c *gin.Context) {
+	page, _ := strconv.Atoi(c.Query("page"))
+	page = min(max(page, 1), MaxHistoryPage)
+	v := transactionsView{base: p.base, page: page}
+	entries, more, err := p.cr.History(c.Request.Context(), accounts.Current(c).ID, page, transactionsPerPage)
+	if err != nil {
+		web.Log(c).Error("loading credit transactions failed", "error", err)
+		v.failed = true
 	}
+	v.entries, v.more = entries, more
+	ui.Render(c, http.StatusOK, transactions(v))
+}
+
+func (p creditPages) balance(c *gin.Context) {
+	s, err := p.cr.Summary(c.Request.Context(), accounts.Current(c).ID)
+	if err != nil {
+		web.Log(c).Error("loading the credit balance failed", "error", err)
+		ui.Render(c, http.StatusOK, balanceUnavailable())
+		return
+	}
+	ui.Render(c, http.StatusOK, balanceValue(s))
+}
+
+// paymentStatus reports the purchase this browser started: confirming, confirmed, not
+// completed, or taking longer than expected.
+func (p creditPages) paymentStatus(c *gin.Context) {
+	data, err := web.SealedCookie(c, pendingCookie)
+	var pending pendingPayment
+	if err != nil || json.Unmarshal(data, &pending) != nil || pending.IntentID == "" {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	if pending.Since == 0 {
+		pending.Since = time.Now().Unix()
+		data, _ := json.Marshal(pending)
+		web.SetSealedCookie(c, pendingCookie, data, 24*time.Hour)
+	}
+	waited := time.Since(time.Unix(pending.Since, 0))
+	status, err := p.cr.PaymentStatus(c.Request.Context(), accounts.Current(c).ID, pending.IntentID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		web.ClearSealedCookie(c, pendingCookie)
+		c.Status(http.StatusNoContent)
+	case err != nil:
+		web.Log(c).Warn("checking a payment failed", "error", err)
+		ui.Render(c, http.StatusOK, paymentStatus(p.base, waitingState(waited)))
+	case status == "paid":
+		web.ClearSealedCookie(c, pendingCookie)
+		c.Header("HX-Trigger", "credits-confirmed")
+		ui.Render(c, http.StatusOK, paymentStatus(p.base, "confirmed"))
+	case status == "failed" || status == "canceled" || status == "expired":
+		web.ClearSealedCookie(c, pendingCookie)
+		ui.Render(c, http.StatusOK, paymentStatus(p.base, "not-completed"))
+	default:
+		ui.Render(c, http.StatusOK, paymentStatus(p.base, waitingState(waited)))
+	}
+}
+
+// waitingState is what a buyer sees while a payment is unconfirmed: confirming, then
+// still confirming after 30 seconds, then a timeout after a minute.
+func waitingState(waited time.Duration) string {
+	switch {
+	case waited > time.Minute:
+		return "timeout"
+	case waited > 30*time.Second:
+		return "still-confirming"
+	}
+	return "confirming"
 }
 
 func (p creditPages) fail(c *gin.Context, err error) {
 	web.Log(c).Error("credits page failed", "error", err)
-	if c.GetHeader("HX-Request") == "true" {
+	if htmx(c) {
 		ui.Render(c, http.StatusInternalServerError, ui.FormError("Something went wrong on our side. Try again in a moment."))
 		return
 	}

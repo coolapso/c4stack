@@ -79,9 +79,9 @@ func (cr *Credits) balanceCommand(ctx context.Context, args []string) error {
 
 func (cr *Credits) reviewsCommand(ctx context.Context, args []string) error {
 	rows, err := cr.app.DB().QueryContext(ctx, `
-		SELECT r.id, r.created_at, r.provider, r.event_id, r.reason, r.intent_id, i.account_id
+		SELECT r.id, r.created_at, r.provider, r.event_id, r.reason, r.payment_intent_id, i.account_id
 		FROM payment_reviews r
-		LEFT JOIN payment_intents i ON i.id = r.intent_id
+		LEFT JOIN payment_intents i ON i.id = r.payment_intent_id
 		WHERE r.resolved_at IS NULL
 		ORDER BY r.created_at`,
 	)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/coolapso/c4stack/payments"
 	"github.com/coolapso/c4stack/web"
@@ -14,9 +15,14 @@ import (
 
 // Webhook receives payment provider webhooks. Mount it on a public route with neither
 // CSRF nor sign-in, such as POST /webhooks/payments. docs/credits.md lists its outcomes.
+// Without a payment provider it answers 404.
 //
 // It logs event and intent IDs and outcomes only, never bodies or buyer details.
 func (cr *Credits) Webhook(c *gin.Context) {
+	if cr.payments == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
 	log := web.Log(c).With("provider", cr.payments.Name())
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -69,6 +75,7 @@ type intent struct {
 	currency    string
 	status      string
 	checkoutID  sql.NullString
+	orderID     sql.NullString
 	paidCents   sql.NullInt64
 }
 
@@ -111,15 +118,18 @@ func decide(t *Tx, in intent, e payments.Event) applied {
 	if e.Currency != in.currency {
 		return review("currency_mismatch")
 	}
+	mismatch := func(stored sql.NullString, got string) bool {
+		return stored.Valid && got != "" && got != stored.String
+	}
 	if e.Kind == payments.Paid {
 		switch {
-		case in.status != "pending":
+		case in.status == "paid" || in.status == "refunded" || in.status == "charged_back":
 			r.outcome = "duplicate"
 		case e.AmountCents != in.chargeCents:
 			return review("amount_mismatch")
 		case e.PaidCents < in.chargeCents:
 			return review("discounted")
-		case in.checkoutID.Valid && e.CheckoutID != "" && e.CheckoutID != in.checkoutID.String:
+		case mismatch(in.checkoutID, e.CheckoutID):
 			return review("checkout_mismatch")
 		case t.accountID == "":
 			// Record the payment so a later refund matches it, and have an operator
@@ -131,15 +141,18 @@ func decide(t *Tx, in intent, e payments.Event) applied {
 		}
 		return r
 	}
-	switch in.status {
-	case "pending":
-		return review("reversal_before_payment")
-	case "refunded", "disputed":
+	switch {
+	case in.status == "refunded" || in.status == "charged_back":
 		r.outcome = "duplicate"
+	case in.status != "paid":
+		return review("reversal_before_payment")
+	case mismatch(in.checkoutID, e.CheckoutID):
+		return review("checkout_mismatch")
+	case mismatch(in.orderID, e.OrderID):
+		return review("order_mismatch")
+	case e.AmountCents < in.paidCents.Int64:
+		return review("partial_reversal")
 	default:
-		if e.AmountCents < in.paidCents.Int64 {
-			return review("partial_reversal")
-		}
 		r.outcome = "reversed"
 	}
 	return r
@@ -149,25 +162,34 @@ func decide(t *Tx, in intent, e payments.Event) applied {
 func (cr *Credits) record(t *Tx, in intent, e payments.Event, outcome string) error {
 	switch outcome {
 	case "credited", "paid":
+		paidAt := e.CreatedAt
+		if paidAt.IsZero() {
+			paidAt = time.Now()
+		}
 		if _, err := t.tx.ExecContext(t.ctx, `
 			UPDATE payment_intents
-			SET status = 'paid', order_id = $2, paid_cents = $3, paid_at = now()
-			WHERE id = $1`, in.id, e.OrderID, e.PaidCents,
+			SET provider_status = 'paid',
+			    provider_checkout_id = COALESCE(provider_checkout_id, NULLIF($2, '')),
+			    provider_order_id = NULLIF($3, ''),
+			    paid_amount_cents = $4,
+			    paid_at = $5,
+			    updated_at = now()
+			WHERE id = $1`, in.id, e.CheckoutID, e.OrderID, e.PaidCents, paidAt,
 		); err != nil {
 			return err
 		}
 		if outcome == "paid" {
 			return nil
 		}
-		return t.insert("purchase", in.creditCents, "purchase:"+in.id, "Credit purchase", &in.id)
+		return t.payment(KindTopUp, in.creditCents, in.id, e.ID, "Credit purchase")
 	case "reversed":
-		kind, status, description := "refund", "refunded", "Purchase refunded"
+		kind, status, description := KindRefund, "refunded", "Purchase refunded"
 		if e.Kind == payments.Disputed {
-			kind, status, description = "dispute", "disputed", "Purchase disputed"
+			kind, status, description = KindChargeback, "charged_back", "Purchase disputed"
 		}
 		if _, err := t.tx.ExecContext(t.ctx, `
 			UPDATE payment_intents
-			SET status = $2, reversed_at = now()
+			SET provider_status = $2, updated_at = now()
 			WHERE id = $1`, in.id, status,
 		); err != nil {
 			return err
@@ -175,9 +197,19 @@ func (cr *Credits) record(t *Tx, in intent, e payments.Event, outcome string) er
 		if t.accountID == "" {
 			return nil // the deleted account's credit was already forfeited
 		}
-		return t.insert(kind, -in.creditCents, kind+":"+in.id, description, &in.id)
+		return t.payment(kind, -in.creditCents, in.id, e.ID, description)
 	}
 	return nil
+}
+
+// payment appends a purchase or its reversal for the account.
+func (t *Tx) payment(kind string, cents int64, intentID, eventID, description string) error {
+	_, err := t.tx.ExecContext(t.ctx, `
+		INSERT INTO credit_ledger (account_id, payment_intent_id, provider_event_id, kind, amount_cents, description)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		t.accountID, intentID, eventID, kind, cents, description,
+	)
+	return err
 }
 
 // lockIntent locks the intent's account, then the intent, and runs fn inside that
@@ -187,11 +219,13 @@ func (cr *Credits) lockIntent(ctx context.Context, found intent, fn func(t *Tx, 
 	run := func(t *Tx) error {
 		in := intent{id: found.id}
 		err := t.tx.QueryRowContext(ctx, `
-			SELECT account_id, credit_cents, charge_cents, currency, status, checkout_id, paid_cents
+			SELECT account_id, credit_amount_cents, checkout_amount_cents, currency, provider_status,
+			       provider_checkout_id, provider_order_id, paid_amount_cents
 			FROM payment_intents
 			WHERE id = $1
 			FOR UPDATE`, found.id,
-		).Scan(&in.accountID, &in.creditCents, &in.chargeCents, &in.currency, &in.status, &in.checkoutID, &in.paidCents)
+		).Scan(&in.accountID, &in.creditCents, &in.chargeCents, &in.currency, &in.status,
+			&in.checkoutID, &in.orderID, &in.paidCents)
 		if err != nil {
 			return err
 		}
@@ -222,8 +256,8 @@ func (cr *Credits) findIntent(ctx context.Context, e payments.Event) (intent, er
 		column, value string
 	}{
 		{"id::text", e.Reference},
-		{"checkout_id", e.CheckoutID},
-		{"order_id", e.OrderID},
+		{"provider_checkout_id", e.CheckoutID},
+		{"provider_order_id", e.OrderID},
 	}
 	for _, l := range lookups {
 		if l.value == "" {
@@ -251,7 +285,7 @@ func (cr *Credits) toReview(ctx context.Context, e payments.Event, intentID, rea
 		id = sql.NullString{String: intentID, Valid: true}
 	}
 	_, err := cr.app.DB().ExecContext(ctx, `
-		INSERT INTO payment_reviews (provider, event_id, intent_id, reason)
+		INSERT INTO payment_reviews (provider, event_id, payment_intent_id, reason)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (provider, event_id) DO NOTHING`,
 		cr.payments.Name(), e.ID, id, reason,

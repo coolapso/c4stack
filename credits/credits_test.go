@@ -46,10 +46,15 @@ func TestDecide(t *testing.T) {
 	account := &Tx{accountID: "account"}
 	deleted := &Tx{}
 	pending := intent{id: "i", creditCents: 1000, chargeCents: 1083, currency: "EUR", status: "pending", checkoutID: sql.NullString{String: "co_1", Valid: true}}
+	created := pending
+	created.status, created.checkoutID = "created", sql.NullString{}
 	paid := pending
 	paid.status, paid.paidCents = "paid", sql.NullInt64{Int64: 1310, Valid: true}
+	paid.orderID = sql.NullString{String: "ord_1", Valid: true}
 	refunded := paid
 	refunded.status = "refunded"
+	chargedBack := paid
+	chargedBack.status = "charged_back"
 
 	pay := payments.Event{Kind: payments.Paid, AmountCents: 1083, PaidCents: 1310, Currency: "EUR", CheckoutID: "co_1"}
 	refund := payments.Event{Kind: payments.Refunded, AmountCents: 1310, Currency: "EUR"}
@@ -64,6 +69,7 @@ func TestDecide(t *testing.T) {
 		review  string
 	}{
 		{"payment", account, pending, pay, "credited", ""},
+		{"payment before the checkout was recorded", account, created, pay, "credited", ""},
 		{"repeated payment", account, paid, pay, "duplicate", ""},
 		{"payment after refund", account, refunded, pay, "duplicate", ""},
 		{"other amount", account, pending, with(pay, func(e *payments.Event) { e.AmountCents = 999 }), "", "amount_mismatch"},
@@ -74,6 +80,9 @@ func TestDecide(t *testing.T) {
 		{"refund", account, paid, refund, "reversed", ""},
 		{"dispute", account, paid, with(refund, func(e *payments.Event) { e.Kind = payments.Disputed }), "reversed", ""},
 		{"repeated refund", account, refunded, refund, "duplicate", ""},
+		{"refund after dispute", account, chargedBack, refund, "duplicate", ""},
+		{"refund of another checkout", account, paid, with(refund, func(e *payments.Event) { e.CheckoutID = "co_2" }), "", "checkout_mismatch"},
+		{"refund of another order", account, paid, with(refund, func(e *payments.Event) { e.OrderID = "ord_2" }), "", "order_mismatch"},
 		{"partial refund", account, paid, with(refund, func(e *payments.Event) { e.AmountCents = 500 }), "", "partial_reversal"},
 		{"refund before payment", account, pending, refund, "", "reversal_before_payment"},
 	}
