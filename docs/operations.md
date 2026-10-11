@@ -189,4 +189,7 @@ expires after its owner's warning was delivered and the full notice period from
 delivery has passed, and never before the date the warning announced. Without a working
 email sender, nothing expires.
 
+Each run that does something logs its counts. Apps that record metrics get every run's
+outcome through the module's `OnRun`, so alert on runs that fail or stop succeeding.
+
 Changing the policy applies to new warnings; deadlines already announced stay.

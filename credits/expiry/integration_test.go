@@ -327,7 +327,7 @@ func TestUndeliveredWarningsAreSentAgain(t *testing.T) {
 	ada := f.account(t, "ada@example.com", 1000)
 	f.mail.refuse = true
 	f.now = start.AddDate(0, 11, 15)
-	if r := f.run(t); r.Failed != 1 || r.Warned != 0 {
+	if r := f.run(t); r.WarningsFailed != 1 || r.Warned != 0 || r.Failed != 0 {
 		t.Fatalf("refused send: %+v", r)
 	}
 	f.mail.refuse = false
@@ -435,6 +435,49 @@ func TestOneRunAtATime(t *testing.T) {
 	conn.ExecContext(context.Background(), `SELECT pg_advisory_lock($1)`, int64(lockKey))
 	if r := f.run(t); !r.Skipped {
 		t.Fatalf("ran while another run held the lock: %+v", r)
+	}
+}
+
+// OnRun receives the outcome of every run, so the app can record metrics.
+func TestOnRunReportsEveryRun(t *testing.T) {
+	f := newFixture(t)
+	var results []Result
+	var errs []error
+	f.expiry.cfg.OnRun = func(_ context.Context, r Result, err error) {
+		results = append(results, r)
+		errs = append(errs, err)
+	}
+	f.account(t, "ada@example.com", 1234)
+	f.account(t, "grace@example.com", 700)
+	f.now = start.AddDate(0, 11, 15)
+	f.mail.refuse = true
+	f.run(t)
+	f.mail.refuse = false
+	f.run(t)
+	f.now = start.AddDate(0, 13, 0)
+	f.run(t)
+
+	conn, err := f.a.DB().Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.ExecContext(context.Background(), `SELECT pg_advisory_lock($1)`, int64(lockKey))
+	f.run(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := f.expiry.Run(cancelled); err == nil {
+		t.Fatal("a cancelled run succeeded")
+	}
+
+	want := []Result{{WarningsFailed: 2}, {Warned: 2}, {Expired: 2, ExpiredCents: 1934}, {Skipped: true}, {}}
+	if len(results) != len(want) {
+		t.Fatalf("reported %d runs: %+v", len(results), results)
+	}
+	for i := range want {
+		if results[i] != want[i] || (errs[i] != nil) != (i == len(want)-1) {
+			t.Fatalf("run %d: %+v %v, want %+v", i, results[i], errs[i], want[i])
+		}
 	}
 }
 

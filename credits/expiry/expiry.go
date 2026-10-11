@@ -76,6 +76,10 @@ type Config struct {
 	// Message writes the warning. Zero uses a plain default that names AppName. The
 	// warning always goes to Notice.To, whatever the message's To says.
 	Message func(Notice) email.Message
+	// OnRun, if set, receives the outcome of every run: the hourly ones, the credits
+	// expire command's and the app's own calls to Run. Use it to record metrics. It
+	// runs after the run released its lock, and must return quickly.
+	OnRun func(ctx context.Context, r Result, err error)
 }
 
 // Expiry is the credit expiry module.
@@ -114,7 +118,8 @@ func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error) {
 	a.Every("credit expiry", time.Hour, func(ctx context.Context) error {
 		r, err := x.Run(ctx)
 		if err == nil && !r.Skipped && r != (Result{}) {
-			a.Log().Info("credit expiry ran", "warned", r.Warned, "expired", r.Expired, "failed", r.Failed)
+			a.Log().Info("credit expiry ran", "warned", r.Warned, "warnings_failed", r.WarningsFailed,
+				"expired", r.Expired, "expired_cents", r.ExpiredCents, "failed", r.Failed)
 		}
 		return err
 	})
@@ -130,21 +135,27 @@ func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error) {
 				fmt.Fprintln(os.Stdout, "Another expiry run is in progress.")
 				return nil
 			}
-			fmt.Fprintf(os.Stdout, "Warned %d, expired %d, failed %d.\n", r.Warned, r.Expired, r.Failed)
+			fmt.Fprintf(os.Stdout, "Warned %d, %d warnings failed. Expired %s from %d accounts. %d other failures.\n",
+				r.Warned, r.WarningsFailed, credits.FormatEuros(r.ExpiredCents), r.Expired, r.Failed)
 			return nil
 		},
 	})
 	return x, nil
 }
 
-// Result counts what one run did.
+// Result counts what one run did. The next run tries again whatever failed.
 type Result struct {
-	// Skipped means another run held the lock.
+	// Skipped means another run held the lock, so this one did nothing.
 	Skipped bool
-	Warned  int
-	Expired int
-	// Failed counts warnings that could not be sent or checked, and accounts that
-	// could not be processed. The next run tries them again.
+	// Warned counts warnings the email provider accepted, and WarningsFailed those it
+	// did not.
+	Warned         int
+	WarningsFailed int
+	// Expired counts accounts whose credit expired, and ExpiredCents that credit.
+	Expired      int
+	ExpiredCents int64
+	// Failed counts everything else that failed: checking a warning's delivery,
+	// recording a warning that was sent, and expiring an account's credit.
 	Failed int
 }
 
@@ -153,8 +164,16 @@ type Result struct {
 const lockKey = 739_084_311_982_417_602
 
 // Run checks the delivery of sent warnings, sends due warnings and expires due credit,
-// once.
+// once, and reports the outcome to Config.OnRun.
 func (x *Expiry) Run(ctx context.Context) (Result, error) {
+	r, err := x.run(ctx)
+	if x.cfg.OnRun != nil {
+		x.cfg.OnRun(ctx, r, err)
+	}
+	return r, err
+}
+
+func (x *Expiry) run(ctx context.Context) (Result, error) {
 	conn, err := x.app.DB().Conn(ctx)
 	if err != nil {
 		return Result{}, err
@@ -312,12 +331,18 @@ func (x *Expiry) warnAll(ctx context.Context, now time.Time, r *Result) error {
 			return err
 		}
 		for _, d := range batch {
-			if err := x.warn(ctx, now, d); err != nil {
+			sent, err := x.warn(ctx, now, d)
+			switch {
+			case !sent:
+				r.WarningsFailed++
+				x.app.Log().Warn("credit expiry warning not sent", "account_id", d.accountID, "error", err)
+			case err != nil:
+				r.Warned++
 				r.Failed++
-				x.app.Log().Warn("credit expiry warning failed", "account_id", d.accountID, "error", err)
-				continue
+				x.app.Log().Warn("credit expiry warning sent but not recorded; it is sent again", "account_id", d.accountID, "error", err)
+			default:
+				r.Warned++
 			}
-			r.Warned++
 		}
 		if len(batch) < batchSize {
 			return nil
@@ -364,10 +389,10 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 	return batch, rows.Err()
 }
 
-// warn sends one warning and records it until the provider reports its delivery. If
-// recording fails, the next run sends the warning again, which is safer than expiring
-// credit without one.
-func (x *Expiry) warn(ctx context.Context, now time.Time, d due) error {
+// warn sends one warning and records it until the provider reports its delivery. It
+// reports whether the provider accepted the warning. If recording fails, the next run
+// sends the warning again, which is safer than expiring credit without one.
+func (x *Expiry) warn(ctx context.Context, now time.Time, d due) (bool, error) {
 	m := x.cfg.Message(Notice{
 		To:           d.email,
 		AppName:      x.cfg.AppName,
@@ -379,7 +404,7 @@ func (x *Expiry) warn(ctx context.Context, now time.Time, d due) error {
 	m.To = d.email
 	id, err := x.cfg.Sender.Send(ctx, m)
 	if err != nil {
-		return fmt.Errorf("send warning: %w", err)
+		return false, err
 	}
 	_, err = x.app.DB().ExecContext(ctx, `
 		INSERT INTO credit_expiry_warnings (account_id, activity_at, email, message_id, sent_at, notice_days, announced_expiry)
@@ -395,7 +420,7 @@ func (x *Expiry) warn(ctx context.Context, now time.Time, d due) error {
 		    expires_at = NULL`,
 		d.accountID, d.lastActivity, d.email, id, now, x.cfg.Policy.NoticeDays, d.announced,
 	)
-	return err
+	return true, err
 }
 
 // expired is the condition for credit to expire: a delivered warning about the
@@ -417,13 +442,14 @@ func (x *Expiry) expireAll(ctx context.Context, now time.Time, r *Result) error 
 			return err
 		}
 		for _, id := range batch {
-			done, err := x.expire(ctx, now, id)
+			cents, err := x.expire(ctx, now, id)
 			switch {
 			case err != nil:
 				r.Failed++
 				x.app.Log().Warn("credit expiry failed for an account", "account_id", id, "error", err)
-			case done:
+			case cents > 0:
 				r.Expired++
+				r.ExpiredCents += cents
 			}
 		}
 		if len(batch) < batchSize {
@@ -463,9 +489,10 @@ func (x *Expiry) dueExpiries(ctx context.Context, now time.Time, after string) (
 }
 
 // expire removes the account's balance under its lock, after checking that the credit
-// is still due and that the app holds none of it for work in progress.
-func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (bool, error) {
-	done := false
+// is still due and that the app holds none of it for work in progress. It returns the
+// credit it expired.
+func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (int64, error) {
+	var cents int64
 	err := x.credits.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
 		var balance int64
 		err := tx.SQL().QueryRowContext(ctx, `
@@ -496,10 +523,10 @@ func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (b
 		); err != nil {
 			return err
 		}
-		done = true
+		cents = balance
 		return nil
 	})
-	return done, err
+	return cents, err
 }
 
 func defaultMessage(n Notice) email.Message {

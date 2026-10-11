@@ -163,6 +163,27 @@ _, err = expiry.New(a, cr, expiry.Config{
 })
 ```
 
+To record metrics, set `OnRun`. It receives every run's outcome, hourly or from the
+`credits expire` command: warnings sent and failed, accounts and cents expired, other
+failures, and whether another replica's run made it skip. Record them with the app's
+own metrics library:
+
+```go
+OnRun: func(ctx context.Context, r expiry.Result, err error) {
+	if err != nil {
+		runs.Add(ctx, 1, outcome("failure"))
+		return
+	}
+	if !r.Skipped {
+		runs.Add(ctx, 1, outcome("success"))
+		lastSuccess.Record(ctx, time.Now().Unix())
+	}
+	warnings.Add(ctx, int64(r.Warned), outcome("sent"))
+	warnings.Add(ctx, int64(r.WarningsFailed), outcome("failed"))
+	expired.Add(ctx, r.ExpiredCents)
+},
+```
+
 ## Add an API endpoint that debits credit idempotently
 
 A client retries a request it is not sure went through, with the same `Idempotency-Key`

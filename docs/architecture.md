@@ -664,9 +664,18 @@ type Policy struct{ InactiveMonths, NoticeDays int } // required
 type Config struct {
 	Sender     email.TrackingSender // required: sends and reports delivery
 	Policy     Policy
-	AppName    string                     // named in the default warning
-	CreditsURL string                     // linked from the warning
-	Message    func(Notice) email.Message // optional
+	AppName    string                                         // named in the default warning
+	CreditsURL string                                         // linked from the warning
+	Message    func(Notice) email.Message                     // optional
+	OnRun      func(ctx context.Context, r Result, err error) // optional: each run's outcome
+}
+
+type Result struct {
+	Skipped                bool // another run held the lock
+	Warned, WarningsFailed int
+	Expired                int // accounts
+	ExpiredCents           int64
+	Failed                 int // delivery checks, recording and expiries that failed
 }
 
 func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error)
@@ -836,7 +845,8 @@ These features were considered and decided as follows.
 | Linking accounts | By verified email | A new identity joins the account with its verified address, from any provider, so users keep their accounts across provider changes and re-registrations. The provider's verified flag is trusted, and deleted accounts are gone, so an address never inherits someone else's account. |
 | Deletion marks | Two columns: started and confirmed | The started mark stops a sign-up from joining, or deleting, an account while the provider decides. Only the confirmed mark lets a sign-up finish a deletion, so local data never goes before the provider confirms. Cancel commands are not needed. |
 | Identity tombstones | Yes, as one hash table | Checked at account creation under the identity lock, it stops an in-flight request recreating a deleted person's account with their email. Per-request session validation already rejects stale sessions. |
-| Expiry metrics, a scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. Apps add metrics if they need them. |
+| Expiry metrics | A hook, no metrics library | The module schedules its own runs, so `OnRun` hands the app every run's `Result`, hourly or from `credits expire`. The app records it with its own metrics library; C4Stack depends on none. |
+| A scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. |
 | Server timeouts as environment variables | No | Safe fixed defaults. `DrainDelay` and `ShutdownTimeout` are `web.Server` fields; an app exposes them as variables if it wants. |
 | A strict database transport policy | Verified TLS by default | `verify-full` with the system roots for remote hosts, and `sslrootcert` when needed. An explicit `sslmode` is respected, with a warning. Ambient `PG*` variables are not policed. |
 | Replay protection for API-key creation | No | A double submit creates a second key, which the user can revoke. |
