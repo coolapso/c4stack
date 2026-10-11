@@ -102,8 +102,10 @@ layout := newLayout(assets) // layout.go starts from the default design
 
 r.GET("/assets/*path", assets.Serve)
 r.GET("/", home)
-idp.Mount(r, layout)                                          // GET /login
-accts.Mount(r.Group("/account", accts.RequireSignIn), layout) // settings, delete, logout
+idp.Mount(r, layout)   // GET /login
+accts.Mount(r, layout) // /account/settings, /account/delete, /logout and their pages
+account := r.Group("/account", accts.RequireSignIn)
+account.GET("", overview) // the app's own signed-in pages
 ```
 
 ### What a module brings
@@ -116,8 +118,13 @@ tables.
 A module constructor registers the module's operator commands, its background jobs and
 its account-deletion hook. It fails with a clear error when the app's migration list lacks
 the module, so the two cannot get out of step unnoticed. `Mount` adds the module's
-default pages under the router group the app passes in. The pages link to each other
-relative to that group, so the app can put them anywhere.
+default pages at fixed paths under the router group the app passes in, usually the
+signed-in `/account` group.
+
+Module tables are Searchbase Cloud's, the first app on these conventions, plus what the
+modules add. Module migrations use `IF NOT EXISTS` throughout, so they adopt tables an
+app created before it used C4Stack, and `migrate` converts a migration history recorded
+without namespaces. `internal/porttest` moves Searchbase's database this way.
 
 An app that doesn't use a module gets none of its routes, migrations, commands or
 configuration. Disabling a module later leaves its tables in place, because C4Stack never
@@ -278,6 +285,11 @@ explicit weaker mode is respected, with a startup warning.
 its own transaction, all under one advisory lock. The `schema_migrations` table records
 the namespace, version and checksum of each file.
 
+A `schema_migrations` table without a namespace column, as a runner with a single
+history writes it, is converted first: each recorded file goes to the listed set with
+the same version and checksum, and a recorded file that no set has stops the run before
+anything changes.
+
 `migrate` refuses a changed checksum, an unapplied version below the highest applied one,
 and a namespace listed twice. A database ahead of the binary is reported and left
 alone, so `migrate` from a rolled-back release still succeeds.
@@ -345,12 +357,12 @@ type Identity struct {
 	EmailVerified bool
 	SignedInAt    time.Time // when the session was created
 }
-func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (10 minutes)
+func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (10 minutes), for deletion
 func NewContext(ctx context.Context, id Identity) context.Context
 func FromContext(ctx context.Context) (Identity, bool)
 
 type Provider interface {
-	Name() string                                   // stored with each account, e.g. "hanko"
+	Name() string                                   // stored with each identity, e.g. "hanko"
 	Authenticate(r *http.Request) (Identity, error) // ErrNoSession when not signed in
 	Logout(w http.ResponseWriter, r *http.Request) error
 	Delete(ctx context.Context, r *http.Request) error // returns only after the provider confirms
@@ -381,28 +393,33 @@ embeds it:
   browser.
 - **Signed-in devices.** The user sees their sessions and signs out any of them.
 
-Passkey changes require a recent sign-in, as deletion does. The profile UI never offers
-account deletion, which always goes through `accounts`.
+Passkey changes require a sign-in in the last five minutes. The profile UI's routes are
+under `/account/settings`, and after an email change the user lands on
+`/account/email-changed`. The profile UI never offers account deletion, which always
+goes through `accounts`.
 
 ### accounts
 
 ```sql
-accounts(id uuid, provider, subject, email, created_at, UNIQUE (provider, subject))
+accounts(id uuid, primary_email UNIQUE, created_at, updated_at, deletion_started_at)
+account_identities(id uuid, account_id → accounts ON DELETE CASCADE, provider, subject,
+                   email, email_verified, created_at, updated_at, UNIQUE (provider, subject))
 deleted_identities(identity_hash bytea, deleted_at)
 ```
 
 ```go
-type Account struct{ ID, Email string; CreatedAt time.Time }
+type Account struct{ ID, Email string; CreatedAt time.Time } // Email is the primary address
 type Config struct{ LoginPath string }
 
-func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error)
+func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) // nil idp: no sign-in
 func (s *Accounts) RequireSignIn(c *gin.Context)
 func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) Delete(c *gin.Context) error // ErrNotDeleted or ErrCleanupPending on failure
 func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout)
-// GET "" settings, POST "/delete", POST "/logout" (continues to a local "next" path)
+// POST /logout, GET /auth/email-unverified, GET /account/settings,
+// GET and POST /account/delete, GET /account/deleted, GET /account/email-changed
 ```
 
 Signing out lives here rather than in the provider adapter, because it is the same for
@@ -411,29 +428,42 @@ every provider. The operator command is `accounts delete-local <account-id>`.
 **`RequireSignIn`** checks CSRF, authenticates the session, then finds the account,
 creating it on first sign-in. It sets `Cache-Control: no-store`. Unauthenticated requests
 are redirected to `LoginPath` with a safe `next` path, or get `HX-Redirect` from HTMX.
+An identity without a verified email goes to `/auth/email-unverified` and gets no
+account.
 
-Accounts are found by provider and subject only, and are never linked by email. `email`
-holds the provider's verified address, or nothing if the address is unverified.
+**Finding the account.** A sign-in finds its account by provider and subject. An
+identity the app has not seen joins the account whose `primary_email` is its verified
+address, from whichever provider, or gets a new account. Users therefore keep their
+accounts when the app changes identity provider. Each identity's address is kept current
+on sign-in; the account's primary address changes through the profile UI's email change.
+
+A process that only needs account IDs, such as an API gateway, constructs the module
+with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mount` and
+`Delete` are unavailable.
 
 **Deletion** runs these steps:
-1. The user submits the settings form with CSRF and types `DELETE`. The session must
+1. The user confirms on `/account/delete` with CSRF and types `DELETE`. The session must
    have been created in the last 10 minutes; otherwise the page asks the user to sign in
-   again and then returns to settings. This proves the owner is present, not just an
-   unattended browser.
-2. `idp.Delete` runs with a context detached from the request, so a closed tab cannot
-   stop it halfway, and with a one-minute budget.
-3. Only after the provider confirms, one transaction does the local deletion:
-   1. It locks the account row and the identity.
-   2. It runs the `OnDelete` hooks: modules first, then the app.
-   3. It records a hash of the identity in `deleted_identities`.
-   4. It deletes the account. Foreign keys cascade.
+   again first. This proves the owner is present, not just an unattended browser.
+2. The account is marked with `deletion_started_at`.
+3. `idp.Delete` runs with a context detached from the request, so a closed tab cannot
+   stop it halfway, and with a one-minute budget. If the provider fails, the mark is
+   cleared and nothing else changes; the user can retry.
+4. Only after the provider confirms, one transaction does the local deletion:
+   1. It locks the account row and its identities.
+   2. It records a hash of each identity in `deleted_identities`.
+   3. It runs the `OnDelete` hooks: modules first, then the app.
+   4. It deletes the account. Foreign keys cascade or anonymise.
+5. The browser goes to `/account/deleted`.
 
-If the provider fails, nothing is deleted locally and the user can retry. If the local
-transaction fails after the provider deleted the identity, the failure is logged with the
-account ID, and an operator runs `accounts delete-local`. The two systems are not atomic.
+If the local transaction fails after the provider deleted the identity, the failure is
+logged with the account ID, and an operator runs `accounts delete-local`. The two
+systems are not atomic. If the address signs up again first, the new identity finds the
+marked account, finishes its deletion and gets a new, empty account. A sign-in by one of
+the account's own identities clears a mark the provider refused to act on.
 
-Account creation checks `deleted_identities` under the same lock, so a request that
-validated its session just before deletion cannot recreate the account.
+Account creation checks `deleted_identities` under the identity's lock, so a request
+that validated its session just before deletion cannot recreate the account.
 
 **App data.** App tables with personal data join deletion through
 `REFERENCES accounts (id) ON DELETE CASCADE` or through `OnDelete`.
@@ -441,8 +471,8 @@ validated its session just before deletion cannot recreate the account.
 ### apikeys (opt-in)
 
 ```sql
-api_keys(id uuid, account_id → accounts ON DELETE CASCADE, name, prefix, suffix,
-         hash bytea UNIQUE, created_at, last_used_at, revoked_at)
+api_keys(id uuid, account_id → accounts ON DELETE CASCADE, name, key_hash bytea UNIQUE,
+         key_suffix, created_at, last_used_at, revoked_at)
 ```
 
 ```go
@@ -451,22 +481,34 @@ type Config struct{ Prefix string } // "acme" issues acme_<43 characters>
 func New(a *app.App, cfg Config) (*Keys, error) // keys cascade with their account
 func (k *Keys) Create(ctx context.Context, accountID, name string) (raw string, key Key, err error)
 func (k *Keys) List(ctx context.Context, accountID string) ([]Key, error)
+func (k *Keys) Rename(ctx context.Context, accountID, keyID, name string) error // active keys
 func (k *Keys) Revoke(ctx context.Context, accountID, keyID string) error
+func (k *Keys) Delete(ctx context.Context, accountID, keyID string) error // revoked keys; ErrActive
 func (k *Keys) Authenticate(ctx context.Context, raw string) (Key, error)
+func (k *Keys) LockActive(ctx context.Context, tx *sql.Tx, accountID, keyID string) error
 func (k *Keys) RequireKey(c *gin.Context)
 func Current(c *gin.Context) Key
-func (k *Keys) Mount(r gin.IRouter, layout ui.Layout) // GET "", POST "", POST "/:id/revoke"
+func (k *Keys) Mount(r gin.IRouter, layout ui.Layout)
+// GET /api-keys, GET /api-keys/list, POST /api-keys,
+// POST /api-keys/:id with action rename, revoke or delete
 ```
 
 **Storage.** A raw key is the prefix, an underscore and 32 random bytes in base64url.
-C4Stack stores the SHA-256 of the whole raw key plus its last six characters. Lookup is by
-hash, so changing `Prefix` never invalidates existing keys. The raw key is shown once in
-the create response and never logged.
+C4Stack stores the SHA-256 of the whole raw key plus its last six characters, and shows
+keys as the current prefix, `_••••` and those characters. Lookup is by hash, so changing
+`Prefix` never invalidates existing keys. The raw key is shown once in the create
+response and never logged.
 
 **`RequireKey`** requires exactly one `Authorization: Bearer` header and ignores cookies.
 It answers JSON 401 with `WWW-Authenticate` when the key is missing or invalid, and
 removes the header before the handler runs. It records last use at most every five
-minutes. A revocation applies from the next request.
+minutes. A revocation applies from the next request. `LockActive` checks a key inside
+the transaction that spends credit for a request, so a key revoked meanwhile cannot
+spend.
+
+**The keys page.** Each row has dialogs to rename or revoke an active key, and to delete
+a revoked one after typing its name. Changes close the dialog and reload the list from
+`/api-keys/list`.
 
 ### payments and payments/creem
 
@@ -486,7 +528,8 @@ type Event struct {
 	AmountCents int64  // the price for Paid, the reversed amount otherwise
 	PaidCents   int64  // what the buyer paid, after taxes or discounts
 	Currency    string
-	Review      string // set when the event is ours but cannot be applied as it stands
+	CreatedAt   time.Time // when the provider created the event, if it says
+	Review      string    // set when the event is ours but cannot be applied as it stands
 }
 type Provider interface {
 	Name() string
@@ -497,23 +540,37 @@ type Provider interface {
 ```
 
 **How the Creem adapter works.**
-- Checkout uses one configured product with `custom_price`.
+- Checkout uses one configured product with `custom_price`. The purchase ID travels as
+  `request_id` and as `intent_id` metadata.
 - An API key starting with `creem_test_` selects Creem's test API.
 - Webhooks are verified with HMAC-SHA256 from the `creem-signature` header.
 - The `checkout_url` Creem returns must match `CheckoutOrigin`.
 
 ### credits (opt-in)
 
-Tables: `payment_intents`, `credit_ledger` (append-only, enforced by a trigger) and
-`payment_reviews`.
+```sql
+payment_intents(id uuid, account_id → accounts ON DELETE SET NULL, provider,
+                provider_checkout_id, provider_order_id, idempotency_key,
+                credit_amount_cents, fee_amount_cents, checkout_amount_cents,
+                paid_amount_cents, currency, provider_status, created_at, updated_at, paid_at)
+credit_ledger(id uuid, account_id → accounts ON DELETE SET NULL, payment_intent_id,
+              provider_event_id UNIQUE, amount_cents, kind, created_at, reference, description)
+payment_reviews(id, provider, event_id, payment_intent_id, reason, created_at,
+                resolved_at, resolution)
+```
+
+A purchase's `provider_status` is `created`, `pending` once its checkout exists, then
+`paid`, `refunded` or `charged_back`. Ledger kinds are `top_up`, `usage`, `refund`,
+`chargeback`, `adjustment`, `expiry` and `forfeit`. A trigger keeps the ledger
+append-only.
 
 ```go
 type Policy struct {
-	MinPurchaseCents, MaxPurchaseCents int64 // required
+	MinPurchaseCents, MaxPurchaseCents int64 // required with Payments
 	FeeBasisPoints, FeeFixedCents      int64 // added on top, grossed up to cover itself
 }
 type Config struct {
-	Payments payments.Provider
+	Payments payments.Provider // optional: nil turns purchases off
 	Policy   Policy
 	Holds    func(ctx context.Context, tx *sql.Tx, accountID string) (int64, error) // optional
 }
@@ -525,13 +582,18 @@ func (cr *Credits) WithAccount(ctx context.Context, accountID string, fn func(tx
 func (tx *Tx) SQL() *sql.Tx
 func (tx *Tx) Balance() (int64, error)
 func (tx *Tx) Available() (int64, error)
-func (tx *Tx) Debit(cents int64, reference, description string) error
-func (tx *Tx) Expire(cents int64, reference string) error // for credits/expiry
+func (tx *Tx) Debit(cents int64, reference, description string) error   // within available credit
+func (tx *Tx) Capture(cents int64, reference, description string) error // work a hold reserved
+func (tx *Tx) Expire(cents int64) error                                  // for credits/expiry
 func (cr *Credits) Summary(ctx context.Context, accountID string) (Summary, error) // balance, held, available
-func (cr *Credits) History(ctx context.Context, accountID string, before int64, limit int) ([]Entry, error)
+func (cr *Credits) History(ctx context.Context, accountID string, page, perPage int) ([]Entry, bool, error)
+func Label(e Entry) string
 func (cr *Credits) Quote(creditCents int64) (Quote, error)
 func (cr *Credits) Purchase(ctx context.Context, account accounts.Account, creditCents int64, successURL string) (Purchase, error)
-func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout) // GET "", GET "/quote", POST "/checkout", GET "/status"
+func (cr *Credits) PaymentStatus(ctx context.Context, accountID, intentID string) (string, error)
+func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout)
+// GET and POST /credits, GET /credits/quote, /credits/summary, /credits/balance
+// and /credits/payment-status
 func (cr *Credits) Webhook(c *gin.Context)
 ```
 
@@ -540,18 +602,30 @@ The operator commands are `credits adjust`, `credits balance`, `credits reviews`
 
 **Ledger rules.**
 - Every mutation locks the account row.
-- Every mutation is idempotent per account and reference. A retry with the same amount
-  succeeds without a new entry. A retry with a different amount returns `ErrConflict`.
-- Debits never take available credit below zero. Available credit is the balance minus
-  what the app's `Holds` function reports.
-- `WithAccount` lets app reservations share the lock and transaction with framework
-  debits.
+- Purchases and reversals are idempotent per payment: a payment is credited at most once
+  and reversed at most once. The app's charges and adjustments are idempotent per
+  account and reference: a retry with the same amount succeeds without a new entry, and
+  one with a different amount returns `ErrConflict`.
+- `Debit` never takes available credit below zero. Available credit is the balance minus
+  what the app's `Holds` function reports. `Capture` charges work a hold reserved without
+  that check, so finished work is charged even if a refund lowered the balance since.
+- `WithAccount` lets app reservations share the lock and transaction with the module's
+  charges.
 
 **Webhooks.** The webhook grants credit from the stored purchase, never from the payload.
 - A paid event credits once.
 - A full refund or dispute of a paid purchase reverses once.
 - Any other event about one of the app's purchases becomes a review row.
 - Foreign events are acknowledged and ignored.
+
+**Without payments**, the pages show the balance and transactions and say that buying
+credit is not available, and `Webhook` answers 404. A process that only spends credit
+holds no payment configuration this way.
+
+**The credits page** shows the available balance, a purchase form with a live quote,
+and the transactions in pages of ten. Starting a purchase remembers it in a sealed
+cookie, so when the buyer returns from the checkout the page reports it: confirming,
+confirmed, not completed, or taking longer than a minute.
 
 On account deletion, the credits hook forfeits a positive balance. The foreign keys then
 anonymise the account's ledger and purchases; the ledger's append-only trigger allows that
@@ -575,17 +649,18 @@ func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error)
 func (x *Expiry) Run(ctx context.Context) (Result, error)
 ```
 
-`New` registers the `credit_expiry_notices` table, the `credits expire` command and an
-hourly job during `serve`. The job runs under an advisory lock, so replicas don't
-duplicate it.
+`New` adds the `accounts.credit_expiry_warned_at` column, the `credits expire` command
+and an hourly job during `serve`. The job runs under an advisory lock, so replicas and
+deployments sharing the database don't duplicate it.
 
-- **Activity.** Purchases, debits and adjustments count as activity.
-- **Warnings.** A warning goes out only to a verified email address, outside any
-  transaction. Its deadline is recorded only after delivery succeeds. A failing address
-  is retried at most daily.
-- **Expiry.** Credit expires only after the full notice period from delivery has passed.
-  New activity starts a fresh cycle, and a hold defers expiry. An announced deadline
-  never gets shorter.
+- **Activity.** Purchases, charges and adjustments count as activity.
+- **Warnings.** A warning goes out `NoticeDays` before the credit would expire, to the
+  account's primary address and outside any transaction. Only a delivered warning is
+  recorded; an undelivered one is tried again on the next run.
+- **Expiry.** Credit expires once `InactiveMonths` passed since the last activity and a
+  full notice period passed since the warning, so never earlier than announced. New
+  activity needs a new warning, and a hold defers expiry. Shortening `NoticeDays` also
+  shortens warnings already sent.
 
 ### email and email/scaleway
 
@@ -609,8 +684,9 @@ the values in code. A minimal app needs four, plus an optional `ACME_ADDR`:
 - `ACME_HANKO_API_URL`
 
 **Other names users can see.**
-- Cookies: `csrf` and `__Host-csrf`, plus a sealed cookie during an email change. The
-  `hanko` cookie is Hanko's own.
+- Cookies: `csrf` and `__Host-csrf`, plus sealed cookies during an email change
+  (`email-change`) and after starting a purchase (`pending-payment`). The `hanko`
+  cookie is Hanko's own.
 - Public URLs, the asset base and API-key prefixes: chosen by the app.
 - Email subjects: built from the app's name.
 
@@ -712,17 +788,19 @@ These features were considered and decided as follows.
 |---|---|---|
 | Applying a refund automatically when it arrives before its payment | No | Rare. The refund becomes a review row and an operator adjusts. Automatic deferred application would be the most intricate code in the module. |
 | Separate tables for reviews and for refunds waiting for their payment | One `payment_reviews` table | Every event that can't be applied is recorded with a fixed reason. Commands list and resolve them. |
-| A deletion-pending account state with cancel commands | No | Deletion is one request: the provider first, then one local transaction. A failure in between is logged and fixed with `accounts delete-local`. |
+| Module tables | Searchbase Cloud's, plus additions | Searchbase is the first app on these conventions. With its tables, it adopts the modules in one release, without moving or copying data, and its previous release keeps running during the switch. `internal/porttest` proves it. |
+| Linking accounts | By verified email | A new identity joins the account with its verified address, from any provider, so users keep their accounts across provider changes and re-registrations. The provider's verified flag is trusted, and deleted accounts are gone, so an address never inherits someone else's account. |
+| A deletion mark | Yes, one column | Set before the provider is asked and cleared if it refuses. It stops a re-registration from joining an account whose deletion did not finish, and lets that sign-up finish it. Cancel commands and a pending state are not needed. |
 | Identity tombstones | Yes, as one hash table | Checked at account creation under the identity lock, it stops an in-flight request recreating a deleted person's account with their email. Per-request session validation already rejects stale sessions. |
-| Expiry metrics, a scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. Announced deadlines never shorten, so a policy change applies to new warnings without a reset. Apps add metrics if they need them. |
+| Expiry metrics, a scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. Apps add metrics if they need them. |
 | Server timeouts as environment variables | No | Safe fixed defaults. `DrainDelay` and `ShutdownTimeout` are `web.Server` fields; an app exposes them as variables if it wants. |
 | A strict database transport policy | Verified TLS by default | `verify-full` with the system roots for remote hosts, and `sslrootcert` when needed. An explicit `sslmode` is respected, with a warning. Ambient `PG*` variables are not policed. |
 | Replay protection for API-key creation | No | A double submit creates a second key, which the user can revoke. |
-| Rechecking a key's revocation inside credit transactions | No | A revocation applies from the next request. |
-| A page for unverified email addresses | No | Unverified addresses are not stored, so nothing is mailed to them. The Hanko tenant should require verification. |
+| Rechecking a key's revocation inside credit transactions | Optional, with `LockActive` | A revocation applies from the next request; an app that spends credit per request checks the key in the same transaction. |
+| Unverified email addresses | Turned away | Linking by email trusts verified addresses only, so an unverified identity gets a page asking to confirm the address, and no account. |
 | JSON metadata on ledger entries | No | A description and a reference are enough. App-specific records go in app tables. |
 | A payment completed after its account was deleted | Review | It is recorded as paid without credit; the right action is a refund, which is an operator decision. |
-| A recent sign-in before deletion | Yes, 10 minutes | It proves the owner is present rather than an unattended browser, and the same check covers passkey changes. |
+| A recent sign-in before deletion | Yes, 10 minutes | It proves the owner is present rather than an unattended browser. Passkey changes need a sign-in in the last five minutes, as in Searchbase. |
 | A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
 | Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
 

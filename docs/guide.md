@@ -5,19 +5,23 @@ generates: `main.go` wires modules, `routes.go` mounts routes, `layout.go` and
 `pages.templ` hold the design. After editing a `.templ` file, run `task templ:generate`.
 After adding a migration, run `task db:migrate`.
 
+The account pages live under `/account`: settings at `/account/settings`, deletion at
+`/account/delete`, API keys at `/account/api-keys` and credits at `/account/credits`.
+The app's own signed-in pages go beside them, in the `/account` group in `routes.go`.
+
 `examples/textlab` in this repository is a complete app that uses every module.
 
 ## Add a signed-in page
 
-Put the route in a group that uses `accts.RequireSignIn`. Signed-in routes then get
-CSRF checks, a valid session and the account. Read the account with `accounts.Current`.
+Put the route in the `/account` group, which uses `accts.RequireSignIn`. Signed-in
+routes then get CSRF checks, a valid session and the account. Read the account with
+`accounts.Current`.
 
 ```go
 // routes.go
-notes := r.Group("/notes", accts.RequireSignIn)
-notes.GET("", func(c *gin.Context) {
-	account := accounts.Current(c)
-	layout.Render(c, http.StatusOK, "Notes", notesPage(c, account.Email))
+account := r.Group("/account", accts.RequireSignIn)
+account.GET("/notes", func(c *gin.Context) {
+	layout.Render(c, http.StatusOK, "Notes", notesPage(c, accounts.Current(c).Email))
 })
 ```
 
@@ -28,7 +32,7 @@ templ notesPage(c *gin.Context, email string) {
 		<h1>Notes</h1>
 		<p class="lead">Signed in as { email }.</p>
 	</div>
-	<form class="stack" method="post" action="/notes">
+	<form class="stack" method="post" action="/account/notes">
 		@ui.CSRFField(c)
 		<div class="field">
 			<label for="note">Note</label>
@@ -85,7 +89,7 @@ inside the transaction that deletes the account, so an error cancels the deletio
 accts.OnDelete(func(ctx context.Context, tx *sql.Tx, accountID string) error {
 	_, err := tx.ExecContext(ctx, `
 		DELETE FROM newsletter_signups
-		WHERE email = (SELECT email FROM accounts WHERE id = $1)`, accountID)
+		WHERE email = (SELECT primary_email FROM accounts WHERE id = $1)`, accountID)
 	return err
 })
 ```
@@ -95,7 +99,7 @@ Never change a migration file once it has been applied anywhere. Add a new one.
 ## Enable API keys, credits or expiry
 
 Each module needs its migrations in `main.go`, its constructor, and a `Mount` for its
-pages. List module migrations before the app's own.
+pages on the `/account` group. List module migrations before the app's own.
 
 ```go
 // main.go
@@ -113,13 +117,15 @@ Migrations: []app.Migrations{
 ```go
 keys, err := apikeys.New(a, apikeys.Config{Prefix: "acme"}) // keys look like acme_…
 // routes.go
-keys.Mount(r.Group("/account/keys", accts.RequireSignIn), layout)
+keys.Mount(account, layout) // /account/api-keys
 api := r.Group("/api/v1", keys.RequireKey)
 ```
 
-**Credits** need a payment provider. Add `ACME_CREEM_API_KEY`, `ACME_CREEM_WEBHOOK_SECRET`
-and `ACME_CREEM_PRODUCT_ID` to `config.go`. The product is a one-time product with a
-custom price.
+Users create, rename and revoke keys, and delete revoked ones.
+
+**Credits** take purchases through a payment provider. Add `ACME_CREEM_API_KEY`,
+`ACME_CREEM_WEBHOOK_SECRET` and `ACME_CREEM_PRODUCT_ID` to `config.go`. The product is a
+one-time product with a custom price.
 
 ```go
 pay, err := creem.New(creem.Config{APIKey: cfg.CreemAPIKey, WebhookSecret: cfg.CreemWebhookSecret, ProductID: cfg.CreemProductID})
@@ -128,11 +134,16 @@ cr, err := credits.New(a, accts, credits.Config{
 	Policy:   credits.Policy{MinPurchaseCents: 500, MaxPurchaseCents: 50_000, FeeBasisPoints: 390, FeeFixedCents: 40},
 })
 // routes.go
-cr.Mount(r.Group("/account/credits", accts.RequireSignIn), layout)
+cr.Mount(account, layout) // /account/credits
 r.POST("/webhooks/payments", cr.Webhook)
 ```
 
 Set the webhook URL in Creem to `https://<your host>/webhooks/payments`.
+
+Without `Payments`, credits still work: the balance, the transactions and the app's
+charges stay, the credits page says that buying credit is not available, and `Webhook`
+answers 404. Use it while a payment provider reviews the site, or in a process that
+only spends credit.
 
 **Expiry** needs credits and an email sender. Without a sender it refuses to start, so
 credit never expires unwarned.
@@ -199,7 +210,7 @@ credits.Config{
 ```
 
 Reserve and capture inside `WithAccount`, which locks the account. The app's changes and
-the debit commit together, or not at all:
+the charge commit together, or not at all:
 
 ```go
 // Reserve.
@@ -217,7 +228,7 @@ err := cr.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
 	return err
 })
 
-// Capture: release the hold and charge what the job cost, in one transaction.
+// Capture: settle the hold and charge what the job cost, in one transaction.
 err = cr.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
 	if _, err := tx.SQL().ExecContext(ctx, `
 		UPDATE jobs
@@ -225,9 +236,13 @@ err = cr.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
 		WHERE id = $1 AND status = 'pending'`, jobID); err != nil {
 		return err
 	}
-	return tx.Debit(actualCost, "job:"+jobID, "Job")
+	return tx.Capture(actualCost, "job:"+jobID, "Job")
 })
 ```
+
+`Capture` does not check the available credit, because the hold did when the work
+started: finished work is charged even if a refund lowered the balance since. Charge no
+more than the hold reserved.
 
 Rules for holds:
 - Lock nothing of the app's before `WithAccount`, and do no remote calls inside it.
@@ -265,9 +280,10 @@ layout := ui.Layout{
 
 `examples/textlab/layout.templ` is a complete custom layout.
 
-**Replace one default page.** Mount the module's routes yourself and write the page you
-want on the module's store. For example, list keys with `keys.List`, create them with
-`keys.Create` and revoke them with `keys.Revoke`.
+**Replace one default page.** Write the page you want on the module's functions instead
+of mounting the module's pages. For example, the keys page uses `keys.List`,
+`keys.Create`, `keys.Rename`, `keys.Revoke` and `keys.Delete`; the credits page uses
+`cr.Summary`, `cr.History`, `cr.Quote`, `cr.Purchase` and `cr.PaymentStatus`.
 
 ## Allow more in the Content Security Policy
 
@@ -309,15 +325,74 @@ accts, err := accounts.New(a, keycloak, accounts.Config{LoginPath: "/login"})
 
 The contracts that matter:
 - `Authenticate` returns `identity.ErrNoSession` when there is no valid session, and
-  reports only verified email addresses as verified.
+  reports only verified email addresses as verified. A new identity joins the account
+  that has its verified address, so this is what keeps accounts safe.
 - `Delete` returns nil only after the provider confirmed the deletion.
 - `ParseWebhook` verifies the signature before anything else.
 
-Accounts are stored by provider name and subject. Switching the identity provider of an
-app that already has users needs a data migration of your own.
+Accounts find their identities by provider name and subject. When an app switches
+identity provider, each user's first sign-in with the new provider joins the account
+that has their verified address, so users keep their accounts.
 
 Test substitutes live in `_test.go` files. `examples/textlab/testing_test.go` has a test
 identity provider and a test payment provider.
+
+## Run a process without sign-in or payments
+
+An API gateway that authenticates with API keys and charges credit needs neither the
+identity provider nor the payment provider, and should not hold their secrets. Pass a
+nil identity provider and no payments:
+
+```go
+accts, err := accounts.New(a, nil, accounts.Config{})
+keys, err := apikeys.New(a, apikeys.Config{Prefix: "acme"})
+cr, err := credits.New(a, accts, credits.Config{Holds: heldByRequests})
+
+api := r.Group("/v1", keys.RequireKey)
+```
+
+`RequireSignIn`, the account pages and `Delete` are then unavailable. Inside the
+transaction that reserves credit for a request, `keys.LockActive` checks that the key is
+still active, so a key revoked meanwhile cannot spend:
+
+```go
+err := cr.WithAccount(ctx, key.AccountID, func(tx *credits.Tx) error {
+	if err := keys.LockActive(ctx, tx.SQL(), key.AccountID, key.ID); err != nil {
+		return err
+	}
+	// reserve, as in "Add a credit hold"
+})
+```
+
+## Adopt an existing database
+
+An app that created its tables before it used C4Stack can keep them. Module migrations
+use `IF NOT EXISTS` throughout, so they adopt tables that already have the module's
+shape and add what is missing, such as new columns and tables.
+
+1. Match the module tables. `docs/architecture.md` lists each module's tables; the
+   module's `migrations/001_initial.sql` is the exact shape. Columns the app added of
+   its own can stay.
+2. List the app's existing migration files first, in their own namespace, then the
+   modules, then a new namespace for the app's later migrations:
+
+   ```go
+   Migrations: []app.Migrations{
+   	{Namespace: "acme", Files: legacy.Files}, // the files that created the tables
+   	accounts.Migrations,
+   	apikeys.Migrations,
+   	credits.Migrations,
+   	{Namespace: "acme_app", Files: migrations.Files},
+   },
+   ```
+
+3. Run `migrate`. A history recorded without namespaces is converted: each recorded
+   file goes to the set that has a file with the same version and checksum. A recorded
+   file that no set has stops the run before anything changes.
+
+Keep each step additive, so the release before the move keeps running against the
+converged database while a deployment switches over. `internal/porttest` moves
+Searchbase Cloud's database this way and checks every step.
 
 ## Add an operator command
 

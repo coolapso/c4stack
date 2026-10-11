@@ -7,8 +7,8 @@ environment prefix `ACME_`.
 
 | Provider | Needed for | Setup |
 |---|---|---|
-| Hanko | every app | A tenant with the app's URL. Allow account deletion, so deletion can go through the app. Require email verification. The `hanko` cookie must reach the app's host. |
-| Creem | credits | A one-time product with a custom price, and a webhook to `https://<host>/webhooks/payments` (or wherever the app mounts `Webhook`). Use a `creem_test_` key until you go live. |
+| Hanko | every app that signs users in | A tenant with the app's URL. Allow account deletion, so deletion can go through the app. Require email verification: accounts are linked by verified address. The `hanko` cookie must reach the app's host. |
+| Creem | buying credit | A one-time product with a custom price, and a webhook to `https://<host>/webhooks/payments` (or wherever the app mounts `Webhook`). Use a `creem_test_` key until you go live. |
 | Scaleway Transactional Email | credit expiry | A project with a verified sending domain and a key allowed to send. |
 | PostgreSQL | every app | PostgreSQL 13 or later; C4Stack is tested with 18. |
 
@@ -106,6 +106,14 @@ that uses them, and remove old ones in a later release.
 **Rolling back** a deployment does not roll back the schema. The older release tolerates
 the newer migrations, and running its migrate job does nothing.
 
+**Moving an existing app onto C4Stack** is a release like any other when its tables
+already have the modules' shape, as the guide's "Adopt an existing database" describes.
+The first migrate job converts the migration history and adds what the modules need,
+without moving data, and the previous release keeps running against the result during
+the switch. Back up the database before that first run anyway. Once the history has
+namespaces, the previous release's own migrate job no longer understands it, so roll
+back the image only, not to the old migrate job.
+
 **Published migrations never change.** `migrate` refuses a file whose checksum differs
 from the one recorded.
 
@@ -137,10 +145,11 @@ acme accounts delete-local <account-id>
 ```
 
 It runs every module's and the app's deletion hooks, forfeits remaining credit and deletes
-the account, in one transaction.
+the account, in one transaction. If the user signs up again with the same address before
+you do, the sign-up finishes the deletion itself and starts a new, empty account; the
+command then reports that the account no longer exists.
 
-When someone asks you to delete an account they cannot sign in to, delete the user in
-the Hanko console first, then run the same command.
+Every deletion goes through the app, so its data is removed with it.
 
 ### Payment reviews
 
@@ -171,6 +180,9 @@ hour. One replica runs it at a time. To run it now:
 acme credits expire
 ```
 
-A warning that cannot be delivered is retried a day later. Credit only expires after its
-owner's warning was delivered and the full notice period has passed. Without a working
-email sender, nothing expires.
+A warning that cannot be delivered is tried again on the next run. Credit only expires
+after its owner's warning was delivered and the full notice period has passed. Without a
+working email sender, nothing expires.
+
+To shorten the notice period, wait until no warnings are outstanding: the new period
+also applies to warnings already sent.

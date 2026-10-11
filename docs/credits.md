@@ -10,7 +10,10 @@ guarantees, what the app decides, and what each payment webhook does.
   and the server checks it against `Policy` and computes the fee. The payment provider
   never decides what is credited.
 - `Policy` holds the app's business values: the purchase limits and the fee. The
-  framework has no defaults for them.
+  framework has no defaults for them. One purchase charges at most €999,999.99, fee
+  included.
+- Without a payment provider, nothing can be bought, and everything else on this page
+  still holds.
 
 ## Ledger rules
 
@@ -18,22 +21,27 @@ Every change to credit is a row in `credit_ledger`:
 
 | Kind | Sign | Written by |
 |---|---|---|
-| `purchase` | + | the webhook, for a paid purchase |
-| `refund`, `dispute` | − | the webhook, for a reversed purchase |
-| `debit` | − | the app, for work (`Debit`, `Tx.Debit`) |
+| `top_up` | + | the webhook, for a paid purchase |
+| `refund`, `chargeback` | − | the webhook, for a refunded or disputed purchase |
+| `usage` | − | the app, for work (`Debit`, `Tx.Debit`, `Tx.Capture`) |
 | `adjustment` | ± | the app or an operator (`Adjust`, `credits adjust`) |
 | `expiry` | − | credit expiry, when that module is enabled |
 | `forfeit` | − | account deletion, for remaining credit |
 
+Entries for payments carry the purchase and the provider's event ID; the app's entries
+carry its reference; any entry can carry a description, which `credits.Label` shows
+people.
+
 These rules hold:
 - **Every mutation locks the account row.** Concurrent debits cannot overdraw.
-- **Every mutation is idempotent per account and reference.** Repeating a debit or
-  adjustment with the same reference and amount succeeds without a second entry. The
-  same reference with another amount returns `ErrConflict`. References starting with
-  `purchase:`, `refund:`, `dispute:`, `expiry:` or `forfeit:` are reserved.
+- **A payment is credited at most once, and reversed at most once.** Unique indexes on
+  the purchase and the event ID enforce it, however often the provider retries.
+- **The app's charges and adjustments are idempotent per account and reference.**
+  Repeating one with the same reference and amount succeeds without a second entry. The
+  same reference with another amount returns `ErrConflict`.
 - **Debits never take available credit below zero.** Available credit is the balance
-  minus what the app's `Holds` function reports. Adjustments and reversals can make the
-  balance negative.
+  minus what the app's `Holds` function reports. `Capture`, adjustments and reversals
+  can make the balance negative.
 - **The ledger is append-only.** A trigger rejects changes and deletes. Corrections are
   new entries.
 - **The one exception is account deletion.** The remaining positive balance is
@@ -43,7 +51,7 @@ These rules hold:
 ## Holds
 
 An app that reserves credit for work in progress keeps the reservations in its own
-table and reports them through `Config.Holds`. To reserve or capture:
+table and reports them through `Config.Holds`. To reserve:
 
 ```go
 err := cr.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
@@ -59,28 +67,33 @@ err := cr.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
 })
 ```
 
+When the work is done, settle the reservation and charge it in one `WithAccount`:
+update the app's row, then call `tx.Capture` with a reference unique to the work.
+`Capture` charges even if the balance fell below the reserved amount meanwhile, because
+the hold already approved the work. Release reservations of failed or abandoned work.
+
 `WithAccount` locks the account first, so lock nothing of the app's before it. The app's
-changes and the framework's debits commit together or not at all. Do no remote calls
+changes and the module's charges commit together or not at all. Do no remote calls
 inside it.
 
 ## Payment webhooks
 
 The webhook credits what the stored purchase says, never what the event says. It
-finds the purchase by the reference sent to the checkout, then by the provider's
-checkout ID, then by its order ID.
+finds the purchase by the purchase ID sent to the checkout, then by the provider's
+checkout ID, then by its order ID. Without a payment provider, it answers 404.
 
 | Event | Situation | Response | Effect |
 |---|---|---|---|
 | Any | Signature or body invalid | 400 | Nothing |
 | Any | Not about this app's payments | 200 | Nothing |
 | Any | Database or other transient failure | 503 | Nothing; the provider retries |
-| Paid | Pending purchase, amount and currency match | 200 | Purchase paid; credit granted once |
+| Paid | Unpaid purchase, amount and currency match | 200 | Purchase paid; credit granted once |
 | Paid | Already paid, refunded or disputed | 200 | Nothing |
 | Paid | Amount, currency or checkout differs, or a discount lowered the payment | 200 | Review |
 | Paid | The account was deleted | 200 | Purchase paid, no credit; review for a refund |
 | Refund or dispute | Paid purchase, full amount | 200 | Credit reversed once, even below zero |
 | Refund or dispute | Already reversed | 200 | Nothing |
-| Refund or dispute | Partial amount, or currency differs | 200 | Review |
+| Refund or dispute | Partial amount, or currency, checkout or order differs | 200 | Review |
 | Refund or dispute | Purchase not yet paid | 200 | Review |
 | Refund or dispute | The account was deleted | 200 | Purchase marked reversed; no ledger change |
 | Any | No matching purchase | 200 | Review |

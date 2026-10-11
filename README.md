@@ -34,7 +34,7 @@ sure Git reaches GitHub with your credentials; Go and Task both fetch from it.
 | `app` | The command entry point: `serve`, `migrate` and operator commands |
 | `ui` | The default design, layout types and content-hashed assets |
 | `identity`, `identity/hanko` | The identity provider interface and the Hanko adapter, with profile management |
-| `accounts` | Accounts, sign-in middleware, the settings page and account deletion |
+| `accounts` | Accounts linked by verified email, sign-in middleware, settings and account deletion |
 | `apikeys` | Opt-in API keys with bearer authentication and a keys page |
 | `payments`, `payments/creem` | The payment provider interface and the Creem adapter |
 | `credits` | Opt-in prepaid credit: ledger, holds, purchases, webhooks and history |

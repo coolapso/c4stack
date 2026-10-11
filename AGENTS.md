@@ -21,15 +21,20 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - `taskfiles/app.yml` is the shared Taskfile apps include remotely. Its tasks run from
   the app root (`dir: '{{.ROOT_DIR}}'`), push nothing on their own, and hold no secrets.
   Its own variables start with `SHARED_`, because Task merges them over the app's.
-- `~/Dev/searchbasecloud` is the reference app for conventions: CSS, billing, tasks. It
-  is read-only: never build, test, format, migrate or change git state there.
+- `~/Dev/searchbasecloud` is the reference app, and the modules' compatibility target.
+  Module tables, paths and behaviour are Searchbase's unless a rule here says otherwise;
+  `internal/porttest` must keep proving that Searchbase moves onto C4Stack with one
+  release. Searchbase is read-only: never build, test, format, migrate or change git
+  state there.
 
 ## Rules
 
 - C4Stack reads no environment variables and puts its name in nothing users or
   operators see: env vars, cookies, URLs, key prefixes, email subjects.
-- The identity provider owns credentials and sessions. Accounts map by provider and
-  subject, never by email. Deletion goes to the provider first.
+- The identity provider owns credentials and sessions. A sign-in finds its account by
+  provider and subject; a new identity joins the account with its verified email, from
+  any provider. Unverified identities get no account. Deletion goes to the provider
+  first.
 - Browser mutations need the CSRF token and a matching Origin; signed-in routes get both
   from `accounts.RequireSignIn`. API-key routes and webhooks use neither.
 - Never log secrets, session tokens, API keys, request or webhook bodies, buyer details,
@@ -38,8 +43,9 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
   idempotent per account and reference; the ledger is append-only. Webhooks grant what
   the stored purchase says, and send anything ambiguous to review.
 - Business values (prices, limits, fees, durations) are app configuration.
-- Migrations: one namespace per module, files `NNN_name.sql`. Never change a released
-  file; before v0.1.0, each module keeps one initial migration. Runtime only connects;
+- Migrations: one namespace per module, files `NNN_name.sql`, every statement idempotent
+  (`IF NOT EXISTS`) so modules adopt existing tables. Never change a released file;
+  before v0.1.0, each module keeps one initial migration. Runtime only connects;
   `migrate` applies schema and needs only the database URL.
 - New personal data joins account deletion through `ON DELETE CASCADE` or `OnDelete`.
 - Pass `c.Request.Context()` to database and HTTP calls, never the `*gin.Context`: they
