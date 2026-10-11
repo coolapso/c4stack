@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -42,21 +43,53 @@ func (testPayments) ParseWebhook(http.Header, []byte) (payments.Event, error) {
 	return payments.Event{}, payments.ErrInvalid
 }
 
-// outbox records sent mail; fail makes delivery fail.
+// outbox records sent mail and reports its delivery. Messages are delivered when sent
+// unless the test says otherwise; refuse makes sending itself fail.
 type outbox struct {
-	mu   sync.Mutex
-	sent []email.Message
-	fail bool
+	mu        sync.Mutex
+	sent      []email.Message
+	refuse    bool
+	sentAt    map[string]time.Time
+	state     map[string]email.Delivery
+	delivered map[string]time.Time
+	now       func() time.Time
+	// next is the state new messages start in.
+	next email.Delivery
 }
 
-func (o *outbox) Send(_ context.Context, m email.Message) error {
+func (o *outbox) Send(_ context.Context, m email.Message) (string, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.fail {
-		return errors.New("mail server down")
+	if o.refuse {
+		return "", errors.New("mail server down")
 	}
 	o.sent = append(o.sent, m)
-	return nil
+	id := fmt.Sprintf("msg-%d", len(o.sent))
+	o.sentAt[id], o.state[id] = o.now(), o.next
+	if o.next == email.Delivered {
+		o.delivered[id] = o.now()
+	}
+	return id, nil
+}
+
+func (o *outbox) Delivery(_ context.Context, id string) (email.Delivery, time.Time, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.state[id], o.delivered[id], nil
+}
+
+// deliver marks the latest message delivered at the given time.
+func (o *outbox) deliver(at time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	id := fmt.Sprintf("msg-%d", len(o.sent))
+	o.state[id], o.delivered[id] = email.Delivered, at
+}
+
+func (o *outbox) fail() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.state[fmt.Sprintf("msg-%d", len(o.sent))] = email.Failed
 }
 
 var holds = app.Migrations{Namespace: "app", Files: fstest.MapFS{"001_holds.sql": {Data: []byte(`
@@ -75,7 +108,9 @@ var start = time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{mail: &outbox{}, now: start}
+	f := &fixture{now: start}
+	f.mail = &outbox{sentAt: map[string]time.Time{}, state: map[string]email.Delivery{}, delivered: map[string]time.Time{},
+		now: func() time.Time { return f.now }, next: email.Delivered}
 	f.a = apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{accounts.Migrations, credits.Migrations, Migrations, holds}})
 	accts, err := accounts.New(f.a, testIdentity{}, accounts.Config{})
 	if err != nil {
@@ -214,34 +249,82 @@ func TestHoldsDeferExpiry(t *testing.T) {
 	}
 }
 
-func TestFailedDeliveryNeverStartsTheNotice(t *testing.T) {
+// The notice period starts when the provider delivers the warning, however late.
+func TestTheNoticeRunsFromDelivery(t *testing.T) {
 	f := newFixture(t)
 	ada := f.account(t, "ada@example.com", 1000)
-	f.mail.fail = true
+	f.mail.next = email.Pending
+	f.now = start.AddDate(0, 11, 15)
+	if r := f.run(t); r.Warned != 1 {
+		t.Fatalf("warning: %+v", r)
+	}
+	// Two days later the provider delivers it.
+	delivered := f.now.AddDate(0, 0, 2)
+	f.mail.deliver(delivered)
+	f.now = delivered.Add(time.Hour)
+	f.run(t)
+	f.now = delivered.AddDate(0, 0, 30).Add(-time.Minute)
+	if r := f.run(t); r.Expired != 0 {
+		t.Fatalf("expired before a full notice from delivery: %+v", r)
+	}
+	f.now = delivered.AddDate(0, 0, 30).Add(time.Minute)
+	if r := f.run(t); r.Expired != 1 || f.balance(t, ada) != 0 {
+		t.Fatalf("after a full notice from delivery: %+v", r)
+	}
+}
+
+// Shortening the notice period never brings a deadline forward.
+func TestAnnouncedDeadlinesNeverShorten(t *testing.T) {
+	f := newFixture(t)
+	ada := f.account(t, "ada@example.com", 1000)
+	f.now = start.AddDate(0, 11, 15)
+	f.run(t)
+	f.expiry.cfg.Policy.NoticeDays = 1
+	f.now = start.AddDate(0, 12, 1)
+	if r := f.run(t); r.Expired != 0 || f.balance(t, ada) != 1000 {
+		t.Fatalf("a shorter notice applied to a warning already delivered: %+v", r)
+	}
+	f.now = start.AddDate(0, 11, 15).AddDate(0, 0, 31)
+	if r := f.run(t); r.Expired != 1 {
+		t.Fatalf("after the announced deadline: %+v", r)
+	}
+}
+
+func TestUndeliveredWarningsAreSentAgain(t *testing.T) {
+	f := newFixture(t)
+	ada := f.account(t, "ada@example.com", 1000)
+	f.mail.refuse = true
 	f.now = start.AddDate(0, 11, 15)
 	if r := f.run(t); r.Failed != 1 || r.Warned != 0 {
-		t.Fatalf("failed delivery: %+v", r)
+		t.Fatalf("refused send: %+v", r)
 	}
-	f.now = start.AddDate(0, 12, 1)
-	if r := f.run(t); r.Failed != 1 || r.Expired != 0 {
-		t.Fatalf("expired without a warning: %+v", r)
-	}
-	f.mail.fail = false
+	f.mail.refuse = false
+	f.mail.next = email.Pending
 	f.now = f.now.Add(time.Hour)
-	if r := f.run(t); r.Warned != 1 || r.Expired != 0 {
+	if r := f.run(t); r.Warned != 1 {
 		t.Fatalf("retry: %+v", r)
 	}
-	// The deadline is a full notice after delivery, past the nominal date.
-	f.now = start.AddDate(0, 12, 15)
-	if r := f.run(t); r.Expired != 0 {
-		t.Fatalf("expired before the full notice: %+v", r)
+	// The recipient's mail system refuses it: it is sent again.
+	f.mail.fail()
+	f.now = f.now.Add(time.Hour)
+	if r := f.run(t); r.Warned != 1 || len(f.mail.sent) != 2 {
+		t.Fatalf("after a failed delivery: %+v", r)
 	}
-	f.now = start.AddDate(0, 13, 5)
-	if r := f.run(t); r.Expired != 1 || f.balance(t, ada) != 0 {
-		t.Fatalf("expiry after a late warning: %+v", r)
+	// Undelivered for more than three days: sent again.
+	f.now = f.now.AddDate(0, 0, 4)
+	if r := f.run(t); r.Warned != 1 || len(f.mail.sent) != 3 {
+		t.Fatalf("after a long wait: %+v", r)
 	}
-	if len(f.mail.sent) != 1 {
-		t.Fatalf("sent %d warnings", len(f.mail.sent))
+	// Nothing was delivered, so nothing expires.
+	f.now = start.AddDate(0, 14, 0)
+	if r := f.run(t); r.Expired != 0 || f.balance(t, ada) != 1000 {
+		t.Fatalf("expired without a delivered warning: %+v", r)
+	}
+	f.mail.deliver(f.now)
+	f.run(t)
+	f.now = f.now.AddDate(0, 0, 31)
+	if r := f.run(t); r.Expired != 1 {
+		t.Fatalf("after delivery: %+v", r)
 	}
 }
 
@@ -249,6 +332,7 @@ func TestAnOldWarningStillCounts(t *testing.T) {
 	f := newFixture(t)
 	ada := f.account(t, "ada@example.com", 1000)
 	f.now = start.AddDate(0, 11, 15)
+	f.run(t)
 	f.run(t)
 	// The app did not run for months; the announced date is long past.
 	f.now = start.AddDate(0, 16, 0)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -33,14 +34,14 @@ type Config struct {
 	APIURL string
 }
 
-// Scaleway implements email.Sender.
+// Scaleway implements email.TrackingSender.
 type Scaleway struct {
 	cfg      Config
 	endpoint string
 	client   *http.Client
 }
 
-var _ email.Sender = (*Scaleway)(nil)
+var _ email.TrackingSender = (*Scaleway)(nil)
 
 // New validates cfg and returns the adapter. It does not contact Scaleway.
 func New(cfg Config) (*Scaleway, error) {
@@ -79,14 +80,14 @@ type address struct {
 	Name  string `json:"name,omitempty"`
 }
 
-// Send delivers m. Errors carry the HTTP status at most, never the recipient or
-// Scaleway's response body.
-func (s *Scaleway) Send(ctx context.Context, m email.Message) error {
+// Send hands m to Scaleway and returns its ID there. Errors carry the HTTP status at
+// most, never the recipient or Scaleway's response body.
+func (s *Scaleway) Send(ctx context.Context, m email.Message) (string, error) {
 	if _, err := mail.ParseAddress(m.To); err != nil || strings.Contains(m.To, "<") {
-		return errors.New("scaleway: invalid recipient address")
+		return "", errors.New("scaleway: invalid recipient address")
 	}
 	if m.Subject == "" || m.Text == "" {
-		return errors.New("scaleway: a message needs a subject and text")
+		return "", errors.New("scaleway: a message needs a subject and text")
 	}
 	body := map[string]any{
 		"project_id": s.cfg.ProjectID,
@@ -99,11 +100,57 @@ func (s *Scaleway) Send(ctx context.Context, m email.Message) error {
 		body["additional_headers"] = []map[string]string{{"key": "Reply-To", "value": s.cfg.ReplyTo}}
 	}
 	payload, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(payload))
+	var result struct {
+		Emails []struct {
+			ID string `json:"id"`
+		} `json:"emails"`
+	}
+	if err := s.call(ctx, http.MethodPost, s.endpoint, payload, &result); err != nil {
+		return "", fmt.Errorf("scaleway: send: %w", err)
+	}
+	if len(result.Emails) != 1 || result.Emails[0].ID == "" {
+		return "", errors.New("scaleway: send: unreadable response")
+	}
+	return result.Emails[0].ID, nil
+}
+
+// Delivery reports a message's status. Scaleway's "sent" means the recipient's mail
+// system took it; "failed" and "canceled" are final failures; anything else is still
+// pending.
+func (s *Scaleway) Delivery(ctx context.Context, id string) (email.Delivery, time.Time, error) {
+	var result struct {
+		Status    string    `json:"status"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	if err := s.call(ctx, http.MethodGet, s.endpoint+"/"+url.PathEscape(id), nil, &result); err != nil {
+		return email.Pending, time.Time{}, fmt.Errorf("scaleway: delivery: %w", err)
+	}
+	switch result.Status {
+	case "sent":
+		at := result.UpdatedAt
+		if at.IsZero() {
+			at = time.Now()
+		}
+		return email.Delivered, at.UTC(), nil
+	case "failed", "canceled":
+		return email.Failed, time.Time{}, nil
+	}
+	return email.Pending, time.Time{}, nil
+}
+
+// call sends one API request and decodes its JSON response into out.
+func (s *Scaleway) call(ctx context.Context, method, endpoint string, payload []byte, out any) error {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("X-Auth-Token", s.cfg.SecretKey)
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -111,11 +158,15 @@ func (s *Scaleway) Send(ctx context.Context, m email.Message) error {
 		if errors.As(err, &urlErr) {
 			err = urlErr.Err
 		}
-		return fmt.Errorf("scaleway: send: %w", err)
+		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("scaleway: send answered %d", resp.StatusCode)
+		return fmt.Errorf("answered %d", resp.StatusCode)
+	}
+	if json.Unmarshal(data, out) != nil {
+		return errors.New("unreadable response")
 	}
 	return nil
 }

@@ -59,7 +59,7 @@ func setup(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return err
 	}
-	var mail email.Sender
+	var mail email.TrackingSender
 	if cfg.ScalewaySecretKey != "" {
 		if mail, err = scaleway.New(scaleway.Config{
 			SecretKey: cfg.ScalewaySecretKey,

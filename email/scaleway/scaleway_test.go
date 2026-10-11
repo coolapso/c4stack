@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coolapso/c4stack/email"
 )
@@ -33,7 +34,11 @@ func TestSend(t *testing.T) {
 		path, token = r.URL.Path, r.Header.Get("X-Auth-Token")
 		json.NewDecoder(r.Body).Decode(&got)
 		w.WriteHeader(status)
-		io.WriteString(w, `{"message":"rejected ada@example.com"}`)
+		if status != http.StatusOK {
+			io.WriteString(w, `{"message":"rejected ada@example.com"}`)
+			return
+		}
+		io.WriteString(w, `{"emails":[{"id":"655c27f2","status":"new","rcpt_to":"ada@example.com"}]}`)
 	}))
 	defer srv.Close()
 	s, err := New(Config{SecretKey: "scw-secret", ProjectID: "proj", From: "noreply@acme.example", FromName: "Acme", ReplyTo: "help@acme.example", APIURL: srv.URL})
@@ -41,8 +46,9 @@ func TestSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := email.Message{To: "ada@example.com", Subject: "Hello", Text: "Body"}
-	if err := s.Send(context.Background(), m); err != nil {
-		t.Fatal(err)
+	id, err := s.Send(context.Background(), m)
+	if err != nil || id != "655c27f2" {
+		t.Fatalf("send: %q %v", id, err)
 	}
 	if path != "/transactional-email/v1alpha1/regions/fr-par/emails" || token != "scw-secret" {
 		t.Errorf("path %q token %q", path, token)
@@ -55,11 +61,45 @@ func TestSend(t *testing.T) {
 	}
 
 	status = http.StatusUnprocessableEntity
-	err = s.Send(context.Background(), m)
+	_, err = s.Send(context.Background(), m)
 	if err == nil || strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "422") {
 		t.Fatalf("error %v", err)
 	}
-	if err := s.Send(context.Background(), email.Message{To: "Ada <ada@example.com>", Subject: "s", Text: "t"}); err == nil {
+	if _, err := s.Send(context.Background(), email.Message{To: "Ada <ada@example.com>", Subject: "s", Text: "t"}); err == nil {
 		t.Error("accepted a recipient with a display name")
+	}
+}
+
+func TestDelivery(t *testing.T) {
+	var path string
+	body := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	s, _ := New(Config{SecretKey: "s", ProjectID: "p", From: "noreply@acme.example", APIURL: srv.URL})
+	cases := []struct {
+		body string
+		want email.Delivery
+	}{
+		{`{"status":"new"}`, email.Pending},
+		{`{"status":"sending","try_count":1}`, email.Pending},
+		{`{"status":"sent","updated_at":"2024-04-01T07:55:41.266916Z"}`, email.Delivered},
+		{`{"status":"failed"}`, email.Failed},
+		{`{"status":"canceled"}`, email.Failed},
+	}
+	for _, c := range cases {
+		body = c.body
+		got, at, err := s.Delivery(context.Background(), "655c27f2")
+		if err != nil || got != c.want {
+			t.Errorf("%s: %v %v", c.body, got, err)
+		}
+		if got == email.Delivered && !at.Equal(time.Date(2024, 4, 1, 7, 55, 41, 266916000, time.UTC)) {
+			t.Errorf("delivered at %v", at)
+		}
+	}
+	if path != "/transactional-email/v1alpha1/regions/fr-par/emails/655c27f2" {
+		t.Errorf("path %q", path)
 	}
 }

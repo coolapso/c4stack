@@ -32,7 +32,7 @@ type providers struct {
 	}
 	payments payments.Provider
 	// email is optional; without it, credit never expires.
-	email email.Sender
+	email email.TrackingSender
 }
 
 // textlab holds what the app's own handlers use.

@@ -1,11 +1,11 @@
 // Package expiry expires credit that has gone unused, after warning its owner.
 //
 // An account's credit expires after Policy.InactiveMonths without a purchase, charge or
-// adjustment. A warning goes out NoticeDays before that, and only a delivered warning
-// counts: credit expires once a full notice period from delivery has passed, never
-// earlier than announced. New activity starts over, and a hold the app reports defers
-// expiry. Shortening NoticeDays also shortens warnings already sent, so do not shorten
-// it while warnings are outstanding.
+// adjustment. A warning goes out NoticeDays before that, and counts only once the email
+// provider reports it delivered: credit expires once a full notice period from delivery
+// has passed, and never before the date the warning announced. Each warning's deadline
+// is stored, so a later policy change never shortens it. New activity starts over, and
+// a hold the app reports defers expiry.
 //
 // Expiry runs hourly while the app serves, and on demand with the credits expire
 // command. A PostgreSQL lock keeps replicas from running it twice at once.
@@ -30,7 +30,7 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-// Migrations add the warning column to accounts. List them after credits.Migrations.
+// Migrations create the warnings table. List them after credits.Migrations.
 var Migrations = app.Migrations{Namespace: "credits_expiry", Files: sub(migrationFiles, "migrations")}
 
 func sub(fsys fs.FS, dir string) fs.FS {
@@ -61,8 +61,9 @@ type Notice struct {
 
 // Config configures expiry.
 type Config struct {
-	// Sender delivers the warnings. It is required: credit never expires unwarned.
-	Sender email.Sender
+	// Sender sends the warnings and reports their delivery. It is required: credit
+	// never expires without a delivered warning.
+	Sender email.TrackingSender
 	Policy Policy
 	// AppName names the app in the default warning, such as "Acme".
 	AppName string
@@ -137,8 +138,8 @@ type Result struct {
 	Skipped bool
 	Warned  int
 	Expired int
-	// Failed counts warnings that could not be delivered or accounts that could not be
-	// processed. The next run tries them again.
+	// Failed counts warnings that could not be sent or checked, and accounts that
+	// could not be processed. The next run tries them again.
 	Failed int
 }
 
@@ -146,7 +147,8 @@ type Result struct {
 // replicas and deployments that share the database.
 const lockKey = 739_084_311_982_417_602
 
-// Run sends due warnings and expires due credit once.
+// Run checks the delivery of sent warnings, sends due warnings and expires due credit,
+// once.
 func (x *Expiry) Run(ctx context.Context) (Result, error) {
 	conn, err := x.app.DB().Conn(ctx)
 	if err != nil {
@@ -166,6 +168,9 @@ func (x *Expiry) Run(ctx context.Context) (Result, error) {
 
 	now := x.now().UTC()
 	var r Result
+	if err := x.confirmAll(ctx, now, &r); err != nil {
+		return r, err
+	}
 	if err := x.warnAll(ctx, now, &r); err != nil {
 		return r, err
 	}
@@ -173,6 +178,9 @@ func (x *Expiry) Run(ctx context.Context) (Result, error) {
 }
 
 const batchSize = 100
+
+// resendAfter is how long a warning may stay undelivered before it is sent again.
+const resendAfter = 3 * 24 * time.Hour
 
 // activity summarises each account's balance and last activity: its latest purchase,
 // charge or adjustment.
@@ -184,18 +192,101 @@ const activity = `
 	WHERE account_id IS NOT NULL
 	GROUP BY account_id`
 
+// sent is a warning the provider has not reported delivered yet.
+type sent struct {
+	accountID string
+	messageID string
+	sentAt    time.Time
+	announced time.Time
+}
+
+// confirmAll asks the provider what became of each undelivered warning. A delivered
+// warning starts its notice period at delivery; a failed one, or one undelivered for
+// too long, is removed so the next step sends it again.
+func (x *Expiry) confirmAll(ctx context.Context, now time.Time, r *Result) error {
+	after := ""
+	for {
+		batch, err := x.undelivered(ctx, after)
+		if err != nil {
+			return err
+		}
+		for _, w := range batch {
+			if err := x.confirm(ctx, now, w); err != nil {
+				r.Failed++
+				x.app.Log().Warn("checking a credit expiry warning failed", "account_id", w.accountID, "error", err)
+			}
+		}
+		if len(batch) < batchSize {
+			return nil
+		}
+		after = batch[len(batch)-1].accountID
+	}
+}
+
+func (x *Expiry) undelivered(ctx context.Context, after string) ([]sent, error) {
+	rows, err := x.app.DB().QueryContext(ctx, `
+		SELECT account_id, message_id, sent_at, announced_expiry
+		FROM credit_expiry_warnings
+		WHERE delivered_at IS NULL AND message_id IS NOT NULL AND account_id::text > $1
+		ORDER BY account_id::text
+		LIMIT $2`, after, batchSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var batch []sent
+	for rows.Next() {
+		var w sent
+		if err := rows.Scan(&w.accountID, &w.messageID, &w.sentAt, &w.announced); err != nil {
+			return nil, err
+		}
+		batch = append(batch, w)
+	}
+	return batch, rows.Err()
+}
+
+func (x *Expiry) confirm(ctx context.Context, now time.Time, w sent) error {
+	state, at, err := x.cfg.Sender.Delivery(ctx, w.messageID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case state == email.Delivered:
+		expires := at.Add(time.Duration(x.cfg.Policy.NoticeDays) * 24 * time.Hour)
+		if expires.Before(w.announced) {
+			expires = w.announced
+		}
+		_, err = x.app.DB().ExecContext(ctx, `
+			UPDATE credit_expiry_warnings
+			SET delivered_at = $3, expires_at = $4
+			WHERE account_id = $1 AND message_id = $2`, w.accountID, w.messageID, at, expires,
+		)
+		return err
+	case state == email.Failed || now.Sub(w.sentAt) > resendAfter:
+		if state == email.Failed {
+			x.app.Log().Warn("a credit expiry warning was not delivered; it is sent again", "account_id", w.accountID)
+		}
+		_, err = x.app.DB().ExecContext(ctx, `
+			DELETE FROM credit_expiry_warnings
+			WHERE account_id = $1 AND message_id = $2 AND delivered_at IS NULL`, w.accountID, w.messageID,
+		)
+		return err
+	}
+	return nil
+}
+
 // due is an account with credit due for a warning.
 type due struct {
 	accountID    string
 	email        string
 	balance      int64
 	lastActivity time.Time
-	expiresAt    time.Time
+	announced    time.Time
 }
 
 // warnAll warns every account whose credit expires within the notice period and that
-// has not been warned since its last activity. The credit expires no sooner than a
-// full notice period after the warning.
+// has no warning about its last activity.
 func (x *Expiry) warnAll(ctx context.Context, now time.Time, r *Result) error {
 	after := ""
 	for {
@@ -219,7 +310,8 @@ func (x *Expiry) warnAll(ctx context.Context, now time.Time, r *Result) error {
 }
 
 // dueWarnings returns the next batch of accounts due for a warning, after the account ID
-// after.
+// after. The announced date is the nominal expiry, or a full notice period from now if
+// that is later.
 func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) ([]due, error) {
 	rows, err := x.app.DB().QueryContext(ctx, `
 		WITH activity AS (`+activity+`)
@@ -230,9 +322,10 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 		       )
 		FROM activity c
 		JOIN accounts a ON a.id = c.account_id
+		LEFT JOIN credit_expiry_warnings w ON w.account_id = c.account_id
 		WHERE c.balance > 0
 		    AND c.last_activity + make_interval(months => $1) - make_interval(days => $2) <= $3
-		    AND (a.credit_expiry_warned_at IS NULL OR a.credit_expiry_warned_at < c.last_activity)
+		    AND (w.account_id IS NULL OR w.activity_at < c.last_activity)
 		    AND a.id::text > $4
 		ORDER BY a.id::text
 		LIMIT $5`,
@@ -245,7 +338,7 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 	var batch []due
 	for rows.Next() {
 		var d due
-		if err := rows.Scan(&d.accountID, &d.email, &d.balance, &d.lastActivity, &d.expiresAt); err != nil {
+		if err := rows.Scan(&d.accountID, &d.email, &d.balance, &d.lastActivity, &d.announced); err != nil {
 			return nil, err
 		}
 		batch = append(batch, d)
@@ -253,37 +346,42 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 	return batch, rows.Err()
 }
 
-// warn sends one warning and records its delivery. If recording fails, the next run
-// sends the warning again, which is safer than expiring credit without one.
+// warn sends one warning and records it until the provider reports its delivery. If
+// recording fails, the next run sends the warning again, which is safer than expiring
+// credit without one.
 func (x *Expiry) warn(ctx context.Context, now time.Time, d due) error {
-	err := x.cfg.Sender.Send(ctx, x.cfg.Message(Notice{
+	id, err := x.cfg.Sender.Send(ctx, x.cfg.Message(Notice{
 		To:           d.email,
 		AppName:      x.cfg.AppName,
 		BalanceCents: d.balance,
 		LastActivity: d.lastActivity,
-		ExpiresAt:    d.expiresAt,
+		ExpiresAt:    d.announced,
 		CreditsURL:   x.cfg.CreditsURL,
 	}))
 	if err != nil {
-		return fmt.Errorf("deliver warning: %w", err)
+		return fmt.Errorf("send warning: %w", err)
 	}
 	_, err = x.app.DB().ExecContext(ctx, `
-		UPDATE accounts
-		SET credit_expiry_warned_at = $2
-		WHERE id = $1`, d.accountID, now,
+		INSERT INTO credit_expiry_warnings (account_id, activity_at, message_id, sent_at, announced_expiry)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (account_id) DO UPDATE
+		SET activity_at = excluded.activity_at,
+		    message_id = excluded.message_id,
+		    sent_at = excluded.sent_at,
+		    announced_expiry = excluded.announced_expiry,
+		    delivered_at = NULL,
+		    expires_at = NULL`,
+		d.accountID, d.lastActivity, id, now, d.announced,
 	)
 	return err
 }
 
-// expired is the condition for credit to expire, on the activity and accounts rows:
-// InactiveMonths without activity, and a warning sent since that activity at least
-// NoticeDays ago. $1 is InactiveMonths, $2 NoticeDays and $3 now.
+// expired is the condition for credit to expire: a delivered warning about the
+// account's last activity whose deadline has passed. $1 is now.
 const expired = `
 	c.balance > 0
-	AND c.last_activity + make_interval(months => $1) <= $3
-	AND a.credit_expiry_warned_at IS NOT NULL
-	AND a.credit_expiry_warned_at >= c.last_activity
-	AND a.credit_expiry_warned_at + make_interval(days => $2) <= $3`
+	AND w.activity_at = c.last_activity
+	AND w.expires_at <= $1`
 
 // expireAll expires the credit of every account where it is due.
 func (x *Expiry) expireAll(ctx context.Context, now time.Time, r *Result) error {
@@ -315,14 +413,13 @@ func (x *Expiry) expireAll(ctx context.Context, now time.Time, r *Result) error 
 func (x *Expiry) dueExpiries(ctx context.Context, now time.Time, after string) ([]string, error) {
 	rows, err := x.app.DB().QueryContext(ctx, `
 		WITH activity AS (`+activity+`)
-		SELECT a.id
-		FROM activity c
-		JOIN accounts a ON a.id = c.account_id
+		SELECT w.account_id
+		FROM credit_expiry_warnings w
+		JOIN activity c ON c.account_id = w.account_id
 		WHERE `+expired+`
-		    AND a.id::text > $4
-		ORDER BY a.id::text
-		LIMIT $5`,
-		x.cfg.Policy.InactiveMonths, x.cfg.Policy.NoticeDays, now, after, batchSize,
+		    AND w.account_id::text > $2
+		ORDER BY w.account_id::text
+		LIMIT $3`, now, after, batchSize,
 	)
 	if err != nil {
 		return nil, err
@@ -348,10 +445,10 @@ func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (b
 		err := tx.SQL().QueryRowContext(ctx, `
 			WITH activity AS (`+activity+`)
 			SELECT c.balance
-			FROM activity c
-			JOIN accounts a ON a.id = c.account_id
-			WHERE a.id = $4 AND `+expired,
-			x.cfg.Policy.InactiveMonths, x.cfg.Policy.NoticeDays, now, accountID,
+			FROM credit_expiry_warnings w
+			JOIN activity c ON c.account_id = w.account_id
+			WHERE w.account_id = $2 AND `+expired,
+			now, accountID,
 		).Scan(&balance)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // used or emptied meanwhile
@@ -364,6 +461,12 @@ func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (b
 			return err // held for work in progress: the next run tries again
 		}
 		if err := tx.Expire(balance); err != nil {
+			return err
+		}
+		if _, err := tx.SQL().ExecContext(ctx, `
+			DELETE FROM credit_expiry_warnings
+			WHERE account_id = $1`, accountID,
+		); err != nil {
 			return err
 		}
 		done = true

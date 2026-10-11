@@ -1,4 +1,17 @@
--- When the account's latest expiry warning was delivered. A warning covers the
--- activity before it; newer activity needs a new one. The statement is idempotent, so
--- the module can adopt the column when an app added it before it used C4Stack.
-ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_expiry_warned_at timestamptz;
+-- Expiry warnings, at most one per account, each about the account's last activity
+-- when it was sent. A warning counts once its provider reports it delivered. Credit
+-- then expires no sooner than expires_at: a full notice period after delivery, and
+-- never before the date the warning announced. Newer activity makes a warning
+-- obsolete. The statements are idempotent, as in every module.
+CREATE TABLE IF NOT EXISTS credit_expiry_warnings (
+    account_id uuid PRIMARY KEY REFERENCES accounts (id) ON DELETE CASCADE,
+    activity_at timestamptz NOT NULL,
+    -- The provider's ID for the message, or NULL for a warning recorded without one.
+    message_id text,
+    sent_at timestamptz NOT NULL,
+    announced_expiry timestamptz NOT NULL,
+    delivered_at timestamptz,
+    expires_at timestamptz,
+    CHECK ((delivered_at IS NULL) = (expires_at IS NULL)),
+    CHECK (expires_at >= announced_expiry)
+);

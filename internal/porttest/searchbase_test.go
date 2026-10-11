@@ -7,7 +7,8 @@
 // converged database while a deployment switches over.
 //
 // testdata/searchbase holds Searchbase's migrations 001 to 004 as Searchbase applied
-// them, and 005, the one migration Searchbase adds for the move.
+// them, and 005, which Searchbase adds for the move. testdata/searchbase_after holds
+// the migration Searchbase adds after the modules, to carry its expiry warnings over.
 package porttest_test
 
 import (
@@ -45,26 +46,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed testdata/searchbase/*.sql
+//go:embed testdata/searchbase/*.sql testdata/searchbase_after/*.sql
 var testdata embed.FS
 
 var quiet = slog.New(slog.DiscardHandler)
 
-func searchbaseFiles(t *testing.T) fs.FS {
+func files(t *testing.T, dir string) fs.FS {
 	t.Helper()
-	files, err := fs.Sub(testdata, "testdata/searchbase")
+	sub, err := fs.Sub(testdata, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return files
+	return sub
 }
 
-// config lists Searchbase's own history first: it created the tables the modules
-// adopt.
+func searchbaseFiles(t *testing.T) fs.FS { return files(t, "testdata/searchbase") }
+
+// config lists Searchbase's own history first, because it created the tables the
+// modules adopt, and its later migrations after the modules.
 func config(t *testing.T) app.Config {
 	return app.Config{Name: "searchbase", Migrations: []app.Migrations{
 		{Namespace: "searchbase", Files: searchbaseFiles(t)},
 		accounts.Migrations, apikeys.Migrations, credits.Migrations, expiry.Migrations,
+		{Namespace: "searchbase_app", Files: files(t, "testdata/searchbase_after")},
 	}}
 }
 
@@ -272,11 +276,16 @@ func (h *hankoSessions) Delete(_ context.Context, r *http.Request) error {
 	return nil
 }
 
+// outbox delivers every message as it is sent.
 type outbox struct{ sent []email.Message }
 
-func (o *outbox) Send(_ context.Context, m email.Message) error {
+func (o *outbox) Send(_ context.Context, m email.Message) (string, error) {
 	o.sent = append(o.sent, m)
-	return nil
+	return fmt.Sprint(len(o.sent)), nil
+}
+
+func (o *outbox) Delivery(context.Context, string) (email.Delivery, time.Time, error) {
+	return email.Delivered, time.Now(), nil
 }
 
 const webhookSecret = "whsec_test"
@@ -606,7 +615,7 @@ func TestSearchbaseSchemaConverges(t *testing.T) {
 	}
 
 	modulesOnly := open(t)
-	if err := postgres.Migrate(ctx, modulesOnly, sets(app.Config{Migrations: cfg.Migrations[1:]}), quiet); err != nil {
+	if err := postgres.Migrate(ctx, modulesOnly, sets(app.Config{Migrations: cfg.Migrations[1:5]}), quiet); err != nil {
 		t.Fatal(err)
 	}
 	ported := describe(t, portedDB, columns)
