@@ -64,7 +64,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	layout := ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets"))
 	f.r.GET("/token", func(c *gin.Context) { c.String(http.StatusOK, web.CSRFToken(c)) })
-	f.keys.Mount(f.r.Group("/account", f.accounts.RequireSignIn), layout)
+	f.keys.Mount(f.r.Group("/account/api-keys", f.accounts.RequireSignIn), layout)
 	f.r.POST("/api/echo", f.keys.RequireKey, func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"account": Current(c).AccountID, "authorization": c.GetHeader("Authorization")})
 	})

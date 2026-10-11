@@ -340,8 +340,8 @@ func port(t *testing.T, db *sql.DB) *ported {
 	p.r.GET("/token", func(c *gin.Context) { c.String(http.StatusOK, web.CSRFToken(c)) })
 	p.accts.Mount(p.r, layout)
 	account := p.r.Group("/account", p.accts.RequireSignIn)
-	p.keys.Mount(account, layout)
-	p.credits.Mount(account, layout)
+	p.keys.Mount(account.Group("/api-keys"), layout)
+	p.credits.Mount(account.Group("/credits"), layout)
 	p.r.POST("/webhooks/creem/payments", p.credits.Webhook)
 	return p
 }

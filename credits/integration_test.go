@@ -122,7 +122,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f.r.GET("/token", func(c *gin.Context) { c.String(http.StatusOK, web.CSRFToken(c)) })
-	f.credits.Mount(f.r.Group("/account", f.accounts.RequireSignIn), ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets")))
+	f.credits.Mount(f.r.Group("/account/credits", f.accounts.RequireSignIn), ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets")))
 	f.r.POST("/webhooks/payments", f.credits.Webhook)
 	f.r.POST("/delete-account", f.accounts.RequireSignIn, func(c *gin.Context) {
 		if err := f.accounts.Delete(c); err != nil {

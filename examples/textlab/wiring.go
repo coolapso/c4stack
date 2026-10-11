@@ -106,8 +106,8 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	console := r.Group("/account", accts.RequireSignIn)
 	console.GET("", t.overview)
 	console.GET("/jobs", t.jobs)
-	keys.Mount(console, t.layout)
-	cr.Mount(console, t.layout)
+	keys.Mount(console.Group("/api-keys"), t.layout)
+	cr.Mount(console.Group("/credits"), t.layout)
 
 	r.POST("/webhooks/payments", cr.Webhook)
 

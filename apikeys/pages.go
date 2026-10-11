@@ -58,19 +58,20 @@ func Current(c *gin.Context) Key {
 	return v.(Key)
 }
 
-// Mount adds the keys pages under r, which must use accounts.RequireSignIn:
-//   - GET /api-keys lists the account's keys.
-//   - GET /api-keys/list renders the list alone, for refreshes after a change.
-//   - POST /api-keys creates a key and shows it once.
-//   - POST /api-keys/:id renames ("action=rename" and "name"), revokes
-//     ("action=revoke") or deletes ("action=delete" and the key's name as
-//     "confirm_name") a key. Only revoked keys can be deleted.
+// Mount adds the keys page to r, a group at the page's path that uses
+// accounts.RequireSignIn, such as /account/api-keys:
+//   - GET "" lists the account's keys.
+//   - GET "/list" renders the list alone, for refreshes after a change.
+//   - POST "" creates a key and shows it once.
+//   - POST "/:id" renames ("action=rename" and "name"), revokes ("action=revoke") or
+//     deletes ("action=delete" and the key's name as "confirm_name") a key. Only revoked
+//     keys can be deleted.
 func (k *Keys) Mount(r gin.IRouter, layout ui.Layout) {
-	p := keysPages{k: k, layout: layout, base: basePath(r) + "/api-keys"}
-	r.GET("/api-keys", p.page)
-	r.GET("/api-keys/list", p.list)
-	r.POST("/api-keys", p.create)
-	r.POST("/api-keys/:id", p.edit)
+	p := keysPages{k: k, layout: layout, base: basePath(r)}
+	r.GET("", p.page)
+	r.GET("/list", p.list)
+	r.POST("", p.create)
+	r.POST("/:id", p.edit)
 }
 
 func basePath(r gin.IRouter) string {

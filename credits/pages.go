@@ -14,29 +14,30 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Mount adds the credits pages under r, which must use accounts.RequireSignIn:
-//   - GET /credits shows the balance, a purchase form and the transactions.
-//   - POST /credits starts a purchase and redirects to the provider's checkout.
-//   - GET /credits/quote prices an amount for the purchase form.
-//   - GET /credits/summary renders one page of transactions ("page", from 1).
-//   - GET /credits/balance renders the available balance.
-//   - GET /credits/payment-status reports a purchase started from this browser after
-//     the buyer returns, or answers 204 when there is none.
+// Mount adds the credits page to r, a group at the page's path that uses
+// accounts.RequireSignIn, such as /account/credits:
+//   - GET "" shows the balance, a purchase form and the transactions.
+//   - POST "" starts a purchase and redirects to the provider's checkout.
+//   - GET "/quote" prices an amount for the purchase form.
+//   - GET "/summary" renders one page of transactions ("page", from 1).
+//   - GET "/balance" renders the available balance.
+//   - GET "/payment-status" reports a purchase started from this browser after the
+//     buyer returns, or answers 204 when there is none.
 //
 // The pages allow the provider's checkout origin as a form target, because starting a
 // purchase redirects there. Without a payment provider they show the balance and
 // transactions, and say that buying credit is not available.
 func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout) {
-	p := creditPages{cr: cr, layout: layout, base: basePath(r) + "/credits"}
+	p := creditPages{cr: cr, layout: layout, base: basePath(r)}
 	if cr.payments != nil {
 		r = r.Group("", web.AllowCSP(web.CSP{FormActions: []string{cr.payments.CheckoutOrigin()}}))
 	}
-	r.GET("/credits", p.page)
-	r.POST("/credits", p.checkout)
-	r.GET("/credits/quote", p.quote)
-	r.GET("/credits/summary", p.summary)
-	r.GET("/credits/balance", p.balance)
-	r.GET("/credits/payment-status", p.paymentStatus)
+	r.GET("", p.page)
+	r.POST("", p.checkout)
+	r.GET("/quote", p.quote)
+	r.GET("/summary", p.summary)
+	r.GET("/balance", p.balance)
+	r.GET("/payment-status", p.paymentStatus)
 }
 
 func basePath(r gin.IRouter) string {
