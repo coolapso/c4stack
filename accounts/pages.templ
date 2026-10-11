@@ -35,7 +35,7 @@ templ settingsPage(v settingsView) {
 		@signOutForm(v, "", "Sign out", "btn ghost small")
 	</div>
 	@ui.Dialog(ui.DialogProps{ID: "delete-account-dialog", Title: "Delete your account?", Danger: true}) {
-		@deleteForm(v)
+		@deleteForm(v, true)
 	}
 }
 
@@ -52,12 +52,12 @@ templ deletePage(v settingsView) {
 		<section class="panel danger" aria-labelledby="delete-title">
 			<h2 id="delete-title">Delete account</h2>
 			<p>You are signed in as <strong>{ v.account.Email }</strong>.</p>
-			@deleteForm(v)
+			@deleteForm(v, false)
 		</section>
 	</div>
 }
 
-templ deleteForm(v settingsView) {
+templ deleteForm(v settingsView, inDialog bool) {
 	if !v.recent {
 		<p>For your security, deleting your account needs a recent sign-in. Sign in again to continue.</p>
 		<div class="dialog-actions">
@@ -87,7 +87,11 @@ templ deleteForm(v settingsView) {
 				}
 			</div>
 			<div class="dialog-actions">
-				<a class="btn" href={ templ.SafeURL(v.root + settingsPath) } data-dialog-close>Keep my account</a>
+				if inDialog {
+					<button type="button" class="btn" data-dialog-close>Keep my account</button>
+				} else {
+					<a class="btn" href={ templ.SafeURL(v.root + settingsPath) }>Keep my account</a>
+				}
 				<button type="submit" class="btn danger">
 					Delete account
 					@ui.Spinner()
