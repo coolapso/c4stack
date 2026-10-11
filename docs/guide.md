@@ -160,31 +160,74 @@ _, err = expiry.New(a, cr, expiry.Config{
 
 ## Add an API endpoint that debits credit idempotently
 
-Debit with a reference the client controls, such as an `Idempotency-Key` header. A retry
-with the same reference and amount succeeds without charging twice.
+A client retries a request it is not sure went through, with the same `Idempotency-Key`
+header. The retry must not charge twice, and the key must not buy a different request
+for free. Keep a row per key in an app table with a hash of the request and the result,
+and charge and record it in one `WithAccount`:
+
+```sql
+-- migrations/002_summaries.sql
+CREATE TABLE summaries (
+    account_id uuid NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+    idempotency_key text NOT NULL,
+    request_hash bytea NOT NULL,
+    result jsonb NOT NULL,
+    PRIMARY KEY (account_id, idempotency_key)
+);
+```
 
 ```go
 api.POST("/summaries", func(c *gin.Context) {
+	ctx, accountID := c.Request.Context(), apikeys.Current(c).AccountID
 	key := c.GetHeader("Idempotency-Key")
-	if key == "" {
+	body, err := io.ReadAll(c.Request.Body)
+	if key == "" || err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "idempotency_key_required"})
 		return
 	}
-	err := cr.Debit(c.Request.Context(), apikeys.Current(c).AccountID, 5, "summary:"+key, "Summary")
+	hash := sha256.Sum256(body)
+	result := summarise(body)
+	err = cr.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
+		var storedHash, stored []byte
+		err := tx.SQL().QueryRowContext(ctx, `
+			SELECT request_hash, result
+			FROM summaries
+			WHERE account_id = $1 AND idempotency_key = $2`, accountID, key,
+		).Scan(&storedHash, &stored)
+		switch {
+		case err == nil && !bytes.Equal(storedHash, hash[:]):
+			return errKeyReused // the key belongs to another request
+		case err == nil:
+			return json.Unmarshal(stored, &result) // a retry: the stored result, no charge
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+		if err := tx.Debit(5, "summary:"+key, "Summary"); err != nil {
+			return err
+		}
+		data, _ := json.Marshal(result)
+		_, err = tx.SQL().ExecContext(ctx, `
+			INSERT INTO summaries (account_id, idempotency_key, request_hash, result)
+			VALUES ($1, $2, $3, $4)`, accountID, key, hash[:], data)
+		return err
+	})
 	switch {
 	case errors.Is(err, credits.ErrInsufficient):
 		c.AbortWithStatusJSON(http.StatusPaymentRequired, gin.H{"error": "insufficient_credit"})
-		return
-	case errors.Is(err, credits.ErrConflict):
+	case errors.Is(err, errKeyReused):
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "idempotency_key_reused"})
-		return
 	case err != nil:
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "unavailable"})
-		return
+	default:
+		c.JSON(http.StatusOK, result)
 	}
-	c.JSON(http.StatusOK, summarise(c))
 })
 ```
+
+The account lock in `WithAccount` makes concurrent retries wait for each other. The
+ledger's own reference check is a second line of defence: it never charges one key
+twice, but only the app's table knows whether a retry is the same request.
+`examples/textlab` does this in `analyse`.
 
 Charge before the work when the work is cheap and cannot fail on your side. When it
 takes time or can fail, reserve the credit first with a hold.
@@ -320,7 +363,7 @@ func (k *Keycloak) Authenticate(r *http.Request) (identity.Identity, error) { /*
 func (k *Keycloak) Logout(w http.ResponseWriter, r *http.Request) error     { /* end it */ }
 func (k *Keycloak) Delete(ctx context.Context, r *http.Request) error       { /* delete the user, confirmed */ }
 
-accts, err := accounts.New(a, keycloak, accounts.Config{LoginPath: "/login"})
+accts, err := accounts.New(a, keycloak, accounts.Config{})
 ```
 
 The contracts that matter:

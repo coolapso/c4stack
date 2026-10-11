@@ -127,11 +127,17 @@ func TestTextlab(t *testing.T) {
 		t.Fatalf("balance after purchase %v", got)
 	}
 
-	// Debits are idempotent per Idempotency-Key.
+	// An Idempotency-Key binds one request to one charge.
 	if got := decode(t, analyse("first")); got["words"] != float64(3) || got["lines"] != float64(2) {
 		t.Fatalf("analyse %v", got)
 	}
-	analyse("first")
+	if got := decode(t, analyse("first")); got["words"] != float64(3) || got["charged_cents"] != float64(2) {
+		t.Fatalf("retried analysis %v", got)
+	}
+	other := api(h, http.MethodPost, "/api/v1/analyse", key, map[string]string{"text": "a different text"}, http.Header{"Idempotency-Key": {"first"}})
+	if other.Code != http.StatusConflict {
+		t.Fatalf("another text with the same key: %d", other.Code)
+	}
 	if rec := analyse(""); rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing key: %d", rec.Code)
 	}

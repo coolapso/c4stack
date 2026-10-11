@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -131,8 +134,19 @@ func readText(c *gin.Context) (string, bool) {
 // analyseCost is what one analysis costs, in credits (EUR cents).
 const analyseCost = 2
 
-// analyse counts words, characters and lines. The Idempotency-Key header makes a
-// retried request free: the same key is charged once.
+// analysis is an analysis's result.
+type analysis struct {
+	Words        int   `json:"words"`
+	Characters   int   `json:"characters"`
+	Lines        int   `json:"lines"`
+	ChargedCents int64 `json:"charged_cents"`
+}
+
+var errKeyReused = errors.New("the Idempotency-Key was used for another request")
+
+// analyse counts words, characters and lines. The Idempotency-Key header binds a
+// request to one charge: a retry with the same text gets the stored result for free,
+// and the same key with another text is refused.
 func (t *textlab) analyse(c *gin.Context) {
 	key := c.GetHeader("Idempotency-Key")
 	if key == "" || len(key) > 100 {
@@ -143,25 +157,54 @@ func (t *textlab) analyse(c *gin.Context) {
 	if !ok {
 		return
 	}
-	err := t.credits.Debit(c.Request.Context(), apikeys.Current(c).AccountID, analyseCost, "analyse:"+key, "Text analysis")
+	ctx := c.Request.Context()
+	accountID := apikeys.Current(c).AccountID
+	hash := sha256.Sum256([]byte(text))
+	result := analysis{
+		Words:        len(strings.Fields(text)),
+		Characters:   utf8.RuneCountInString(text),
+		Lines:        strings.Count(text, "\n") + 1,
+		ChargedCents: analyseCost,
+	}
+	// The account lock serialises requests with the same key.
+	err := t.credits.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
+		var storedHash, stored []byte
+		err := tx.SQL().QueryRowContext(ctx, `
+			SELECT request_hash, result
+			FROM analyses
+			WHERE account_id = $1 AND idempotency_key = $2`, accountID, key,
+		).Scan(&storedHash, &stored)
+		switch {
+		case err == nil && !bytes.Equal(storedHash, hash[:]):
+			return errKeyReused
+		case err == nil:
+			return json.Unmarshal(stored, &result)
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+		if err := tx.Debit(analyseCost, "analyse:"+key, "Text analysis"); err != nil {
+			return err
+		}
+		data, _ := json.Marshal(result)
+		_, err = tx.SQL().ExecContext(ctx, `
+			INSERT INTO analyses (account_id, idempotency_key, request_hash, result)
+			VALUES ($1, $2, $3, $4)`, accountID, key, hash[:], data,
+		)
+		return err
+	})
 	switch {
 	case errors.Is(err, credits.ErrInsufficient):
 		apiError(c, http.StatusPaymentRequired, "insufficient_credit", "Buy credit to continue.")
 		return
-	case errors.Is(err, credits.ErrConflict):
-		apiError(c, http.StatusConflict, "idempotency_key_reused", "This Idempotency-Key was used for another charge.")
+	case errors.Is(err, errKeyReused), errors.Is(err, credits.ErrConflict):
+		apiError(c, http.StatusConflict, "idempotency_key_reused", "This Idempotency-Key was used for another request.")
 		return
 	case err != nil:
-		web.Log(c).Error("analyse debit failed", "error", err)
+		web.Log(c).Error("analysis failed", "error", err)
 		apiError(c, http.StatusServiceUnavailable, "unavailable", "Try again in a moment.")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"words":         len(strings.Fields(text)),
-		"characters":    utf8.RuneCountInString(text),
-		"lines":         strings.Count(text, "\n") + 1,
-		"charged_cents": analyseCost,
-	})
+	c.JSON(http.StatusOK, result)
 }
 
 // jobCost is one credit per started 100 characters.
