@@ -7,6 +7,10 @@
 // is stored, so a later policy change never shortens it. New activity starts over, and
 // a hold the app reports defers expiry.
 //
+// Warnings go only to an account's primary address while one of its identities verifies
+// it. Credit never expires while no identity does, and a new primary address needs a
+// new warning.
+//
 // Expiry runs hourly while the app serves, and on demand with the credits expire
 // command. A PostgreSQL lock keeps replicas from running it twice at once.
 package expiry
@@ -69,7 +73,8 @@ type Config struct {
 	AppName string
 	// CreditsURL is the absolute URL of the credits page, linked from the warning.
 	CreditsURL string
-	// Message writes the warning. Zero uses a plain default that names AppName.
+	// Message writes the warning. Zero uses a plain default that names AppName. The
+	// warning always goes to Notice.To, whatever the message's To says.
 	Message func(Notice) email.Message
 }
 
@@ -279,6 +284,15 @@ func (x *Expiry) confirm(ctx context.Context, now time.Time, w sent) error {
 	return nil
 }
 
+// verified holds when one of account a's identities verifies its primary address: the
+// rule accounts applies before a new identity may join with that address. Warnings go
+// only to such an address.
+const verified = `EXISTS (
+	SELECT 1
+	FROM account_identities v
+	WHERE v.account_id = a.id AND v.email = a.primary_email AND v.email_verified
+)`
+
 // due is an account with credit due for a warning.
 type due struct {
 	accountID    string
@@ -289,7 +303,7 @@ type due struct {
 }
 
 // warnAll warns every account whose credit expires within the notice period and that
-// has no warning about its last activity.
+// has no warning about its last activity to its current address.
 func (x *Expiry) warnAll(ctx context.Context, now time.Time, r *Result) error {
 	after := ""
 	for {
@@ -328,7 +342,8 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 		LEFT JOIN credit_expiry_warnings w ON w.account_id = c.account_id
 		WHERE c.balance > 0
 		    AND c.last_activity + make_interval(months => $1) - make_interval(days => $2) <= $3
-		    AND (w.account_id IS NULL OR w.activity_at < c.last_activity)
+		    AND `+verified+`
+		    AND (w.account_id IS NULL OR w.activity_at < c.last_activity OR w.email <> a.primary_email)
 		    AND a.id::text > $4
 		ORDER BY a.id::text
 		LIMIT $5`,
@@ -353,39 +368,45 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 // recording fails, the next run sends the warning again, which is safer than expiring
 // credit without one.
 func (x *Expiry) warn(ctx context.Context, now time.Time, d due) error {
-	id, err := x.cfg.Sender.Send(ctx, x.cfg.Message(Notice{
+	m := x.cfg.Message(Notice{
 		To:           d.email,
 		AppName:      x.cfg.AppName,
 		BalanceCents: d.balance,
 		LastActivity: d.lastActivity,
 		ExpiresAt:    d.announced,
 		CreditsURL:   x.cfg.CreditsURL,
-	}))
+	})
+	m.To = d.email
+	id, err := x.cfg.Sender.Send(ctx, m)
 	if err != nil {
 		return fmt.Errorf("send warning: %w", err)
 	}
 	_, err = x.app.DB().ExecContext(ctx, `
-		INSERT INTO credit_expiry_warnings (account_id, activity_at, message_id, sent_at, notice_days, announced_expiry)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO credit_expiry_warnings (account_id, activity_at, email, message_id, sent_at, notice_days, announced_expiry)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (account_id) DO UPDATE
 		SET activity_at = excluded.activity_at,
+		    email = excluded.email,
 		    message_id = excluded.message_id,
 		    sent_at = excluded.sent_at,
 		    notice_days = excluded.notice_days,
 		    announced_expiry = excluded.announced_expiry,
 		    delivered_at = NULL,
 		    expires_at = NULL`,
-		d.accountID, d.lastActivity, id, now, x.cfg.Policy.NoticeDays, d.announced,
+		d.accountID, d.lastActivity, d.email, id, now, x.cfg.Policy.NoticeDays, d.announced,
 	)
 	return err
 }
 
 // expired is the condition for credit to expire: a delivered warning about the
-// account's last activity whose deadline has passed. $1 is now.
+// account's last activity whose deadline has passed, sent to the account's primary
+// address, which one of its identities still verifies. $1 is now.
 const expired = `
 	c.balance > 0
 	AND w.activity_at = c.last_activity
-	AND w.expires_at <= $1`
+	AND w.expires_at <= $1
+	AND w.email = a.primary_email
+	AND ` + verified
 
 // expireAll expires the credit of every account where it is due.
 func (x *Expiry) expireAll(ctx context.Context, now time.Time, r *Result) error {
@@ -420,6 +441,7 @@ func (x *Expiry) dueExpiries(ctx context.Context, now time.Time, after string) (
 		SELECT w.account_id
 		FROM credit_expiry_warnings w
 		JOIN activity c ON c.account_id = w.account_id
+		JOIN accounts a ON a.id = w.account_id
 		WHERE `+expired+`
 		    AND w.account_id::text > $2
 		ORDER BY w.account_id::text
@@ -451,6 +473,7 @@ func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (b
 			SELECT c.balance
 			FROM credit_expiry_warnings w
 			JOIN activity c ON c.account_id = w.account_id
+			JOIN accounts a ON a.id = w.account_id
 			WHERE w.account_id = $2 AND `+expired,
 			now, accountID,
 		).Scan(&balance)

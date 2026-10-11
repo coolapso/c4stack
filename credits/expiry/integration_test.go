@@ -141,19 +141,28 @@ func newFixture(t *testing.T) *fixture {
 	return f
 }
 
-// account creates an account with credit last used at start.
+// account creates an account with credit last used at start, and an identity that
+// verifies its address.
 func (f *fixture) account(t *testing.T, email string, cents int64) string {
 	t.Helper()
 	var id string
 	if err := f.a.DB().QueryRow(`INSERT INTO accounts (primary_email) VALUES ($1) RETURNING id`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.a.DB().Exec(`
+	f.exec(t, `
+		INSERT INTO account_identities (account_id, provider, subject, email, email_verified)
+		VALUES ($1, 'test', $2, $2, true)`, id, email)
+	f.exec(t, `
 		INSERT INTO credit_ledger (account_id, kind, amount_cents, reference, created_at)
-		VALUES ($1, 'adjustment', $2, 'seed', $3)`, id, cents, start); err != nil {
+		VALUES ($1, 'adjustment', $2, 'seed', $3)`, id, cents, start)
+	return id
+}
+
+func (f *fixture) exec(t *testing.T, query string, args ...any) {
+	t.Helper()
+	if _, err := f.a.DB().Exec(query, args...); err != nil {
 		t.Fatal(err)
 	}
-	return id
 }
 
 func (f *fixture) run(t *testing.T) Result {
@@ -361,6 +370,58 @@ func TestAnOldWarningStillCounts(t *testing.T) {
 	f.now = start.AddDate(0, 16, 0)
 	if r := f.run(t); r.Warned != 0 || r.Expired != 1 || f.balance(t, ada) != 0 {
 		t.Fatalf("late run: %+v", r)
+	}
+}
+
+// A warning goes only to an address one of the account's identities verifies, and
+// counts only while it is still the account's: nothing expires while no identity
+// verifies the address, and a new address needs a new warning.
+func TestWarningsGoOnlyToTheVerifiedAddress(t *testing.T) {
+	f := newFixture(t)
+	ada := f.account(t, "ada@example.com", 1000)
+	unverified := f.account(t, "gone@example.com", 1000)
+	f.exec(t, `UPDATE account_identities SET email = 'unconfirmed@example.com', email_verified = false WHERE account_id = $1`, unverified)
+	f.now = start.AddDate(0, 11, 15)
+	if r := f.run(t); r.Warned != 1 || len(f.mail.sent) != 1 || f.mail.sent[0].To != "ada@example.com" {
+		t.Fatalf("first warnings: %+v %+v", r, f.mail.sent)
+	}
+
+	// Ada's identity moves to an address the provider has not verified.
+	f.exec(t, `UPDATE account_identities SET email = 'new@example.com', email_verified = false WHERE account_id = $1`, ada)
+	f.now = start.AddDate(0, 13, 0)
+	if r := f.run(t); r.Warned != 0 || r.Expired != 0 || f.balance(t, ada) != 1000 || f.balance(t, unverified) != 1000 {
+		t.Fatalf("while no identity verifies the address: %+v", r)
+	}
+
+	// The identity verifies it, and it becomes the account's: the old warning no
+	// longer counts, and a new one goes to the new address.
+	f.exec(t, `UPDATE account_identities SET email_verified = true WHERE account_id = $1`, ada)
+	f.exec(t, `UPDATE accounts SET primary_email = 'new@example.com' WHERE id = $1`, ada)
+	if r := f.run(t); r.Warned != 1 || r.Expired != 0 || f.mail.sent[1].To != "new@example.com" {
+		t.Fatalf("after the change: %+v %+v", r, f.mail.sent)
+	}
+	f.now = f.now.AddDate(0, 0, 30).Add(-time.Minute)
+	if r := f.run(t); r.Expired != 0 {
+		t.Fatalf("expired before a full notice at the new address: %+v", r)
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	if r := f.run(t); r.Expired != 1 || f.balance(t, ada) != 0 || f.balance(t, unverified) != 1000 {
+		t.Fatalf("after a full notice at the new address: %+v", r)
+	}
+}
+
+// A custom message cannot send the warning elsewhere.
+func TestTheWarningGoesToTheAccount(t *testing.T) {
+	f := newFixture(t)
+	f.account(t, "ada@example.com", 1000)
+	f.expiry.cfg.Message = func(n Notice) email.Message {
+		m := defaultMessage(n)
+		m.To = "someone@example.com"
+		return m
+	}
+	f.now = start.AddDate(0, 11, 15)
+	if r := f.run(t); r.Warned != 1 || f.mail.sent[0].To != "ada@example.com" {
+		t.Fatalf("warning: %+v %+v", r, f.mail.sent)
 	}
 }
 

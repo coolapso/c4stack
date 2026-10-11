@@ -149,7 +149,9 @@ only spends credit.
 
 **Expiry** needs credits and an email sender that reports delivery, an
 `email.TrackingSender` such as the Scaleway adapter. Without one it refuses to start, so
-credit never expires without a delivered warning.
+credit never expires without a delivered warning. Warnings go only to an account's
+primary address while one of its identities verifies it, and a custom `Message` cannot
+send them elsewhere.
 
 ```go
 mail, err := scaleway.New(scaleway.Config{SecretKey: cfg.ScalewaySecretKey, ProjectID: cfg.ScalewayProjectID, From: "noreply@acme.example", FromName: "Acme"})

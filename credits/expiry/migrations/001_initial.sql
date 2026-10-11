@@ -1,11 +1,14 @@
 -- Expiry warnings, at most one per account, each about the account's last activity
--- when it was sent. A warning counts once its provider reports it delivered. Credit
+-- when it was sent. A warning counts once its provider reports it delivered, and only
+-- while the address it went to is still the account's verified primary address. Credit
 -- then expires no sooner than expires_at: the notice period the warning was sent with,
 -- counted from delivery, and never before the date the warning announced. Newer
 -- activity makes a warning obsolete. The statements are idempotent, as in every module.
 CREATE TABLE IF NOT EXISTS credit_expiry_warnings (
     account_id uuid PRIMARY KEY REFERENCES accounts (id) ON DELETE CASCADE,
     activity_at timestamptz NOT NULL,
+    -- The address the warning went to.
+    email text NOT NULL,
     -- The provider's ID for the message, or NULL for a warning recorded without one.
     message_id text,
     sent_at timestamptz NOT NULL,
