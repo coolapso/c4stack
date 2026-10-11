@@ -269,7 +269,7 @@ func TestPasskeyChangesNeedARecentSignIn(t *testing.T) {
 	if resp, _ := a.post(t, "/account/settings/passkeys/authorize", nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("recent session: %d", resp.StatusCode)
 	}
-	f.issuedAt = time.Now().Add(-6 * time.Minute)
+	f.issuedAt = time.Now().Add(-identity.RecentSignIn - time.Minute)
 	if resp, _ := a.post(t, "/account/settings/passkeys/authorize", nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("old session: %d", resp.StatusCode)
 	}

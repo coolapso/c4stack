@@ -357,7 +357,7 @@ type Identity struct {
 	EmailVerified bool
 	SignedInAt    time.Time // when the session was created
 }
-func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (10 minutes), for deletion
+func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (5 minutes)
 func NewContext(ctx context.Context, id Identity) context.Context
 func FromContext(ctx context.Context) (Identity, bool)
 
@@ -393,7 +393,7 @@ embeds it:
   browser.
 - **Signed-in devices.** The user sees their sessions and signs out any of them.
 
-Passkey changes require a sign-in in the last five minutes. The profile UI's routes are
+Passkey changes require a recent sign-in, as deletion does. The profile UI's routes are
 under `/account/settings`, and after an email change the user lands on
 `/account/email-changed`. The profile UI never offers account deletion, which always
 goes through `accounts`.
@@ -443,7 +443,7 @@ with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mo
 
 **Deletion** runs these steps:
 1. The user confirms on `/account/delete` with CSRF and types `DELETE`. The session must
-   have been created in the last 10 minutes; otherwise the page asks the user to sign in
+   have been created in the last 5 minutes; otherwise the page asks the user to sign in
    again first. This proves the owner is present, not just an unattended browser.
 2. The account is marked with `deletion_started_at`.
 3. `idp.Delete` runs with a context detached from the request, so a closed tab cannot
@@ -800,7 +800,7 @@ These features were considered and decided as follows.
 | Unverified email addresses | Turned away | Linking by email trusts verified addresses only, so an unverified identity gets a page asking to confirm the address, and no account. |
 | JSON metadata on ledger entries | No | A description and a reference are enough. App-specific records go in app tables. |
 | A payment completed after its account was deleted | Review | It is recorded as paid without credit; the right action is a refund, which is an operator decision. |
-| A recent sign-in before deletion | Yes, 10 minutes | It proves the owner is present rather than an unattended browser. Passkey changes need a sign-in in the last five minutes, as in Searchbase. |
+| A recent sign-in before deletion and passkey changes | Yes, 5 minutes | It proves the owner is present rather than an unattended browser. Five minutes is Searchbase's window for passkey changes; one window keeps one rule and one message. |
 | A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
 | Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
 

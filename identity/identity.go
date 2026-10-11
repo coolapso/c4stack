@@ -16,7 +16,7 @@ var ErrNoSession = errors.New("identity: no valid session")
 
 // RecentSignIn is how old a session may be for actions that need the owner to be
 // present, such as deleting the account or changing passkeys.
-const RecentSignIn = 10 * time.Minute
+const RecentSignIn = 5 * time.Minute
 
 // Identity is the signed-in user as the provider reports it.
 type Identity struct {

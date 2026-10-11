@@ -35,9 +35,6 @@ type profileRoutes struct {
 	assets           *ui.Assets
 }
 
-// passkeyWindow is how recent a sign-in must be to add or remove a passkey.
-const passkeyWindow = 5 * time.Minute
-
 // MountProfile adds the profile UI's routes under r, the settings page's group, which
 // must require sign-in. logoutPath is the sign-out route, emailChangedPath the page
 // shown after an email change signs the user out, and emailChanged records a
@@ -75,7 +72,7 @@ func (h *Hanko) ProfileSection(c *gin.Context) templ.Component {
 		c:            c,
 		email:        id.Email,
 		verified:     id.EmailVerified,
-		recent:       passkeysAllowed(id, time.Now()),
+		recent:       id.Recent(time.Now()),
 		apiURL:       h.api.String(),
 		moduleURL:    p.assets.URL("hanko/elements.js"),
 		scriptURL:    p.assets.URL("hanko/profile.js"),
@@ -100,17 +97,11 @@ type profileData struct {
 	settingsPath string
 }
 
-// passkeysAllowed reports whether the session is recent enough to add or remove a
-// passkey.
-func passkeysAllowed(id identity.Identity, now time.Time) bool {
-	return !id.SignedInAt.IsZero() && !id.SignedInAt.After(now.Add(time.Minute)) && now.Sub(id.SignedInAt) <= passkeyWindow
-}
-
 // authorizePasskeyChange answers 204 when the session is recent enough to add or
 // remove a passkey, and 401 when the user must sign in again.
 func (h *Hanko) authorizePasskeyChange(c *gin.Context) {
 	id, _ := identity.FromContext(c.Request.Context())
-	if !passkeysAllowed(id, time.Now()) {
+	if !id.Recent(time.Now()) {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
