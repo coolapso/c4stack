@@ -97,6 +97,53 @@ func TestHostCheck(t *testing.T) {
 	}
 }
 
+// An app served on several hostnames lists them in Origins: requests may address them,
+// and forms may post from them. AnyHost accepts any host, but not forms from it.
+func TestFurtherOrigins(t *testing.T) {
+	for _, cfg := range []Config{
+		{PublicURL: "https://app.example", SecretKey: testSecret, Origins: []string{"http://localhost:8080"}},
+		{PublicURL: "https://app.example", SecretKey: testSecret, Origins: []string{"https://green.app.example/path"}},
+	} {
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New(%+v) succeeded, want an error", cfg)
+		}
+	}
+
+	r := newEngine(t, Config{Origins: []string{"https://green.app.example"}})
+	r.GET("/", func(c *gin.Context) { c.String(http.StatusOK, URL(c, "/x")) })
+	r.POST("/submit", CSRF, func(c *gin.Context) { c.Status(http.StatusOK) })
+	b := newBrowser(t, r)
+	for host, want := range map[string]int{"app.example": 200, "green.app.example": 200, "evil.example": 421} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != want || want == 200 && rec.Body.String() != "https://app.example/x" {
+			t.Errorf("host %q: %d %q", host, rec.Code, rec.Body.String())
+		}
+	}
+	for origin, want := range map[string]int{"https://green.app.example": 200, "https://blue.app.example": 403} {
+		if rec := b.post("/submit", url.Values{CSRFField: {b.token}}, http.Header{"Origin": {origin}}); rec.Code != want {
+			t.Errorf("form from %s: %d, want %d", origin, rec.Code, want)
+		}
+	}
+
+	anyHost := newEngine(t, Config{AnyHost: true})
+	anyHost.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+	anyHost.POST("/submit", CSRF, func(c *gin.Context) { c.Status(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "tunnel.example"
+	rec := httptest.NewRecorder()
+	anyHost.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("any host: %d", rec.Code)
+	}
+	ab := newBrowser(t, anyHost)
+	if rec := ab.post("/submit", url.Values{CSRFField: {ab.token}}, http.Header{"Origin": {"https://tunnel.example"}}); rec.Code != http.StatusForbidden {
+		t.Errorf("a form from an unlisted host: %d", rec.Code)
+	}
+}
+
 func TestRequestIDIsGenerated(t *testing.T) {
 	r := newEngine(t, Config{})
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })

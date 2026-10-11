@@ -101,13 +101,13 @@ func parseForm(r *http.Request) error {
 	return r.ParseForm()
 }
 
-// sameOrigin reports whether an Origin header names the public origin. Browsers send
-// a bare origin; anything with a path is not one.
+// sameOrigin reports whether an Origin header names one of the app's origins. Browsers
+// send a bare origin; anything with a path is not one.
 func (s *settings) sameOrigin(origin string) bool {
 	u, err := url.Parse(origin)
 	if err != nil || u.Path != "" {
 		return false
 	}
 	canonical, _, _, err := canonicalOrigin(origin)
-	return err == nil && canonical == s.origin
+	return err == nil && s.origins[canonical]
 }

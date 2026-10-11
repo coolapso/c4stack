@@ -30,6 +30,14 @@ type Config struct {
 	// PublicURL is the canonical origin users reach the app on, such as
 	// https://acme.example. Plain HTTP is accepted only for loopback hosts.
 	PublicURL string
+	// Origins lists further origins the app is served on, such as a second hostname.
+	// Requests may address their hosts, and forms may post from them. Each must use
+	// PublicURL's scheme. URL keeps using PublicURL.
+	Origins []string
+	// AnyHost accepts requests addressed to any host, for development behind a proxy
+	// or tunnel whose hostname the app cannot know. Forms still post only from
+	// PublicURL and Origins. Leave it off in production.
+	AnyHost bool
 	// SecretKey signs CSRF tokens and seals cookies. It must be at least 32 bytes and
 	// the same on every replica.
 	SecretKey string
@@ -46,8 +54,10 @@ type Config struct {
 
 // settings is the validated configuration shared by every request.
 type settings struct {
-	origin     string // canonical scheme://host[:port]
-	host       string // canonical host[:port] as sent in the Host header
+	origin     string          // canonical scheme://host[:port]
+	origins    map[string]bool // origin and Config.Origins, canonical
+	hosts      map[string]bool // their hosts, canonical host[:port] as sent in the Host header
+	anyHost    bool
 	secure     bool
 	csrfKey    []byte
 	cookieKey  []byte
@@ -85,6 +95,17 @@ func newSettings(cfg Config) (*settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	origins, hosts := map[string]bool{origin: true}, map[string]bool{host: true}
+	for _, raw := range cfg.Origins {
+		o, h, sec, err := canonicalOrigin(raw)
+		if err != nil {
+			return nil, err
+		}
+		if sec != secure {
+			return nil, fmt.Errorf("web: origin %q must use the public URL's scheme", raw)
+		}
+		origins[o], hosts[h] = true, true
+	}
 	if len(cfg.SecretKey) < 32 {
 		return nil, errors.New("web: the secret key must be at least 32 bytes")
 	}
@@ -109,7 +130,9 @@ func newSettings(cfg Config) (*settings, error) {
 	}
 	s := &settings{
 		origin:    origin,
-		host:      host,
+		origins:   origins,
+		hosts:     hosts,
+		anyHost:   cfg.AnyHost,
 		secure:    secure,
 		csrfKey:   csrfKey,
 		cookieKey: cookieKey,

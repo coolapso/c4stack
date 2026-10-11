@@ -85,14 +85,19 @@ func (s *settings) recoverPanic(c *gin.Context) {
 	c.Next()
 }
 
-// checkHost rejects requests addressed to any host other than the public origin's.
+// checkHost rejects requests addressed to any host other than the public origins', unless
+// Config.AnyHost is set.
 func (s *settings) checkHost(c *gin.Context) {
+	if s.anyHost {
+		c.Next()
+		return
+	}
 	scheme := "http"
 	if s.secure {
 		scheme = "https"
 	}
 	host, err := canonicalHost(c.Request.Host, scheme)
-	if err != nil || host != s.host {
+	if err != nil || !s.hosts[host] {
 		c.AbortWithStatus(http.StatusMisdirectedRequest)
 		return
 	}

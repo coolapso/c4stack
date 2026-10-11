@@ -167,6 +167,8 @@ func New(cfg Config) (*gin.Engine, error)
 
 type Config struct {
 	PublicURL      string   // canonical origin, e.g. https://acme.example
+	Origins        []string // further origins the app is served on, same scheme
+	AnyHost        bool     // development only: accept any Host, but forms only from the origins
 	SecretKey      string   // at least 32 bytes; signs CSRF tokens and seals cookies
 	CSP            CSP      // sources added to the default policy everywhere
 	MaxBodyBytes   int64    // default 1 MiB
@@ -175,7 +177,7 @@ type Config struct {
 }
 type CSP struct{ Scripts, Styles, Images, Fonts, Connect, Frames, FormActions []string }
 
-func CSRF(c *gin.Context)                    // checks token and Origin on unsafe methods
+func CSRF(c *gin.Context) // checks token and Origin on unsafe methods
 func CSRFToken(c *gin.Context) string
 func AllowCSP(extra CSP) gin.HandlerFunc     // extends the policy for one route group
 func MaxBody(n int64) gin.HandlerFunc        // changes the body limit for one group
@@ -192,6 +194,7 @@ type Server struct {
 	ShutdownTimeout time.Duration // default 30s
 	Logger          *slog.Logger
 }
+
 func Serve(ctx context.Context, s Server, ready func(context.Context) error) error
 ```
 
@@ -200,7 +203,8 @@ func Serve(ctx context.Context, s Server, ready func(context.Context) error) err
 2. A request log with the route template, status and duration. It never logs query
    strings, headers or bodies.
 3. Panic recovery, which logs the stack but not the panic value or the headers.
-4. A host check, which answers 421 for any host but the public origin.
+4. A host check, which answers 421 for any host but those of `PublicURL` and `Origins`.
+   `AnyHost` turns it off, for development behind a proxy or tunnel.
 5. Security headers.
 6. A body limit.
 7. CSRF cookie issuance.
@@ -209,7 +213,7 @@ The app keeps the engine. It can add middleware or set `NoRoute`, and C4Stack ne
 changes Gin's global mode.
 
 **CSRF.** C4Stack uses a signed double-submit cookie (`__Host-csrf` on HTTPS, `csrf` on
-plain-HTTP localhost) plus an exact Origin match against `PublicURL`. The cookie holds a
+plain-HTTP localhost) plus an exact Origin match against `PublicURL` or `Origins`. The cookie holds a
 random value and the form token is its HMAC, so a cookie planted by an attacker never
 matches a token they can produce. Forms send `csrf_token`. HTMX requests send
 `X-CSRF-Token`, which the default page script copies from `<meta name="csrf-token">`.
