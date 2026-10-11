@@ -17,7 +17,8 @@ var (
 	// was deleted, and the user can try again.
 	ErrNotDeleted = errors.New("accounts: the identity provider did not delete the account")
 	// ErrCleanupPending means the identity was deleted at the provider but the local
-	// data was not. An operator must run accounts delete-local for the account.
+	// data was not. An operator must run accounts delete-local for the account; if its
+	// address signs up again first, the sign-up finishes the deletion.
 	ErrCleanupPending = errors.New("accounts: local cleanup is pending")
 )
 
@@ -25,14 +26,32 @@ var (
 // the provider confirms, the local data in one transaction with every OnDelete hook.
 // It continues if the browser disconnects, and clears the browser session afterwards.
 //
-// The two systems are not atomic. If the local transaction fails after the provider
-// deleted the identity, Delete logs the account ID and returns ErrCleanupPending.
+// The two systems are not atomic. The account is marked before the provider is asked,
+// and the mark is cleared if the provider refuses. If the local transaction fails after
+// the provider deleted the identity, Delete logs the account ID and returns
+// ErrCleanupPending.
 func (s *Accounts) Delete(c *gin.Context) error {
+	if s.idp == nil {
+		return errors.New("accounts: Delete needs an identity provider")
+	}
 	account := Current(c)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), time.Minute)
 	defer cancel()
 
+	if _, err := s.app.DB().ExecContext(ctx, `
+		UPDATE accounts
+		SET deletion_started_at = now()
+		WHERE id = $1`, account.ID,
+	); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotDeleted, err)
+	}
 	if err := s.idp.Delete(ctx, c.Request); err != nil {
+		// If clearing the mark fails too, the account's next sign-in clears it.
+		_, _ = s.app.DB().ExecContext(ctx, `
+			UPDATE accounts
+			SET deletion_started_at = NULL
+			WHERE id = $1`, account.ID,
+		)
 		return fmt.Errorf("%w: %w", ErrNotDeleted, err)
 	}
 	_ = s.idp.Logout(c.Writer, c.Request)
@@ -54,42 +73,73 @@ func (s *Accounts) deleteLocal(ctx context.Context, accountID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.deleteTx(ctx, tx, accountID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-	var provider, subject string
-	err = tx.QueryRowContext(ctx, `
-		SELECT provider, subject
+// deleteTx deletes an account inside tx: it records the account's identities as
+// deleted, runs the OnDelete hooks, and deletes the account, which removes its
+// identities and anonymises the records that refer to it.
+func (s *Accounts) deleteTx(ctx context.Context, tx *sql.Tx, accountID string) error {
+	var id string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id
 		FROM accounts
 		WHERE id = $1
 		FOR UPDATE`, accountID,
-	).Scan(&provider, &subject)
+	).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if err := lockIdentity(ctx, tx, provider, subject); err != nil {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT provider, subject
+		FROM account_identities
+		WHERE account_id = $1
+		ORDER BY provider, subject`, accountID,
+	)
+	if err != nil {
 		return err
+	}
+	var identities [][2]string
+	for rows.Next() {
+		var provider, subject string
+		if err := rows.Scan(&provider, &subject); err != nil {
+			rows.Close()
+			return err
+		}
+		identities = append(identities, [2]string{provider, subject})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, i := range identities {
+		if err := lock(ctx, tx, "identity:"+i[0]+":"+i[1]); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO deleted_identities (identity_hash)
+			VALUES ($1)
+			ON CONFLICT DO NOTHING`, identityHash(i[0], i[1]),
+		); err != nil {
+			return err
+		}
 	}
 	for _, hook := range s.hooks {
 		if err := hook(ctx, tx, accountID); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO deleted_identities (identity_hash)
-		VALUES ($1)
-		ON CONFLICT DO NOTHING`, identityHash(provider, subject),
-	); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		DELETE FROM accounts
 		WHERE id = $1`, accountID,
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
+	)
+	return err
 }
 
 func (s *Accounts) deleteLocalCommand(ctx context.Context, args []string) error {

@@ -19,9 +19,6 @@ templ loginPage(d loginData) {
 			<h1>Sign in</h1>
 			<p class="lead">Use your email address or a passkey.</p>
 		</div>
-		if d.notice != "" {
-			<p class="notice success" role="status">{ d.notice }</p>
-		}
 		<div class="panel">
 			<hanko-auth id="hanko-auth" data-api-url={ d.apiURL } data-module={ d.moduleURL } data-next={ d.next }></hanko-auth>
 			<p id="login-error" class="notice danger" role="alert" hidden>Sign-in could not load. Check your connection and reload the page.</p>

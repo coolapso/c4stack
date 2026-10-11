@@ -1,6 +1,7 @@
 // Package identity defines the identity provider interface. The provider owns
-// credentials and sessions; C4Stack maps each identity to a local account by provider
-// name and subject, never by email.
+// credentials and sessions. C4Stack maps each identity to a local account by provider
+// name and subject, and joins a new identity to the account that has its verified email
+// address.
 package identity
 
 import (
@@ -22,7 +23,7 @@ type Identity struct {
 	// Subject is the provider's stable user ID.
 	Subject string
 	// Email is the user's primary address. EmailVerified reports whether the provider
-	// verified it; unverified addresses must not receive mail.
+	// verified it; an unverified identity cannot sign in to an account.
 	Email         string
 	EmailVerified bool
 	// SignedInAt is when the session was created.

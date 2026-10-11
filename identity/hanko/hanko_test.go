@@ -175,7 +175,7 @@ func newApp(t *testing.T, f *fakeHanko) *app {
 	layout := ui.Default(ui.Design{Name: "Acme"}, assets)
 	r.GET("/assets/*path", assets.Serve)
 	h.Mount(r, layout)
-	signedIn := r.Group("/account", func(c *gin.Context) {
+	signedIn := r.Group("/account/settings", func(c *gin.Context) {
 		id, err := h.Authenticate(c.Request)
 		if err != nil {
 			c.AbortWithStatus(http.StatusUnauthorized)
@@ -183,7 +183,7 @@ func newApp(t *testing.T, f *fakeHanko) *app {
 		}
 		c.Request = c.Request.WithContext(identity.NewContext(c.Request.Context(), id))
 	})
-	h.MountProfile(signedIn, layout, "/account/logout", func(c *gin.Context, email string) error {
+	h.MountProfile(signedIn, layout, "/logout", "/account/email-changed", func(c *gin.Context, email string) error {
 		a.email = email
 		return nil
 	})
@@ -234,11 +234,11 @@ func TestLoginPage(t *testing.T) {
 	}
 
 	delete(f.sessions, "valid-token")
-	resp, body := a.get(t, "/login?next=//evil.example&notice=email-changed")
+	resp, body := a.get(t, "/login?next=//evil.example")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	for _, want := range []string{`<hanko-auth id="hanko-auth"`, `data-api-url="` + f.url() + `"`, `data-next="/account"`, "Your email address changed"} {
+	for _, want := range []string{`<hanko-auth id="hanko-auth"`, `data-api-url="` + f.url() + `"`, `data-next="/account"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("login page lacks %q", want)
 		}
@@ -252,11 +252,11 @@ func TestLoginPage(t *testing.T) {
 func TestProfileSection(t *testing.T) {
 	f := newFakeHanko(t, "")
 	a := newApp(t, f)
-	resp, body := a.get(t, "/account")
+	resp, body := a.get(t, "/account/settings")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	for _, want := range []string{"ada@example.com", `data-recent="true"`, `data-authorize="/account/profile/passkeys/authorize"`, `hx-post="/account/profile/email"`, `action="/account/logout"`, `value="/login?next=%2Faccount"`} {
+	for _, want := range []string{"ada@example.com", `data-recent="true"`, `data-authorize="/account/settings/passkeys/authorize"`, `hx-post="/account/settings/email"`, `action="/logout"`, `value="/login?next=%2Faccount%2Fsettings"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("profile section lacks %q", want)
 		}
@@ -266,11 +266,11 @@ func TestProfileSection(t *testing.T) {
 func TestPasskeyChangesNeedARecentSignIn(t *testing.T) {
 	f := newFakeHanko(t, "")
 	a := newApp(t, f)
-	if resp, _ := a.post(t, "/account/profile/passkeys/authorize", nil); resp.StatusCode != http.StatusNoContent {
+	if resp, _ := a.post(t, "/account/settings/passkeys/authorize", nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("recent session: %d", resp.StatusCode)
 	}
-	f.issuedAt = time.Now().Add(-identity.RecentSignIn - time.Minute)
-	if resp, _ := a.post(t, "/account/profile/passkeys/authorize", nil); resp.StatusCode != http.StatusUnauthorized {
+	f.issuedAt = time.Now().Add(-6 * time.Minute)
+	if resp, _ := a.post(t, "/account/settings/passkeys/authorize", nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("old session: %d", resp.StatusCode)
 	}
 }
@@ -279,34 +279,34 @@ func TestEmailChange(t *testing.T) {
 	f := newFakeHanko(t, "")
 	a := newApp(t, f)
 
-	if resp, body := a.post(t, "/account/profile/email", url.Values{"email": {"ADA@example.com"}}); resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "already your email") {
+	if resp, body := a.post(t, "/account/settings/email", url.Values{"email": {"ADA@example.com"}}); resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "already your email") {
 		t.Fatalf("same address: %d %s", resp.StatusCode, body)
 	}
-	if resp, body := a.post(t, "/account/profile/email", url.Values{"email": {"taken@example.com"}}); resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "already in use") {
+	if resp, body := a.post(t, "/account/settings/email", url.Values{"email": {"taken@example.com"}}); resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "already in use") {
 		t.Fatalf("taken address: %d %s", resp.StatusCode, body)
 	}
 
-	resp, body := a.post(t, "/account/profile/email", url.Values{"email": {"new@example.com"}})
+	resp, body := a.post(t, "/account/settings/email", url.Values{"email": {"new@example.com"}})
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("HX-Retarget") != "#profile-modal" || !strings.Contains(body, "Verify your new email") {
 		t.Fatalf("start: %d %q %s", resp.StatusCode, resp.Header.Get("HX-Retarget"), body)
 	}
-	if _, body := a.post(t, "/account/profile/email/verify", url.Values{"code": {"000000"}}); !strings.Contains(body, "That code is not right") {
+	if _, body := a.post(t, "/account/settings/email/verify", url.Values{"code": {"000000"}}); !strings.Contains(body, "That code is not right") {
 		t.Fatalf("wrong code: %s", body)
 	}
-	if _, body := a.post(t, "/account/profile/email/resend", nil); !strings.Contains(body, "We sent a new code") {
+	if _, body := a.post(t, "/account/settings/email/resend", nil); !strings.Contains(body, "We sent a new code") {
 		t.Fatalf("resend: %s", body)
 	}
 
 	// The old address cannot be removed on the first try; the retry continues.
 	f.failNext["email_delete"] = http.StatusInternalServerError
-	if _, body := a.post(t, "/account/profile/email/verify", url.Values{"code": {"123456"}}); !strings.Contains(body, "a final step did not finish") {
+	if _, body := a.post(t, "/account/settings/email/verify", url.Values{"code": {"123456"}}); !strings.Contains(body, "a final step did not finish") {
 		t.Fatalf("partial cleanup: %s", body)
 	}
 	if a.email != "new@example.com" {
 		t.Fatalf("local email %q", a.email)
 	}
-	resp, _ = a.post(t, "/account/profile/email/cleanup", nil)
-	if resp.Header.Get("HX-Redirect") != "/login?notice=email-changed" {
+	resp, _ = a.post(t, "/account/settings/email/cleanup", nil)
+	if resp.Header.Get("HX-Redirect") != "/account/email-changed" {
 		t.Fatalf("cleanup: %d %q", resp.StatusCode, resp.Header.Get("HX-Redirect"))
 	}
 	if len(f.emails) != 1 || f.emails[0].Address != "new@example.com" || !f.emails[0].IsPrimary {
@@ -326,10 +326,10 @@ func TestEmailChange(t *testing.T) {
 func TestEmailChangeStateBelongsToTheUser(t *testing.T) {
 	f := newFakeHanko(t, "")
 	a := newApp(t, f)
-	a.post(t, "/account/profile/email", url.Values{"email": {"new@example.com"}})
+	a.post(t, "/account/settings/email", url.Values{"email": {"new@example.com"}})
 
 	f.sessions["valid-token"] = "user-2"
-	if _, body := a.post(t, "/account/profile/email/verify", url.Values{"code": {"123456"}}); !strings.Contains(body, "no longer available") {
+	if _, body := a.post(t, "/account/settings/email/verify", url.Values{"code": {"123456"}}); !strings.Contains(body, "no longer available") {
 		t.Fatalf("another user's change: %s", body)
 	}
 }

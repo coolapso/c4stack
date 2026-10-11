@@ -28,28 +28,34 @@ const pendingCookie = "email-change"
 
 // profileRoutes holds what the profile UI needs from where it is mounted.
 type profileRoutes struct {
-	settings     string // the settings page's path
-	logoutPath   string
-	emailChanged func(c *gin.Context, email string) error
-	assets       *ui.Assets
+	settings         string // the settings page's path; the profile routes are under it
+	logoutPath       string
+	emailChangedPath string
+	emailChanged     func(c *gin.Context, email string) error
+	assets           *ui.Assets
 }
 
-// MountProfile adds the profile UI's routes under r, which must require sign-in.
-// logoutPath is the sign-out route; emailChanged records a confirmed new address.
-func (h *Hanko) MountProfile(r gin.IRouter, layout ui.Layout, logoutPath string, emailChanged func(c *gin.Context, email string) error) {
+// passkeyWindow is how recent a sign-in must be to add or remove a passkey.
+const passkeyWindow = 5 * time.Minute
+
+// MountProfile adds the profile UI's routes under r, the settings page's group, which
+// must require sign-in. logoutPath is the sign-out route, emailChangedPath the page
+// shown after an email change signs the user out, and emailChanged records a
+// confirmed new address.
+func (h *Hanko) MountProfile(r gin.IRouter, layout ui.Layout, logoutPath, emailChangedPath string, emailChanged func(c *gin.Context, email string) error) {
 	h.addAssets(layout.Assets)
 	h.profile = &profileRoutes{
-		settings:     joinPath(r, ""),
-		logoutPath:   logoutPath,
-		emailChanged: emailChanged,
-		assets:       layout.Assets,
+		settings:         joinPath(r, ""),
+		logoutPath:       logoutPath,
+		emailChangedPath: emailChangedPath,
+		emailChanged:     emailChanged,
+		assets:           layout.Assets,
 	}
-	g := r.Group("/profile")
-	g.POST("/email", h.startEmailChange)
-	g.POST("/email/verify", h.verifyEmail)
-	g.POST("/email/resend", h.resendEmailCode)
-	g.POST("/email/cleanup", h.finishEmailChange)
-	g.POST("/passkeys/authorize", h.authorizePasskeyChange)
+	r.POST("/email", h.startEmailChange)
+	r.POST("/email/verify", h.verifyEmail)
+	r.POST("/email/resend", h.resendEmailCode)
+	r.POST("/email/cleanup", h.finishEmailChange)
+	r.POST("/passkeys/authorize", h.authorizePasskeyChange)
 }
 
 // ProfileCSP lists what pages that show the profile UI must allow.
@@ -69,13 +75,13 @@ func (h *Hanko) ProfileSection(c *gin.Context) templ.Component {
 		c:            c,
 		email:        id.Email,
 		verified:     id.EmailVerified,
-		recent:       id.Recent(time.Now()),
+		recent:       passkeysAllowed(id, time.Now()),
 		apiURL:       h.api.String(),
 		moduleURL:    p.assets.URL("hanko/elements.js"),
 		scriptURL:    p.assets.URL("hanko/profile.js"),
 		base:         p.routes(),
 		logoutPath:   p.logoutPath,
-		signInAgain:  h.loginURL(settings, ""),
+		signInAgain:  h.loginURL(settings),
 		settingsPath: settings,
 	})
 }
@@ -94,11 +100,17 @@ type profileData struct {
 	settingsPath string
 }
 
+// passkeysAllowed reports whether the session is recent enough to add or remove a
+// passkey.
+func passkeysAllowed(id identity.Identity, now time.Time) bool {
+	return !id.SignedInAt.IsZero() && !id.SignedInAt.After(now.Add(time.Minute)) && now.Sub(id.SignedInAt) <= passkeyWindow
+}
+
 // authorizePasskeyChange answers 204 when the session is recent enough to add or
 // remove a passkey, and 401 when the user must sign in again.
 func (h *Hanko) authorizePasskeyChange(c *gin.Context) {
 	id, _ := identity.FromContext(c.Request.Context())
-	if !id.Recent(time.Now()) {
+	if !passkeysAllowed(id, time.Now()) {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
@@ -377,7 +389,7 @@ func (h *Hanko) completeEmailChange(c *gin.Context, token string, id identity.Id
 		return
 	}
 	web.ClearSealedCookie(c, pendingCookie)
-	redirect(c, h.loginURL("", "email-changed"))
+	redirect(c, h.profile.emailChangedPath)
 }
 
 // showDialog swaps a dialog into the profile UI's modal container and closes the dialog
@@ -391,7 +403,7 @@ func (h *Hanko) showDialog(c *gin.Context, dialog templ.Component) {
 
 func (h *Hanko) profileFailure(c *gin.Context, step string, err error) {
 	if errors.Is(err, errSessionRejected) {
-		redirect(c, h.loginURL(h.profile.routes(), ""))
+		redirect(c, h.loginURL(h.profile.routes()))
 		return
 	}
 	web.Log(c).Error("profile request failed", "step", step, "error", err)
@@ -409,7 +421,7 @@ func redirect(c *gin.Context, to string) {
 
 // routes returns the path the profile UI's routes are under.
 func (p *profileRoutes) routes() string {
-	return p.settings + "/profile"
+	return p.settings
 }
 
 var errUnexpectedProfile = errors.New("hanko: the profile did not contain the expected email addresses")

@@ -35,12 +35,6 @@ func (h *Hanko) csp(elements bool) web.CSP {
 	return p
 }
 
-// notices are the messages other pages can ask the sign-in page to show.
-var notices = map[string]string{
-	"email-changed": "Your email address changed. Sign in with your new address.",
-	"signed-out":    "You signed out.",
-}
-
 func (h *Hanko) login(layout ui.Layout) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		next := c.Query("next")
@@ -58,7 +52,6 @@ func (h *Hanko) login(layout ui.Layout) gin.HandlerFunc {
 			scriptURL: layout.Assets.URL("hanko/login.js"),
 			themeURL:  layout.Assets.URL("hanko/hanko.css"),
 			next:      next,
-			notice:    notices[c.Query("notice")],
 		}))
 	}
 }
@@ -69,7 +62,6 @@ type loginData struct {
 	scriptURL string
 	themeURL  string
 	next      string
-	notice    string
 }
 
 // joinPath returns the full path of a route registered on r.
@@ -81,16 +73,9 @@ func joinPath(r gin.IRouter, p string) string {
 }
 
 // loginURL returns the sign-in page's URL that continues to next.
-func (h *Hanko) loginURL(next, notice string) string {
-	q := url.Values{}
-	if next != "" {
-		q.Set("next", next)
-	}
-	if notice != "" {
-		q.Set("notice", notice)
-	}
-	if len(q) == 0 {
+func (h *Hanko) loginURL(next string) string {
+	if next == "" {
 		return h.loginPath
 	}
-	return h.loginPath + "?" + q.Encode()
+	return h.loginPath + "?" + url.Values{"next": {next}}.Encode()
 }
