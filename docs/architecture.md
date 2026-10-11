@@ -442,7 +442,9 @@ every provider. The operator command is `accounts delete-local <account-id>`.
 creating it on first sign-in. It sets `Cache-Control: no-store`. Unauthenticated requests
 are redirected to `Paths.Login` with a safe `next` path, or get `HX-Redirect` from
 HTMX. An identity without a verified email goes to `Paths.Unverified` and gets no
-account.
+account. A request it stops without a redirect, such as when the provider cannot be
+reached or the CSRF check fails, gets only its status, not yet written, so app
+middleware that runs before it can render the app's own error page.
 
 **Finding the account.** A sign-in finds its account by provider and subject. An
 identity the app has not seen joins the account whose `primary_email` is its verified
