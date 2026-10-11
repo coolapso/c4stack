@@ -36,7 +36,7 @@ func (testIdentity) Authenticate(r *http.Request) (identity.Identity, error) {
 	if err != nil {
 		return identity.Identity{}, identity.ErrNoSession
 	}
-	return identity.Identity{Subject: c.Value, SignedInAt: time.Now()}, nil
+	return identity.Identity{Subject: c.Value, Email: c.Value + "@example.com", EmailVerified: true, SignedInAt: time.Now()}, nil
 }
 func (testIdentity) Logout(http.ResponseWriter, *http.Request) error { return nil }
 func (testIdentity) Delete(context.Context, *http.Request) error     { return nil }
@@ -64,7 +64,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	layout := ui.Default(ui.Design{Name: "Test"}, ui.NewAssets("/assets"))
 	f.r.GET("/token", func(c *gin.Context) { c.String(http.StatusOK, web.CSRFToken(c)) })
-	f.keys.Mount(f.r.Group("/keys", f.accounts.RequireSignIn), layout)
+	f.keys.Mount(f.r.Group("/account", f.accounts.RequireSignIn), layout)
 	f.r.POST("/api/echo", f.keys.RequireKey, func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"account": Current(c).AccountID, "authorization": c.GetHeader("Authorization")})
 	})
@@ -74,12 +74,12 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) account(t *testing.T, subject string) string {
 	t.Helper()
 	// Signing in once creates the account.
-	rec := f.browser(http.MethodGet, "/keys", subject, nil, nil)
+	rec := f.browser(http.MethodGet, "/account/api-keys", subject, nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("sign in: %d", rec.Code)
 	}
 	var id string
-	if err := f.a.DB().QueryRow(`SELECT id FROM accounts WHERE subject = $1`, subject).Scan(&id); err != nil {
+	if err := f.a.DB().QueryRow(`SELECT account_id FROM account_identities WHERE subject = $1`, subject).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -172,6 +172,68 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 }
 
+func TestRenameAndDelete(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ada := f.account(t, "ada")
+	grace := f.account(t, "grace")
+	_, key, _ := f.keys.Create(ctx, ada, "ci")
+
+	if err := f.keys.Rename(ctx, ada, key.ID, " deploys "); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.keys.Rename(ctx, ada, key.ID, ""); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("empty name: %v", err)
+	}
+	if err := f.keys.Rename(ctx, grace, key.ID, "mine"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another account renamed the key: %v", err)
+	}
+	if err := f.keys.Delete(ctx, ada, key.ID); !errors.Is(err, ErrActive) {
+		t.Fatalf("deleting an active key: %v", err)
+	}
+	f.keys.Revoke(ctx, ada, key.ID)
+	if err := f.keys.Rename(ctx, ada, key.ID, "late"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("renaming a revoked key: %v", err)
+	}
+	if err := f.keys.Delete(ctx, grace, key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := f.keys.List(ctx, ada); len(keys) != 1 || keys[0].Name != "deploys" {
+		t.Fatalf("another account deleted the key, or the rename was lost: %+v", keys)
+	}
+	if err := f.keys.Delete(ctx, ada, key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.keys.Delete(ctx, ada, key.ID); err != nil {
+		t.Fatalf("deleting twice: %v", err)
+	}
+	if keys, _ := f.keys.List(ctx, ada); len(keys) != 0 {
+		t.Fatalf("keys %+v", keys)
+	}
+}
+
+func TestLockActive(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ada := f.account(t, "ada")
+	_, key, _ := f.keys.Create(ctx, ada, "ci")
+	check := func() error {
+		tx, err := f.a.DB().BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		return f.keys.LockActive(ctx, tx, ada, key.ID)
+	}
+	if err := check(); err != nil {
+		t.Fatal(err)
+	}
+	f.keys.Revoke(ctx, ada, key.ID)
+	if err := check(); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("revoked key: %v", err)
+	}
+}
+
 func TestKeysAreDeletedWithTheAccount(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -218,8 +280,8 @@ func TestKeysPage(t *testing.T) {
 	ada := f.account(t, "ada")
 
 	htmx := http.Header{"Hx-Request": {"true"}}
-	rec := f.browser(http.MethodPost, "/keys", "ada", url.Values{"name": {"Laptop"}}, htmx)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Retarget") != "#key-modal" {
+	rec := f.browser(http.MethodPost, "/account/api-keys", "ada", url.Values{"name": {"Laptop"}}, htmx)
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Retarget") != "#key-created" {
 		t.Fatalf("create: %d %q", rec.Code, rec.Header().Get("HX-Retarget"))
 	}
 	raw := regexp.MustCompile(`acme_[A-Za-z0-9_-]{43}`).FindString(rec.Body.String())
@@ -229,30 +291,55 @@ func TestKeysPage(t *testing.T) {
 	if _, err := f.keys.Authenticate(ctx, raw); err != nil {
 		t.Fatalf("the shown key does not work: %v", err)
 	}
-	if page := f.browser(http.MethodGet, "/keys", "ada", nil, nil).Body.String(); strings.Contains(page, raw) || !strings.Contains(page, "Laptop") {
+	page := f.browser(http.MethodGet, "/account/api-keys", "ada", nil, nil).Body.String()
+	if strings.Contains(page, raw) || !strings.Contains(page, "Laptop") || !strings.Contains(page, "acme_••••"+raw[len(raw)-6:]) {
 		t.Fatal("the list page shows the raw key, or misses the new key")
 	}
+	if list := f.browser(http.MethodGet, "/account/api-keys/list", "ada", nil, nil); !strings.Contains(list.Body.String(), `id="keys-list"`) {
+		t.Fatalf("list: %d", list.Code)
+	}
 
-	if rec := f.browser(http.MethodPost, "/keys", "ada", url.Values{"name": {""}}, htmx); rec.Code != http.StatusUnprocessableEntity {
+	if rec := f.browser(http.MethodPost, "/account/api-keys", "ada", url.Values{"name": {""}}, htmx); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("empty name: %d", rec.Code)
 	}
-	if rec := f.browser(http.MethodPost, "/keys", "ada", url.Values{"name": {"Server"}}, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Your new API key") {
+	if rec := f.browser(http.MethodPost, "/account/api-keys", "ada", url.Values{"name": {"Server"}}, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Copy your key now") {
 		t.Fatalf("create without JavaScript: %d", rec.Code)
 	}
 
 	keys, _ := f.keys.List(ctx, ada)
+	edit := func(session, id string, form url.Values, header http.Header) *httptest.ResponseRecorder {
+		return f.browser(http.MethodPost, "/account/api-keys/"+id, session, form, header)
+	}
+	if rec := edit("ada", keys[0].ID, url.Values{"action": {"rename"}, "name": {"Desktop"}}, htmx); rec.Code != http.StatusNoContent || rec.Header().Get("HX-Trigger") != "dialog:close, api-keys-changed" {
+		t.Fatalf("rename: %d %q", rec.Code, rec.Header().Get("HX-Trigger"))
+	}
 	f.account(t, "grace")
-	if rec := f.browser(http.MethodPost, "/keys/"+keys[0].ID+"/revoke", "grace", nil, htmx); rec.Code != http.StatusOK {
-		t.Fatalf("revoking another account's key: %d", rec.Code)
+	edit("grace", keys[0].ID, url.Values{"action": {"revoke"}}, htmx)
+	if after, _ := f.keys.List(ctx, ada); after[0].RevokedAt != nil || after[0].Name != "Desktop" {
+		t.Fatalf("another account revoked the key, or the rename was lost: %+v", after[0])
 	}
-	if after, _ := f.keys.List(ctx, ada); after[0].RevokedAt != nil {
-		t.Fatal("another account revoked the key")
+	if rec := edit("ada", keys[0].ID, url.Values{"action": {"delete"}, "confirm_name": {"Desktop"}}, htmx); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Revoke this key") {
+		t.Fatalf("delete an active key: %d", rec.Code)
 	}
-	rec = f.browser(http.MethodPost, "/keys/"+keys[0].ID+"/revoke", "ada", nil, htmx)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Revoked") {
+	if rec := edit("ada", keys[0].ID, url.Values{"action": {"revoke"}}, htmx); rec.Code != http.StatusNoContent {
 		t.Fatalf("revoke: %d", rec.Code)
 	}
-	if rec := f.browser(http.MethodPost, "/keys/"+keys[1].ID+"/revoke", "ada", nil, nil); rec.Code != http.StatusSeeOther {
+	if rec := edit("ada", keys[0].ID, url.Values{"action": {"rename"}, "name": {"x"}}, htmx); rec.Code != http.StatusConflict {
+		t.Fatalf("rename a revoked key: %d", rec.Code)
+	}
+	if rec := edit("ada", keys[0].ID, url.Values{"action": {"delete"}, "confirm_name": {"desktop"}}, htmx); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("delete with the wrong name: %d", rec.Code)
+	}
+	if rec := edit("ada", keys[0].ID, url.Values{"action": {"delete"}, "confirm_name": {"Desktop"}}, htmx); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d", rec.Code)
+	}
+	if rec := edit("ada", keys[1].ID, url.Values{"action": {"revoke"}}, nil); rec.Code != http.StatusSeeOther {
 		t.Fatalf("revoke without JavaScript: %d", rec.Code)
+	}
+	if rec := edit("ada", keys[1].ID, url.Values{"action": {"explode"}}, htmx); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown action: %d", rec.Code)
+	}
+	if after, _ := f.keys.List(ctx, ada); len(after) != 1 || after[0].RevokedAt == nil {
+		t.Fatalf("keys after the page actions: %+v", after)
 	}
 }

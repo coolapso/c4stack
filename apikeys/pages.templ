@@ -6,33 +6,32 @@ import (
 	"github.com/coolapso/c4stack/ui"
 )
 
+// The keys page's dialogs and events.
+//
+// The create dialog lives outside #keys-list. Each row's rename, revoke and delete
+// dialogs are rendered inside #keys-list. Dialog forms send errors to their own error
+// slot. Row actions answer success with 204 and "HX-Trigger: dialog:close,
+// api-keys-changed": the dialog closes, then #keys-list reloads itself. Creating a key
+// answers with the one-time reveal dialog, swapped into #key-created, and an
+// out-of-band #keys-list. The reveal dialog removes itself once closed; its wrapper
+// stays for the next key.
 templ keysPage(v keysView) {
-	<div class="page-header">
-		<h1>API keys</h1>
-		<p class="lead">Keys let programs use the API on your behalf. Keep them secret.</p>
-	</div>
-	<section class="panel" aria-labelledby="keys-title">
-		<div class="panel-header">
-			<div>
-				<h2 id="keys-title">Your keys</h2>
-				<p>Revoke a key as soon as you no longer need it.</p>
-			</div>
-			<button type="button" class="btn small primary" data-dialog-open="key-create-dialog">Create key</button>
+	<div class="page-header cluster">
+		<div>
+			<h1>API keys</h1>
+			<p class="lead">Keys let programs use the API on your behalf. Keep them secret.</p>
 		</div>
-		@keyList(v, false)
-	</section>
-	<div id="key-modal">
-		if v.created != "" {
-			@revealDialog(v.created)
-		}
+		<button type="button" id="create-key-button" class="btn primary" data-dialog-open="create-key-dialog">Create API key</button>
 	</div>
-	@ui.Dialog(ui.DialogProps{ID: "key-create-dialog", Title: "Create an API key", Autoshow: v.createError != ""}) {
+	@keyList(v, false)
+	<p class="hint">Revoking a key stops new requests that use it. A key is shown once, when it is created, and cannot be shown again.</p>
+	@ui.Dialog(ui.DialogProps{ID: "create-key-dialog", Title: "Create an API key", Autoshow: v.createError != ""}) {
+		<p>Give the key a name you will recognise. You see the full key once, right after creating it.</p>
 		<form class="stack" method="post" action={ templ.SafeURL(v.base) } hx-post={ v.base } hx-target="find .dialog-error" hx-swap="innerHTML" data-dialog-reset>
 			@ui.CSRFField(v.c)
 			<div class="field">
-				<label for="key-name">Name</label>
-				<input id="key-name" name="name" type="text" maxlength="64" placeholder="Production server" autocomplete="off" required autofocus/>
-				<p class="hint">A name helps you recognise the key later.</p>
+				<label for="create-key-name">Key name</label>
+				<input id="create-key-name" name="name" type="text" maxlength="64" placeholder="Production server" autocomplete="off" required autofocus/>
 			</div>
 			<div class="dialog-error" role="alert">
 				if v.createError != "" {
@@ -48,70 +47,175 @@ templ keysPage(v keysView) {
 			</div>
 		</form>
 	}
-}
-
-// keyList is the list of keys, replaced after each change. With oob, it replaces the
-// page's list from another HTMX response.
-templ keyList(v keysView, oob bool) {
-	<div
-		id="key-list"
-		if oob {
-			hx-swap-oob="true"
-		}
-	>
-		if len(v.keys) == 0 {
-			<p class="empty">No keys yet.</p>
-		} else {
-			<ul class="item-list">
-				for _, key := range v.keys {
-					<li class="item">
-						<div class="item-main">
-							<span>
-								{ key.Name }
-								if key.RevokedAt != nil {
-									<span class="tag danger">Revoked</span>
-								}
-							</span>
-							<span class="item-detail">
-								<code>{ key.Display() }</code> · Created { date(key.CreatedAt) } ·
-								if key.LastUsedAt != nil {
-									Last used { date(*key.LastUsedAt) }
-								} else {
-									Never used
-								}
-							</span>
-						</div>
-						if key.RevokedAt == nil {
-							<form method="post" action={ templ.SafeURL(v.base + "/" + key.ID + "/revoke") } hx-post={ v.base + "/" + key.ID + "/revoke" } hx-target="#key-list" hx-swap="outerHTML" hx-confirm={ "Revoke the key “" + key.Name + "”? Programs using it stop working at once." }>
-								@ui.CSRFField(v.c)
-								<button type="submit" class="btn small ghost" aria-label={ "Revoke " + key.Name }>
-									Revoke
-									@ui.Spinner()
-								</button>
-							</form>
-						}
-					</li>
-				}
-			</ul>
+	<div id="key-created">
+		if v.created != "" {
+			@revealDialog(v)
 		}
 	</div>
 }
 
+// keyList is the #keys-list region: the table of keys and each row's dialogs. It
+// reloads itself on the api-keys-changed event. With oob, it replaces the page's list
+// from another response.
+templ keyList(v keysView, oob bool) {
+	<div
+		id="keys-list"
+		hx-get={ v.base + "/list" }
+		hx-trigger="api-keys-changed from:document"
+		hx-swap="outerHTML"
+		if oob {
+			hx-swap-oob="true"
+		}
+	>
+		switch  {
+			case v.failed:
+				<p class="notice danger" role="alert">Your API keys could not be loaded. Reload the page to try again.</p>
+			case len(v.keys) == 0:
+				<div class="empty">
+					<p>No keys yet. Create one to connect a program.</p>
+					<button type="button" class="btn primary" data-dialog-open="create-key-dialog">Create your first key</button>
+				</div>
+			default:
+				<div class="table-wrap">
+					<table class="data-table">
+						<caption class="sr-only">Your API keys</caption>
+						<thead>
+							<tr>
+								<th scope="col">Name</th>
+								<th scope="col">Key</th>
+								<th scope="col">Created</th>
+								<th scope="col">Status</th>
+								<th scope="col"><span class="sr-only">Actions</span></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, key := range v.keys {
+								<tr id={ "api-key-" + key.ID }>
+									<td>
+										{ key.Name }
+										<span class="item-detail">{ lastUsed(key) }</span>
+									</td>
+									<td><code>{ key.Display() }</code></td>
+									<td>{ date(key.CreatedAt) }</td>
+									<td>
+										if key.RevokedAt == nil {
+											<span class="tag success">Active</span>
+										} else {
+											<span class="tag">Revoked</span>
+										}
+									</td>
+									<td>
+										<div class="cluster">
+											if key.RevokedAt == nil {
+												<button type="button" class="btn small ghost" data-dialog-open={ "rename-key-" + key.ID } aria-label={ "Rename " + key.Name }>Rename</button>
+												<button type="button" class="btn small ghost danger" data-dialog-open={ "revoke-key-" + key.ID } aria-label={ "Revoke " + key.Name }>Revoke</button>
+											} else {
+												<button type="button" class="btn small ghost danger" data-dialog-open={ "delete-key-" + key.ID } aria-label={ "Delete " + key.Name }>Delete</button>
+											}
+										</div>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+				for _, key := range v.keys {
+					if key.RevokedAt == nil {
+						@renameDialog(v, key)
+						@revokeDialog(v, key)
+					} else {
+						@deleteDialog(v, key)
+					}
+				}
+		}
+	</div>
+}
+
+templ actionForm(v keysView, key Key, action string) {
+	<form class="stack" method="post" action={ templ.SafeURL(v.base + "/" + key.ID) } hx-post={ v.base + "/" + key.ID } hx-target="find .dialog-error" hx-swap="innerHTML" data-dialog-reset>
+		@ui.CSRFField(v.c)
+		<input type="hidden" name="action" value={ action }/>
+		{ children... }
+	</form>
+}
+
+templ renameDialog(v keysView, key Key) {
+	@ui.Dialog(ui.DialogProps{ID: "rename-key-" + key.ID, Title: "Rename API key"}) {
+		@actionForm(v, key, "rename") {
+			<div class="field">
+				<label for={ "rename-key-" + key.ID + "-name" }>Key name</label>
+				<input id={ "rename-key-" + key.ID + "-name" } name="name" type="text" value={ key.Name } maxlength="64" autocomplete="off" required autofocus/>
+			</div>
+			@ui.ErrorSlot()
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close>Cancel</button>
+				<button type="submit" class="btn primary">
+					Save name
+					@ui.Spinner()
+				</button>
+			</div>
+		}
+	}
+}
+
+templ revokeDialog(v keysView, key Key) {
+	@ui.Dialog(ui.DialogProps{ID: "revoke-key-" + key.ID, Title: "Revoke this key?", Danger: true}) {
+		@actionForm(v, key, "revoke") {
+			<p><strong>{ key.Name }</strong> stops working at once. Update any program that uses it first.</p>
+			@ui.ErrorSlot()
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close autofocus>Cancel</button>
+				<button type="submit" class="btn danger">
+					Revoke key
+					@ui.Spinner()
+				</button>
+			</div>
+		}
+	}
+}
+
+templ deleteDialog(v keysView, key Key) {
+	@ui.Dialog(ui.DialogProps{ID: "delete-key-" + key.ID, Title: "Delete this key?", Danger: true}) {
+		@actionForm(v, key, "delete") {
+			<p>Remove <strong>{ key.Name }</strong> from your list. Type its name to confirm.</p>
+			<div class="field">
+				<label for={ "delete-key-" + key.ID + "-name" }>Key name</label>
+				<input id={ "delete-key-" + key.ID + "-name" } name="confirm_name" type="text" autocomplete="off" spellcheck="false" required autofocus/>
+			</div>
+			@ui.ErrorSlot()
+			<div class="dialog-actions">
+				<button type="button" class="btn" data-dialog-close>Cancel</button>
+				<button type="submit" class="btn danger">
+					Delete key
+					@ui.Spinner()
+				</button>
+			</div>
+		}
+	}
+}
+
 // createdFragment answers an HTMX create: the key, shown once, and the updated list.
 templ createdFragment(v keysView) {
-	@revealDialog(v.created)
+	@revealDialog(v)
 	@keyList(v, true)
 }
 
-templ revealDialog(raw string) {
-	@ui.Dialog(ui.DialogProps{ID: "key-reveal-dialog", Title: "Your new API key", Autoshow: true, Ephemeral: true}) {
-		<p class="notice warning">Copy the key now. You will not be able to see it again.</p>
-		<code class="secret" id="new-key" data-secret>{ raw }</code>
+templ revealDialog(v keysView) {
+	@ui.Dialog(ui.DialogProps{ID: "key-reveal-dialog", Title: "Copy your key now", Autoshow: true, Ephemeral: true}) {
+		<p><strong>{ v.createdName }</strong> is ready. This is the only time you see the full key.</p>
+		<code class="secret" id="new-key" data-secret>{ v.created }</code>
 		<div class="dialog-actions">
-			<button type="button" class="btn" data-copy-target="new-key">Copy</button>
-			<button type="button" class="btn primary" data-dialog-close>Done</button>
+			<button type="button" class="btn" data-copy-target="new-key" autofocus>Copy key</button>
+			<button type="button" class="btn primary" data-dialog-close>I have saved my key</button>
 		</div>
 	}
+}
+
+func lastUsed(k Key) string {
+	if k.LastUsedAt == nil {
+		return "Not used yet"
+	}
+	return "Last used " + date(*k.LastUsedAt)
 }
 
 func date(t time.Time) string {

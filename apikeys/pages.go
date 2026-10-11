@@ -3,6 +3,7 @@ package apikeys
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/coolapso/c4stack/accounts"
@@ -57,15 +58,19 @@ func Current(c *gin.Context) Key {
 	return v.(Key)
 }
 
-// Mount adds the keys page under r, which must use accounts.RequireSignIn:
-//   - GET "" lists the account's keys.
-//   - POST "" creates a key and shows it once.
-//   - POST "/:id/revoke" revokes a key.
+// Mount adds the keys pages under r, which must use accounts.RequireSignIn:
+//   - GET /api-keys lists the account's keys.
+//   - GET /api-keys/list renders the list alone, for refreshes after a change.
+//   - POST /api-keys creates a key and shows it once.
+//   - POST /api-keys/:id renames ("action=rename" and "name"), revokes
+//     ("action=revoke") or deletes ("action=delete" and the key's name as
+//     "confirm_name") a key. Only revoked keys can be deleted.
 func (k *Keys) Mount(r gin.IRouter, layout ui.Layout) {
-	p := keysPages{k: k, layout: layout, base: basePath(r)}
-	r.GET("", p.list)
-	r.POST("", p.create)
-	r.POST("/:id/revoke", p.revoke)
+	p := keysPages{k: k, layout: layout, base: basePath(r) + "/api-keys"}
+	r.GET("/api-keys", p.page)
+	r.GET("/api-keys/list", p.list)
+	r.POST("/api-keys", p.create)
+	r.POST("/api-keys/:id", p.edit)
 }
 
 func basePath(r gin.IRouter) string {
@@ -86,40 +91,53 @@ type keysView struct {
 	c    *gin.Context
 	base string
 	keys []Key
-	// created is the raw key just created, shown once.
-	created string
+	// created is the raw key just created, shown once, and createdName its name.
+	created     string
+	createdName string
 	// createError reopens the create dialog with a message.
 	createError string
+	// failed means the list could not be loaded.
+	failed bool
 }
 
-func (p keysPages) view(c *gin.Context) (keysView, error) {
+func (p keysPages) view(c *gin.Context) keysView {
 	keys, err := p.k.List(c.Request.Context(), accounts.Current(c).ID)
-	return keysView{c: c, base: p.base, keys: keys}, err
+	if err != nil {
+		web.Log(c).Error("listing API keys failed", "error", err)
+	}
+	return keysView{c: c, base: p.base, keys: keys, failed: err != nil}
+}
+
+func htmx(c *gin.Context) bool {
+	return c.GetHeader("HX-Request") == "true"
+}
+
+func (p keysPages) page(c *gin.Context) {
+	p.layout.Render(c, http.StatusOK, "API keys", keysPage(p.view(c)))
 }
 
 func (p keysPages) list(c *gin.Context) {
-	v, err := p.view(c)
-	if err != nil {
-		p.fail(c, err)
-		return
-	}
-	p.layout.Render(c, http.StatusOK, "API keys", keysPage(v))
+	ui.Render(c, http.StatusOK, keyList(p.view(c), false))
 }
 
+const (
+	msgNameInvalid  = "Name the key with 1 to 64 letters, numbers, spaces or punctuation."
+	msgFailed       = "Something went wrong on our side. Try again in a moment."
+	msgRenameGone   = "This key was revoked, so it can no longer be renamed. Reload the page to see its current state."
+	msgDeleteName   = "Enter the exact key name."
+	msgDeleteActive = "Revoke this key before deleting it."
+)
+
 func (p keysPages) create(c *gin.Context) {
-	htmx := c.GetHeader("HX-Request") == "true"
-	raw, _, err := p.k.Create(c.Request.Context(), accounts.Current(c).ID, c.PostForm("name"))
+	name := c.PostForm("name")
+	raw, key, err := p.k.Create(c.Request.Context(), accounts.Current(c).ID, name)
 	if errors.Is(err, ErrInvalidName) {
-		if htmx {
-			ui.Render(c, http.StatusUnprocessableEntity, ui.FormError("Name the key with 1 to 64 characters."))
+		if htmx(c) {
+			ui.Render(c, http.StatusUnprocessableEntity, ui.FormError(msgNameInvalid))
 			return
 		}
-		v, err := p.view(c)
-		if err != nil {
-			p.fail(c, err)
-			return
-		}
-		v.createError = "Name the key with 1 to 64 characters."
+		v := p.view(c)
+		v.createError = msgNameInvalid
 		p.layout.Render(c, http.StatusUnprocessableEntity, "API keys", keysPage(v))
 		return
 	}
@@ -127,14 +145,11 @@ func (p keysPages) create(c *gin.Context) {
 		p.fail(c, err)
 		return
 	}
-	v, err := p.view(c)
-	if err != nil {
-		p.fail(c, err)
-		return
-	}
-	v.created = raw
-	if htmx {
-		c.Header("HX-Retarget", "#key-modal")
+	v := p.view(c)
+	v.created, v.createdName = raw, key.Name
+	if htmx(c) {
+		// The key exists now, so it is always shown; the list refreshes behind it.
+		c.Header("HX-Retarget", "#key-created")
 		c.Header("HX-Reswap", "innerHTML")
 		c.Header("HX-Trigger", "dialog:close")
 		ui.Render(c, http.StatusOK, createdFragment(v))
@@ -143,28 +158,72 @@ func (p keysPages) create(c *gin.Context) {
 	p.layout.Render(c, http.StatusOK, "API keys", keysPage(v))
 }
 
-func (p keysPages) revoke(c *gin.Context) {
-	err := p.k.Revoke(c.Request.Context(), accounts.Current(c).ID, c.Param("id"))
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		p.fail(c, err)
-		return
+// edit renames, revokes or deletes a key. HTMX requests come from a dialog: errors go
+// to its error slot, and success closes it and refreshes the list.
+func (p keysPages) edit(c *gin.Context) {
+	ctx := c.Request.Context()
+	accountID := accounts.Current(c).ID
+	keyID := c.Param("id")
+	var status int
+	var message string
+	switch c.PostForm("action") {
+	case "rename":
+		err := p.k.Rename(ctx, accountID, keyID, c.PostForm("name"))
+		switch {
+		case errors.Is(err, ErrInvalidName):
+			status, message = http.StatusUnprocessableEntity, msgNameInvalid
+		case errors.Is(err, ErrNotFound):
+			status, message = http.StatusConflict, msgRenameGone
+		case err != nil:
+			p.fail(c, err)
+			return
+		}
+	case "revoke":
+		// A key that is already revoked or gone no longer authenticates, which is what
+		// was asked.
+		if err := p.k.Revoke(ctx, accountID, keyID); err != nil && !errors.Is(err, ErrNotFound) {
+			p.fail(c, err)
+			return
+		}
+	case "delete":
+		keys, err := p.k.List(ctx, accountID)
+		if err != nil {
+			p.fail(c, err)
+			return
+		}
+		i := slices.IndexFunc(keys, func(k Key) bool { return k.ID == keyID })
+		if i >= 0 && c.PostForm("confirm_name") != keys[i].Name {
+			status, message = http.StatusUnprocessableEntity, msgDeleteName
+			break
+		}
+		err = p.k.Delete(ctx, accountID, keyID)
+		switch {
+		case errors.Is(err, ErrActive):
+			status, message = http.StatusConflict, msgDeleteActive
+		case err != nil:
+			p.fail(c, err)
+			return
+		}
+	default:
+		status, message = http.StatusBadRequest, "Something went wrong. Reload the page and try again."
 	}
-	if c.GetHeader("HX-Request") != "true" {
+	switch {
+	case message != "" && htmx(c):
+		ui.Render(c, status, ui.FormError(message))
+	case message != "":
+		p.layout.Error(c, status, "The key was not changed", message)
+	case htmx(c):
+		c.Header("HX-Trigger", "dialog:close, api-keys-changed")
+		c.Status(http.StatusNoContent)
+	default:
 		c.Redirect(http.StatusSeeOther, p.base)
-		return
 	}
-	v, err := p.view(c)
-	if err != nil {
-		p.fail(c, err)
-		return
-	}
-	ui.Render(c, http.StatusOK, keyList(v, false))
 }
 
 func (p keysPages) fail(c *gin.Context, err error) {
 	web.Log(c).Error("API key page failed", "error", err)
-	if c.GetHeader("HX-Request") == "true" {
-		ui.Render(c, http.StatusInternalServerError, ui.FormError("Something went wrong on our side. Try again in a moment."))
+	if htmx(c) {
+		ui.Render(c, http.StatusInternalServerError, ui.FormError(msgFailed))
 		return
 	}
 	p.layout.Error(c, http.StatusInternalServerError, "Something went wrong", "Try again in a moment.")

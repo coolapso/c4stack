@@ -1,9 +1,9 @@
 // Package apikeys issues API keys to accounts and authenticates API requests with them.
 //
 // A key is the app's prefix, an underscore and 32 random bytes in base64url, such as
-// acme_V3kz…. Only the SHA-256 of the whole key is stored, with its prefix and last
-// characters for display. The raw key is shown once, when it is created, and never
-// logged. Lookup is by hash, so changing the prefix never invalidates existing keys.
+// acme_V3kz…. Only the SHA-256 of the whole key is stored, with its last characters for
+// display. The raw key is shown once, when it is created, and never logged. Lookup is
+// by hash, so changing the prefix never invalidates existing keys.
 package apikeys
 
 import (
@@ -48,6 +48,8 @@ var (
 	ErrInvalidKey = errors.New("apikeys: invalid key")
 	// ErrInvalidName means a key name is empty, too long or contains control characters.
 	ErrInvalidName = errors.New("apikeys: a key name needs 1 to 64 printable characters")
+	// ErrActive means a key must be revoked before it can be deleted.
+	ErrActive = errors.New("apikeys: revoke the key before deleting it")
 )
 
 // Config configures the module.
@@ -59,9 +61,10 @@ type Config struct {
 
 // Key describes an issued key. It never holds the raw key.
 type Key struct {
-	ID         string
-	AccountID  string
-	Name       string
+	ID        string
+	AccountID string
+	Name      string
+	// Prefix is the module's current prefix, for display.
 	Prefix     string
 	Suffix     string
 	CreatedAt  time.Time
@@ -69,9 +72,9 @@ type Key struct {
 	RevokedAt  *time.Time
 }
 
-// Display returns a recognisable, non-secret form of the key, such as acme_…x7Qa9z.
+// Display returns a recognisable, non-secret form of the key, such as acme_••••x7Qa9z.
 func (k Key) Display() string {
-	return k.Prefix + "_…" + k.Suffix
+	return k.Prefix + "_••••" + k.Suffix
 }
 
 // Keys is the API keys module.
@@ -130,10 +133,10 @@ func (k *Keys) Create(ctx context.Context, accountID, name string) (string, Key,
 	hash := sha256.Sum256([]byte(raw))
 	key := Key{AccountID: accountID, Name: name, Prefix: k.prefix, Suffix: raw[len(raw)-suffixLength:]}
 	err = k.app.DB().QueryRowContext(ctx, `
-		INSERT INTO api_keys (account_id, name, prefix, suffix, hash)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO api_keys (account_id, name, key_hash, key_suffix)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at`,
-		accountID, name, key.Prefix, key.Suffix, hash[:],
+		accountID, name, hash[:], key.Suffix,
 	).Scan(&key.ID, &key.CreatedAt)
 	if err != nil {
 		return "", Key{}, fmt.Errorf("apikeys: create: %w", err)
@@ -144,7 +147,7 @@ func (k *Keys) Create(ctx context.Context, accountID, name string) (string, Key,
 // List returns an account's keys, newest first, revoked ones included.
 func (k *Keys) List(ctx context.Context, accountID string) ([]Key, error) {
 	rows, err := k.app.DB().QueryContext(ctx, `
-		SELECT id, account_id, name, prefix, suffix, created_at, last_used_at, revoked_at
+		SELECT id, account_id, name, key_suffix, created_at, last_used_at, revoked_at
 		FROM api_keys
 		WHERE account_id = $1
 		ORDER BY created_at DESC, id`, accountID,
@@ -155,8 +158,8 @@ func (k *Keys) List(ctx context.Context, accountID string) ([]Key, error) {
 	defer rows.Close()
 	var keys []Key
 	for rows.Next() {
-		var key Key
-		if err := rows.Scan(&key.ID, &key.AccountID, &key.Name, &key.Prefix, &key.Suffix, &key.CreatedAt, &key.LastUsedAt, &key.RevokedAt); err != nil {
+		key := Key{Prefix: k.prefix}
+		if err := rows.Scan(&key.ID, &key.AccountID, &key.Name, &key.Suffix, &key.CreatedAt, &key.LastUsedAt, &key.RevokedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, key)
@@ -164,7 +167,72 @@ func (k *Keys) List(ctx context.Context, accountID string) ([]Key, error) {
 	return keys, rows.Err()
 }
 
+// Rename renames an active key. A revoked or unknown key returns ErrNotFound.
+func (k *Keys) Rename(ctx context.Context, accountID, keyID, name string) error {
+	name, err := validName(name)
+	if err != nil {
+		return err
+	}
+	var id string
+	err = k.app.DB().QueryRowContext(ctx, `
+		UPDATE api_keys
+		SET name = $3
+		WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL
+		RETURNING id`, keyID, accountID, name,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) || isInvalidUUID(err) {
+		return ErrNotFound
+	}
+	return err
+}
+
+// Delete removes a revoked key from the account's list. An active key returns
+// ErrActive; a key that no longer exists counts as deleted.
+func (k *Keys) Delete(ctx context.Context, accountID, keyID string) error {
+	var active bool
+	err := k.app.DB().QueryRowContext(ctx, `
+		WITH deleted AS (
+		    DELETE FROM api_keys
+		    WHERE id = $1 AND account_id = $2 AND revoked_at IS NOT NULL
+		    RETURNING id
+		)
+		SELECT EXISTS (
+		    SELECT 1
+		    FROM api_keys
+		    WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL
+		)`, keyID, accountID,
+	).Scan(&active)
+	switch {
+	case isInvalidUUID(err):
+		return nil
+	case err != nil:
+		return err
+	case active:
+		return ErrActive
+	}
+	return nil
+}
+
+// LockActive checks inside tx that the key still authenticates for the account, and
+// keeps it from being revoked until tx ends. Run it in the transaction that spends
+// credit for a request, so a key revoked meanwhile cannot spend. It returns
+// ErrInvalidKey for a revoked or unknown key.
+func (k *Keys) LockActive(ctx context.Context, tx *sql.Tx, accountID, keyID string) error {
+	var id string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM api_keys
+		WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL
+		FOR SHARE`, keyID, accountID,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) || isInvalidUUID(err) {
+		return ErrInvalidKey
+	}
+	return err
+}
+
 // Revoke stops a key from authenticating. Revoking a revoked key changes nothing.
+// An unknown key returns ErrNotFound.
 func (k *Keys) Revoke(ctx context.Context, accountID, keyID string) error {
 	var id string
 	err := k.app.DB().QueryRowContext(ctx, `
@@ -186,12 +254,12 @@ func (k *Keys) Authenticate(ctx context.Context, raw string) (Key, error) {
 		return Key{}, ErrInvalidKey
 	}
 	hash := sha256.Sum256([]byte(raw))
-	var key Key
+	key := Key{Prefix: k.prefix}
 	err := k.app.DB().QueryRowContext(ctx, `
-		SELECT id, account_id, name, prefix, suffix, created_at, last_used_at
+		SELECT id, account_id, name, key_suffix, created_at, last_used_at
 		FROM api_keys
-		WHERE hash = $1 AND revoked_at IS NULL`, hash[:],
-	).Scan(&key.ID, &key.AccountID, &key.Name, &key.Prefix, &key.Suffix, &key.CreatedAt, &key.LastUsedAt)
+		WHERE key_hash = $1 AND revoked_at IS NULL`, hash[:],
+	).Scan(&key.ID, &key.AccountID, &key.Name, &key.Suffix, &key.CreatedAt, &key.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, ErrInvalidKey
 	}
@@ -201,8 +269,9 @@ func (k *Keys) Authenticate(ctx context.Context, raw string) (Key, error) {
 	if key.LastUsedAt == nil || time.Since(*key.LastUsedAt) > 5*time.Minute {
 		if _, err := k.app.DB().ExecContext(ctx, `
 			UPDATE api_keys
-			SET last_used_at = now()
-			WHERE id = $1`, key.ID,
+			SET last_used_at = statement_timestamp()
+			WHERE id = $1
+			    AND (last_used_at IS NULL OR last_used_at < statement_timestamp() - interval '5 minutes')`, key.ID,
 		); err != nil {
 			return Key{}, err
 		}
