@@ -445,11 +445,12 @@ identity the app has not seen joins the account whose `primary_email` is its ver
 address, from whichever provider, or gets a new account. Users therefore keep their
 accounts when the app changes identity provider.
 
-Each identity's address is kept current on sign-in. When the identity that holds the
-account's primary address reports a new verified address, the primary address follows,
-so the old address no longer leads a new identity to the account. If the new address is
-already another account's, the primary address stays, and since no identity of the
-account verifies it any more, a new identity with it is turned away rather than joined.
+Each identity's address is kept current on sign-in, including an unverified one that
+cannot sign in: its previous address then stops counting as verified. A new identity
+joins an account only when one of the account's identities still verifies its primary
+address. When none does, the next verified address an identity reports becomes primary.
+If that address is already another account's, the primary address stays, and a new
+identity with it is turned away rather than joined.
 
 A process that only needs account IDs, such as an API gateway, constructs the module
 with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mount` and

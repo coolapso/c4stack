@@ -487,6 +487,33 @@ func TestSignInClearsAStaleDeletionMark(t *testing.T) {
 	}
 }
 
+// An identity whose provider reports a new, unverified address cannot sign in, and its
+// old address stops counting as verified, so it leads no new identity to the account.
+func TestAnUnverifiedChangeExposesNothing(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.idp.sessions["a"] = identity.Identity{Subject: "a", Email: "old@example.com", EmailVerified: true, SignedInAt: time.Now()}
+	a, _ := f.accounts.resolve(ctx, f.idp.sessions["a"])
+
+	f.idp.sessions["a"] = identity.Identity{Subject: "a", Email: "new@example.com", SignedInAt: time.Now()}
+	if rec := f.do(http.MethodGet, "/account", "a", nil, nil); rec.Header().Get("Location") != "/auth/email-unverified" {
+		t.Fatalf("unverified change: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if b, err := f.accounts.resolve(ctx, identity.Identity{Subject: "b", Email: "old@example.com", EmailVerified: true}); b.ID == a.ID || !errors.Is(err, errStaleAddress) {
+		t.Fatalf("a new identity with the old address: %q %v", b.ID, err)
+	}
+
+	// Once the identity verifies the new address, it becomes the account's.
+	moved, err := f.accounts.resolve(ctx, identity.Identity{Subject: "a", Email: "new@example.com", EmailVerified: true})
+	if err != nil || moved.ID != a.ID || moved.Email != "new@example.com" {
+		t.Fatalf("after verification: %+v %v", moved, err)
+	}
+	c, err := f.accounts.resolve(ctx, identity.Identity{Subject: "c", Email: "old@example.com", EmailVerified: true})
+	if err != nil || c.ID == a.ID {
+		t.Fatalf("the freed old address: %q %v", c.ID, err)
+	}
+}
+
 func TestDeletionSurvivesABrowserDisconnect(t *testing.T) {
 	f := newFixture(t)
 	f.r.POST("/gone", f.accounts.RequireSignIn, func(c *gin.Context) {

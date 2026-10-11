@@ -38,6 +38,9 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 		return
 	}
 	if id.Email == "" || !id.EmailVerified {
+		if err := s.recordUnverified(c.Request.Context(), id); err != nil {
+			web.Log(c).Error("recording an unverified address failed", "error", err)
+		}
 		c.Header("Cache-Control", "no-store")
 		redirect(c, s.cfg.Paths.Unverified, http.StatusForbidden)
 		return
