@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 )
 
@@ -37,14 +38,14 @@ var (
 )
 
 // lockKey identifies the advisory lock that serialises migration runs.
-const lockKey = 7_400_215_934_118_201_331
+const lockKey = 739_084_311_982_417_601
 
 const createTable = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
     namespace text NOT NULL,
-    version integer NOT NULL,
+    version bigint NOT NULL,
     name text NOT NULL,
-    checksum text NOT NULL,
+    checksum text NOT NULL CHECK (checksum ~ '^[0-9a-f]{64}$'),
     applied_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (namespace, version)
 )`
@@ -177,6 +178,9 @@ func Migrate(ctx context.Context, db *sql.DB, sets []Set, logger *slog.Logger) e
 		_, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, int64(lockKey))
 	}()
 
+	if err := adopt(ctx, conn, sets, files); err != nil {
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, createTable); err != nil {
 		return fmt.Errorf("postgres: create schema_migrations: %w", err)
 	}
@@ -226,6 +230,140 @@ func apply(ctx context.Context, conn *sql.Conn, namespace string, m migration) e
 	return tx.Commit()
 }
 
+// legacyRegistry reports whether schema_migrations exists without a namespace column,
+// as written by a runner that kept a single history.
+func legacyRegistry(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (bool, error) {
+	var legacy bool
+	err := q.QueryRowContext(ctx, `
+		SELECT to_regclass('schema_migrations') IS NOT NULL
+		    AND NOT EXISTS (
+		        SELECT 1
+		        FROM pg_attribute
+		        WHERE attrelid = to_regclass('schema_migrations')
+		            AND attname = 'namespace'
+		            AND NOT attisdropped
+		    )`,
+	).Scan(&legacy)
+	return legacy, err
+}
+
+// legacyRow is one migration recorded without a namespace.
+type legacyRow struct {
+	version   int
+	checksum  string
+	namespace string
+}
+
+// legacyRows reads a registry without namespaces and assigns each row to the set that
+// has a file with the same version and checksum. A row no set has, or more than one
+// set has, is an error: the app must list the set that applied it.
+func legacyRows(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, sets []Set, files map[string][]migration) ([]legacyRow, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT version, checksum
+		FROM schema_migrations
+		ORDER BY version`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []legacyRow
+	for rows.Next() {
+		var r legacyRow
+		if err := rows.Scan(&r.version, &r.checksum); err != nil {
+			return nil, err
+		}
+		for _, set := range sets {
+			if !slices.ContainsFunc(files[set.Namespace], func(m migration) bool {
+				return m.version == r.version && m.checksum == r.checksum
+			}) {
+				continue
+			}
+			if r.namespace != "" {
+				return nil, fmt.Errorf("postgres: recorded migration %d matches files in both %s and %s", r.version, r.namespace, set.Namespace)
+			}
+			r.namespace = set.Namespace
+		}
+		if r.namespace == "" {
+			return nil, fmt.Errorf("postgres: recorded migration %d matches no listed migration file; list the set that applied it", r.version)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// adopt converts a registry without namespaces, so a database whose schema an app
+// created with its own single migration history can join the namespaced histories.
+// It runs in one transaction under the migration lock.
+func adopt(ctx context.Context, conn *sql.Conn, sets []Set, files map[string][]migration) error {
+	legacy, err := legacyRegistry(ctx, conn)
+	if err != nil || !legacy {
+		return err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := legacyRows(ctx, tx, sets, files)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE schema_migrations ADD COLUMN namespace text`); err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE schema_migrations
+			SET namespace = $2
+			WHERE version = $1`, r.version, r.namespace,
+		); err != nil {
+			return err
+		}
+	}
+	// The single history's keys, such as a unique version or name, would stop two
+	// namespaces from both having a version 1.
+	keys, err := tx.QueryContext(ctx, `
+		SELECT conname
+		FROM pg_constraint
+		WHERE conrelid = 'schema_migrations'::regclass AND contype IN ('p', 'u')`)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for keys.Next() {
+		var name string
+		if err := keys.Scan(&name); err != nil {
+			keys.Close()
+			return err
+		}
+		names = append(names, name)
+	}
+	keys.Close()
+	if err := keys.Err(); err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE schema_migrations DROP CONSTRAINT `+quoteIdent(name)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		ALTER TABLE schema_migrations
+		    ALTER COLUMN namespace SET NOT NULL,
+		    ADD PRIMARY KEY (namespace, version)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 // Status describes one namespace's migration state.
 type Status struct {
 	Namespace string
@@ -244,10 +382,27 @@ func Report(ctx context.Context, db *sql.DB, sets []Set) ([]Status, error) {
 	if err := db.QueryRowContext(ctx, `SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&exists); err != nil {
 		return nil, err
 	}
+	legacy, err := legacyRegistry(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	var adopted []legacyRow
+	if legacy {
+		if adopted, err = legacyRows(ctx, db, sets, files); err != nil {
+			return nil, err
+		}
+	}
 	out := make([]Status, 0, len(sets))
 	for _, set := range sets {
 		done := map[int]string{}
-		if exists {
+		switch {
+		case legacy:
+			for _, r := range adopted {
+				if r.namespace == set.Namespace {
+					done[r.version] = r.checksum
+				}
+			}
+		case exists:
 			if done, err = applied(ctx, db, set.Namespace); err != nil {
 				return nil, err
 			}
@@ -301,6 +456,12 @@ func (c *Checker) Check(ctx context.Context, db *sql.DB) error {
 	}
 	if !exists {
 		return ErrSchemaNotReady
+	}
+	if legacy, err := legacyRegistry(ctx, db); err != nil || legacy {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the migration history has no namespaces yet", ErrSchemaNotReady)
 	}
 	for _, set := range c.sets {
 		done, err := applied(ctx, db, set.Namespace)

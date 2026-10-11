@@ -4,7 +4,9 @@ package postgres_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"strings"
@@ -151,5 +153,79 @@ func TestConcurrentMigrateRuns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestMigrateAdoptsSingleHistory starts from a database whose app recorded its own
+// migrations without namespaces, in the shape Searchbase's runner uses, and lists those
+// files as one set beside a module that adopts the app's table.
+func TestMigrateAdoptsSingleHistory(t *testing.T) {
+	ctx := context.Background()
+	db := open(t)
+	appFiles := map[string]string{
+		"001_initial.sql": "CREATE TABLE IF NOT EXISTS accounts (id int PRIMARY KEY);",
+		"002_notes.sql":   "CREATE TABLE notes (account_id int REFERENCES accounts (id), body text);",
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+		    version BIGINT PRIMARY KEY,
+		    name TEXT NOT NULL UNIQUE,
+		    checksum TEXT NOT NULL CHECK (checksum ~ '^[0-9a-f]{64}$'),
+		    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"001_initial.sql", "002_notes.sql"} {
+		body := appFiles[name]
+		if _, err := db.ExecContext(ctx, body); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte(body))
+		if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)`,
+			name[:3], strings.TrimSuffix(name[4:], ".sql"), hex.EncodeToString(sum[:])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO accounts VALUES (1); INSERT INTO notes VALUES (1, 'kept')`); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := postgres.Set{Namespace: "app", Files: sqlFiles(appFiles)}
+	module := postgres.Set{Namespace: "accounts", Files: sqlFiles(map[string]string{
+		"001_initial.sql": "CREATE TABLE IF NOT EXISTS accounts (id int PRIMARY KEY);\nALTER TABLE accounts ADD COLUMN IF NOT EXISTS email text;",
+	})}
+	sets := []postgres.Set{legacy, module}
+
+	checker, _ := postgres.NewChecker(sets)
+	if err := checker.Check(ctx, db); !errors.Is(err, postgres.ErrSchemaNotReady) {
+		t.Fatalf("check before adoption: %v", err)
+	}
+	status, err := postgres.Report(ctx, db, sets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status[0].Applied) != 2 || len(status[0].Pending) != 0 || len(status[1].Pending) != 1 {
+		t.Fatalf("status before adoption: %+v", status)
+	}
+
+	if err := postgres.Migrate(ctx, db, []postgres.Set{module}, quiet); err == nil || !strings.Contains(err.Error(), "matches no listed migration") {
+		t.Fatalf("adoption without the app's set: %v", err)
+	}
+	if err := postgres.Migrate(ctx, db, sets, quiet); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgres.Migrate(ctx, db, sets, quiet); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if err := checker.Check(ctx, db); err != nil {
+		t.Fatalf("check after adoption: %v", err)
+	}
+	var body string
+	if err := db.QueryRowContext(ctx, `SELECT body FROM notes JOIN accounts ON accounts.id = notes.account_id WHERE accounts.email IS NULL`).Scan(&body); err != nil || body != "kept" {
+		t.Fatalf("data after adoption: %q %v", body, err)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace = 'app'`).Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("app history: %d %v", rows, err)
 	}
 }
