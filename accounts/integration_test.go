@@ -514,6 +514,83 @@ func TestAnUnverifiedChangeExposesNothing(t *testing.T) {
 	}
 }
 
+// An address change is one transaction: if any part fails, nothing changes, and the
+// identity's next sign-in tries again.
+func TestAFailedAddressChangeIsRetried(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	a, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "a", Email: "old@example.com", EmailVerified: true})
+	if _, err := f.a.DB().ExecContext(ctx, `
+		CREATE FUNCTION refuse() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$;
+		CREATE TRIGGER refuse BEFORE UPDATE OF primary_email ON accounts FOR EACH ROW EXECUTE FUNCTION refuse();`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	moved := identity.Identity{Subject: "a", Email: "new@example.com", EmailVerified: true}
+	if _, err := f.accounts.resolve(ctx, moved); err == nil {
+		t.Fatal("the change did not fail")
+	}
+	if f.count(t, `SELECT count(*) FROM account_identities WHERE email = 'old@example.com' AND email_verified`) != 1 {
+		t.Fatal("the identity changed without its account")
+	}
+	if _, err := f.a.DB().ExecContext(ctx, `DROP TRIGGER refuse ON accounts`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.accounts.resolve(ctx, moved); err != nil || got.ID != a.ID || got.Email != "new@example.com" {
+		t.Fatalf("the next sign-in: %+v %v", got, err)
+	}
+	if b, err := f.accounts.resolve(ctx, identity.Identity{Subject: "b", Email: "old@example.com", EmailVerified: true}); err != nil || b.ID == a.ID {
+		t.Fatalf("the old address: %q %v", b.ID, err)
+	}
+}
+
+// An account whose identities all moved to addresses other accounts had keeps its old
+// address only until one of their verified addresses is free. Then a new identity
+// with the old address gets a new account, even if the account's identities have not
+// signed in since.
+func TestAStaleAccountGivesUpItsAddress(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	taken, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "t", Email: "taken@example.com", EmailVerified: true})
+	a, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "a", Email: "old@example.com", EmailVerified: true})
+	if got, err := f.accounts.resolve(ctx, identity.Identity{Subject: "a", Email: "taken@example.com", EmailVerified: true}); err != nil || got.Email != "old@example.com" {
+		t.Fatalf("a taken address: %+v %v", got, err)
+	}
+	if _, err := f.accounts.resolve(ctx, identity.Identity{Subject: "b", Email: "old@example.com", EmailVerified: true}); !errors.Is(err, errStaleAddress) {
+		t.Fatalf("while no other address is free: %v", err)
+	}
+
+	if got, _ := f.accounts.resolve(ctx, identity.Identity{Subject: "t", Email: "elsewhere@example.com", EmailVerified: true}); got.ID != taken.ID || got.Email != "elsewhere@example.com" {
+		t.Fatalf("the other account: %+v", got)
+	}
+	b, err := f.accounts.resolve(ctx, identity.Identity{Subject: "b", Email: "old@example.com", EmailVerified: true})
+	if err != nil || b.ID == a.ID || b.Email != "old@example.com" {
+		t.Fatalf("a new identity with the old address: %+v %v", b, err)
+	}
+	if got, _ := f.accounts.Get(ctx, a.ID); got.Email != "taken@example.com" {
+		t.Fatalf("the stale account's address: %q", got.Email)
+	}
+}
+
+// When an identity's address stops being verified, another identity's verified
+// address becomes the account's.
+func TestAnotherIdentityTakesOverTheAddress(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.idp.sessions["a"] = identity.Identity{Subject: "a", Email: "first@example.com", EmailVerified: true, SignedInAt: time.Now()}
+	a, _ := f.accounts.resolve(ctx, f.idp.sessions["a"])
+	f.accounts.resolve(ctx, identity.Identity{Subject: "a2", Email: "first@example.com", EmailVerified: true})
+	f.accounts.resolve(ctx, identity.Identity{Subject: "a2", Email: "second@example.com", EmailVerified: true})
+	if got, _ := f.accounts.Get(ctx, a.ID); got.Email != "first@example.com" {
+		t.Fatalf("while the first address is verified: %q", got.Email)
+	}
+	f.idp.sessions["a"] = identity.Identity{Subject: "a", Email: "first@example.com", SignedInAt: time.Now()}
+	f.do(http.MethodGet, "/account", "a", nil, nil)
+	if got, _ := f.accounts.Get(ctx, a.ID); got.Email != "second@example.com" {
+		t.Fatalf("after the first address stopped being verified: %q", got.Email)
+	}
+}
+
 func TestDeletionSurvivesABrowserDisconnect(t *testing.T) {
 	f := newFixture(t)
 	f.r.POST("/gone", f.accounts.RequireSignIn, func(c *gin.Context) {

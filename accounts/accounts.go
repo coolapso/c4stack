@@ -47,7 +47,9 @@ var ErrNotFound = errors.New("accounts: account not found")
 // Account is a local account.
 type Account struct {
 	ID string
-	// Email is the account's primary address, verified by the identity provider.
+	// Email is the account's primary address. One of the account's identities verified
+	// it, unless every identity has since moved to an address the provider has not
+	// verified or that another account has.
 	Email     string
 	CreatedAt time.Time
 }
@@ -154,7 +156,8 @@ var (
 	// identity provider has not confirmed yet.
 	errDeletionPending = errors.New("accounts: the address's account is being deleted")
 	// errStaleAddress means the address is an account's primary address, but none of
-	// the account's identities verifies it any more.
+	// the account's identities verifies it any more, and none has another verified
+	// address to take its place.
 	errStaleAddress = errors.New("accounts: the address belongs to an account that no longer uses it")
 )
 
@@ -165,15 +168,15 @@ func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, 
 	provider := s.idp.Name()
 	var a Account
 	var email string
-	var verified, started, confirmed bool
+	var verified, started, confirmed, current bool
 	err := s.app.DB().QueryRowContext(ctx, `
 		SELECT a.id, a.primary_email, a.created_at,
 		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
-		       i.email, i.email_verified
+		       i.email, i.email_verified, `+primaryVerified+`
 		FROM account_identities i
 		JOIN accounts a ON a.id = i.account_id
 		WHERE i.provider = $1 AND i.subject = $2`, provider, id.Subject,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt, &started, &confirmed, &email, &verified)
+	).Scan(&a.ID, &a.Email, &a.CreatedAt, &started, &confirmed, &email, &verified, &current)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return s.join(ctx, provider, id)
@@ -187,7 +190,9 @@ func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, 
 		}
 		return Account{}, errDeleted
 	}
-	if email != id.Email || verified != id.EmailVerified {
+	// An account whose primary address no identity verifies tries again on every
+	// sign-in, until one of its verified addresses is free to take its place.
+	if email != id.Email || verified != id.EmailVerified || !current {
 		if err := s.updateAddress(ctx, provider, id, &a); err != nil {
 			return Account{}, err
 		}
@@ -205,44 +210,41 @@ func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, 
 	return a, nil
 }
 
-// updateAddress records an identity's new address. When no identity of the account
-// verifies the account's primary address any more, a newly verified address becomes
-// primary, so an address the account no longer uses never leads a new identity to it.
+// primaryVerified holds when one of account a's identities verifies its primary
+// address. Only then may a new identity with that address join the account.
+const primaryVerified = `EXISTS (
+	SELECT 1
+	FROM account_identities v
+	WHERE v.account_id = a.id AND v.email = a.primary_email AND v.email_verified
+)`
+
+// updateAddress records an identity's address, and gives the account a new primary
+// address if it needs one. Both happen in one transaction, so a failure leaves the
+// identity as it was and its next sign-in tries again.
 func (s *Accounts) updateAddress(ctx context.Context, provider string, id identity.Identity, a *Account) error {
-	if _, err := s.app.DB().ExecContext(ctx, `
+	tx, err := s.app.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE account_identities
 		SET email = $3, email_verified = $4, updated_at = now()
-		WHERE provider = $1 AND subject = $2`, provider, id.Subject, id.Email, id.EmailVerified,
+		WHERE provider = $1 AND subject = $2 AND (email <> $3 OR email_verified <> $4)`,
+		provider, id.Subject, id.Email, id.EmailVerified,
 	); err != nil {
 		return err
 	}
-	if !id.EmailVerified || id.Email == a.Email {
-		return nil
-	}
-	var email string
-	err := s.app.DB().QueryRowContext(ctx, `
-		UPDATE accounts a
-		SET primary_email = $2, updated_at = now()
-		WHERE a.id = $1
-		    AND NOT EXISTS (
-		        SELECT 1
-		        FROM account_identities i
-		        WHERE i.account_id = a.id AND i.email = a.primary_email AND i.email_verified
-		    )
-		RETURNING primary_email`, a.ID, id.Email,
-	).Scan(&email)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil // another identity still verifies the primary address
-	case isUniqueViolation(err):
-		// Another account has the new address. The old one stays primary, and since no
-		// identity verifies it, a new identity with it is turned away rather than joined.
-		s.app.Log().Warn("an identity's new address belongs to another account", "account_id", a.ID)
-		return nil
-	case err != nil:
+	email, err := promote(ctx, tx, a.ID)
+	if err != nil {
 		return err
 	}
-	a.Email = email
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if email != "" {
+		a.Email = email
+	}
 	return nil
 }
 
@@ -250,13 +252,67 @@ func (s *Accounts) updateAddress(ctx context.Context, provider string, id identi
 // cannot sign in, but its previous address must stop counting as verified, or a new
 // identity verifying that address could join the account.
 func (s *Accounts) recordUnverified(ctx context.Context, id identity.Identity) error {
-	_, err := s.app.DB().ExecContext(ctx, `
+	tx, err := s.app.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var accountID string
+	err = tx.QueryRowContext(ctx, `
 		UPDATE account_identities
 		SET email = COALESCE(NULLIF($3, ''), email), email_verified = false, updated_at = now()
-		WHERE provider = $1 AND subject = $2 AND (email_verified OR email <> COALESCE(NULLIF($3, ''), email))`,
+		WHERE provider = $1 AND subject = $2 AND (email_verified OR email <> COALESCE(NULLIF($3, ''), email))
+		RETURNING account_id`,
 		s.idp.Name(), id.Subject, id.Email,
-	)
-	return err
+	).Scan(&accountID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // unknown, or recorded already
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := promote(ctx, tx, accountID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// promote gives an account a new primary address when none of its identities verifies
+// the current one any more: the verified address of its most recently updated identity
+// that no other account has. It returns the new address, or "" when the account keeps
+// its address, including when another account takes the new one at the same moment.
+func promote(ctx context.Context, tx *sql.Tx, accountID string) (string, error) {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT promote`); err != nil {
+		return "", err
+	}
+	var email string
+	err := tx.QueryRowContext(ctx, `
+		UPDATE accounts a
+		SET primary_email = i.email, updated_at = now()
+		FROM (
+		    SELECT i.email
+		    FROM account_identities i
+		    WHERE i.account_id = $1
+		        AND i.email_verified
+		        AND NOT EXISTS (
+		            SELECT 1
+		            FROM accounts b
+		            WHERE b.primary_email = i.email
+		        )
+		    ORDER BY i.updated_at DESC, i.id
+		    LIMIT 1
+		) i
+		WHERE a.id = $1 AND NOT `+primaryVerified+`
+		RETURNING a.primary_email`, accountID,
+	).Scan(&email)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case isUniqueViolation(err):
+		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT promote`)
+		return "", err
+	}
+	return email, err
 }
 
 // join adds a new identity to the account with its verified email, or to a new account.
@@ -306,11 +362,7 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 	err = tx.QueryRowContext(ctx, `
 		SELECT a.id, a.primary_email, a.created_at,
 		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
-		       EXISTS (
-		           SELECT 1
-		           FROM account_identities i
-		           WHERE i.account_id = a.id AND i.email = a.primary_email AND i.email_verified
-		       )
+		       `+primaryVerified+`
 		FROM accounts a
 		WHERE a.primary_email = $1
 		FOR UPDATE`, id.Email,
@@ -331,8 +383,18 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 	case found && started:
 		return Account{}, errDeletionPending
 	case found && !current:
-		s.app.Log().Warn("a new identity's address is the primary address of an account none of whose identities uses it; an operator must decide", "account_id", a.ID)
-		return Account{}, errStaleAddress
+		// None of the account's identities verifies the address any more, so it is not
+		// the new identity's account. Another of the account's verified addresses takes
+		// its place, and the new identity gets a new account with this one.
+		email, err := promote(ctx, tx, a.ID)
+		if err != nil {
+			return Account{}, err
+		}
+		if email == "" {
+			s.app.Log().Warn("a new identity's address is the primary address of an account none of whose identities uses it; an operator must decide", "account_id", a.ID)
+			return Account{}, errStaleAddress
+		}
+		found = false
 	}
 	if !found {
 		if err := tx.QueryRowContext(ctx, `

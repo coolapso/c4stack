@@ -448,9 +448,14 @@ accounts when the app changes identity provider.
 Each identity's address is kept current on sign-in, including an unverified one that
 cannot sign in: its previous address then stops counting as verified. A new identity
 joins an account only when one of the account's identities still verifies its primary
-address. When none does, the next verified address an identity reports becomes primary.
-If that address is already another account's, the primary address stays, and a new
-identity with it is turned away rather than joined.
+address. When none does, the verified address of its most recently updated identity
+takes its place, if no other account has it. An identity's address and the account's
+primary address change in one transaction, and an account still without a verified
+primary address tries again on each of its identities' sign-ins.
+
+A new identity whose address is the primary address of such an account gets a new
+account, once one of that account's verified addresses has taken its place. If none
+can, the new identity is turned away and an operator must decide.
 
 A process that only needs account IDs, such as an API gateway, constructs the module
 with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mount` and
@@ -669,8 +674,9 @@ func (x *Expiry) Run(ctx context.Context) (Result, error)
 ```
 
 ```sql
-credit_expiry_warnings(account_id → accounts ON DELETE CASCADE, activity_at, message_id,
-                       sent_at, announced_expiry, delivered_at, expires_at)
+credit_expiry_warnings(account_id → accounts ON DELETE CASCADE, activity_at, email,
+                       message_id, sent_at, notice_days, announced_expiry, delivered_at,
+                       expires_at)
 ```
 
 `New` registers the `credits expire` command and an hourly job during `serve`. The job
@@ -680,11 +686,14 @@ duplicate it. Each run:
    delivered. A delivered warning gets its deadline: a full notice period from delivery,
    and never before the date it announced. A failed warning, or one undelivered for
    three days, is removed so it is sent again.
-2. **Warns.** A warning goes out `NoticeDays` before the credit would expire, to the
-   account's primary address and outside any transaction, announcing the nominal date or
-   a full notice period from now, whichever is later.
+2. **Warns.** A warning goes out `NoticeDays` before the credit would expire, outside
+   any transaction, announcing the nominal date or a full notice period from now,
+   whichever is later. It goes to the account's primary address, and only while one of
+   the account's identities verifies that address. A new primary address gets a new
+   warning.
 3. **Expires.** Credit expires once its delivered warning's deadline has passed, if the
-   warning is about the account's last activity and the app holds none of it.
+   warning is about the account's last activity, went to the account's current
+   address, which an identity still verifies, and the app holds none of it.
 
 Purchases, charges and adjustments count as activity, and new activity needs a new
 warning. Deadlines are stored, so changing the policy never brings one forward.
