@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 )
 
 var (
@@ -64,6 +65,8 @@ type Event struct {
 	PaidCents int64
 	// Currency is the ISO code, such as "EUR".
 	Currency string
+	// CreatedAt is when the provider created the event, if it says.
+	CreatedAt time.Time
 	// Review is set when the event is about one of the app's payments but cannot be
 	// applied as it stands, such as a refund that has not succeeded. It names why.
 	Review string

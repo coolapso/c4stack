@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coolapso/c4stack/payments"
 )
@@ -66,7 +67,8 @@ func TestCreateCheckout(t *testing.T) {
 		t.Fatalf("session %+v, %v", s, err)
 	}
 	if got["product_id"] != "prod_credits" || got["request_id"] != "intent-1" || got["custom_price"] != float64(1083) ||
-		got["metadata"].(map[string]any)["reference"] != "intent-1" || got["customer"].(map[string]any)["email"] != "ada@example.com" {
+		got["metadata"].(map[string]any)["intent_id"] != "intent-1" || got["customer"].(map[string]any)["email"] != "ada@example.com" ||
+		len(got) != 6 {
 		t.Errorf("request %v", got)
 	}
 
@@ -111,8 +113,8 @@ func TestParseWebhookVerifiesSignatures(t *testing.T) {
 	}
 }
 
-const paid = `{"id":"evt_paid","eventType":"checkout.completed","object":{
-	"id":"ch_1","request_id":"intent-1","status":"completed","metadata":{"reference":"intent-1"},
+const paid = `{"id":"evt_paid","eventType":"checkout.completed","created_at":1760000000123,"object":{
+	"id":"ch_1","request_id":"intent-1","status":"completed","metadata":{"intent_id":"intent-1"},
 	"product":{"id":"prod_credits"},
 	"order":{"id":"ord_1","amount":1083,"amount_paid":1310,"currency":"eur","status":"paid","type":"onetime"}}}`
 
@@ -122,7 +124,8 @@ func TestParsePaid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := payments.Event{ID: "evt_paid", Kind: payments.Paid, Reference: "intent-1", CheckoutID: "ch_1", OrderID: "ord_1", AmountCents: 1083, PaidCents: 1310, Currency: "EUR"}
+	want := payments.Event{ID: "evt_paid", Kind: payments.Paid, Reference: "intent-1", CheckoutID: "ch_1", OrderID: "ord_1", AmountCents: 1083, PaidCents: 1310, Currency: "EUR",
+		CreatedAt: time.UnixMilli(1760000000123).UTC()}
 	if e != want {
 		t.Fatalf("event %+v", e)
 	}
@@ -136,7 +139,7 @@ func TestParsePaid(t *testing.T) {
 		"foreign product":   {`"product":{"id":"prod_credits"}`, `"product":"prod_other"`, payments.ErrIgnored, ""},
 		"subscription":      {`"type":"onetime"`, `"type":"recurring"`, payments.ErrIgnored, ""},
 		"not paid":          {`"status":"paid"`, `"status":"pending"`, nil, "checkout_not_paid"},
-		"missing reference": {`"metadata":{"reference":"intent-1"}`, `"metadata":{}`, nil, "missing_reference"},
+		"missing reference": {`"metadata":{"intent_id":"intent-1"}`, `"metadata":{}`, nil, "missing_reference"},
 	}
 	for name, tc := range cases {
 		body := strings.Replace(paid, tc.from, tc.to, 1)

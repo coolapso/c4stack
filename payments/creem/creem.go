@@ -96,15 +96,15 @@ func (c *Creem) CheckoutOrigin() string {
 }
 
 // CreateCheckout creates a checkout for the configured product at the given price.
-// The reference travels as the request ID and as metadata, and comes back in webhooks.
+// The reference travels as the request ID and as the intent_id metadata, and comes back
+// in webhooks.
 func (c *Creem) CreateCheckout(ctx context.Context, co payments.Checkout) (payments.Session, error) {
 	body := map[string]any{
 		"product_id":   c.cfg.ProductID,
 		"request_id":   co.Reference,
 		"custom_price": co.AmountCents,
-		"units":        1,
 		"success_url":  co.SuccessURL,
-		"metadata":     map[string]string{"reference": co.Reference},
+		"metadata":     map[string]string{"intent_id": co.Reference},
 	}
 	if co.Email != "" {
 		body["customer"] = map[string]string{"email": co.Email}
@@ -155,20 +155,27 @@ func (c *Creem) ParseWebhook(header http.Header, body []byte) (payments.Event, e
 		return payments.Event{}, payments.ErrInvalid
 	}
 	var envelope struct {
-		ID     string          `json:"id"`
-		Type   string          `json:"eventType"`
-		Object json.RawMessage `json:"object"`
+		ID        string          `json:"id"`
+		Type      string          `json:"eventType"`
+		CreatedAt int64           `json:"created_at"`
+		Object    json.RawMessage `json:"object"`
 	}
 	if json.Unmarshal(body, &envelope) != nil || envelope.ID == "" || len(envelope.Object) == 0 {
 		return payments.Event{}, payments.ErrInvalid
 	}
+	var e payments.Event
 	switch envelope.Type {
 	case "checkout.completed":
-		return c.paid(envelope.ID, envelope.Object)
+		e, err = c.paid(envelope.ID, envelope.Object)
 	case "refund.created", "dispute.created":
-		return c.reversal(envelope.ID, envelope.Type, envelope.Object)
+		e, err = c.reversal(envelope.ID, envelope.Type, envelope.Object)
+	default:
+		return payments.Event{ID: envelope.ID}, payments.ErrIgnored
 	}
-	return payments.Event{ID: envelope.ID}, payments.ErrIgnored
+	if envelope.CreatedAt > 0 {
+		e.CreatedAt = time.UnixMilli(envelope.CreatedAt).UTC()
+	}
+	return e, err
 }
 
 // checkout is the part of Creem's checkout object the adapter reads.
@@ -245,7 +252,7 @@ func (c *Creem) paid(id string, raw json.RawMessage) (payments.Event, error) {
 	switch {
 	case co.Status != "completed" || co.Order.Status != "paid":
 		e.Review = "checkout_not_paid"
-	case co.RequestID == "" || co.Metadata["reference"] != co.RequestID:
+	case co.RequestID == "" || co.Metadata["intent_id"] != co.RequestID:
 		e.Review = "missing_reference"
 	}
 	return e, nil
