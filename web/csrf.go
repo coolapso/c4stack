@@ -43,6 +43,13 @@ func (s *settings) issueCSRFCookie(c *gin.Context) {
 	c.Next()
 }
 
+// fail stops the request with status, leaving the response unwritten for middleware
+// that renders errors.
+func fail(c *gin.Context, status int) {
+	c.Status(status)
+	c.Abort()
+}
+
 func validCSRFValue(v string) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(v)
 	return err == nil && len(raw) == 32
@@ -64,23 +71,25 @@ func CSRFToken(c *gin.Context) string {
 // another origin. Use it on public routes with forms; accounts.RequireSignIn already
 // includes it. API-key routes and webhooks must not use it.
 //
-// Other middleware can call CSRF directly and check c.IsAborted afterwards.
+// Other middleware can call CSRF directly and check c.IsAborted afterwards. A rejected
+// request gets only a status, not yet written, so middleware that runs before CSRF can
+// render an error page after c.Next.
 func CSRF(c *gin.Context) {
 	if !unsafeMethod(c.Request.Method) {
 		return
 	}
 	st := current(c)
 	if !st.settings.sameOrigin(c.Request.Header.Get("Origin")) {
-		c.AbortWithStatus(http.StatusForbidden)
+		fail(c, http.StatusForbidden)
 		return
 	}
 	token := c.GetHeader(CSRFHeader)
 	if token == "" {
 		if err := parseForm(c.Request); err != nil {
 			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+				fail(c, http.StatusRequestEntityTooLarge)
 			} else {
-				c.AbortWithStatus(http.StatusBadRequest)
+				fail(c, http.StatusBadRequest)
 			}
 			return
 		}
@@ -88,7 +97,7 @@ func CSRF(c *gin.Context) {
 	}
 	want := st.settings.csrfToken(st.csrfValue)
 	if !hmac.Equal([]byte(token), []byte(want)) {
-		c.AbortWithStatus(http.StatusForbidden)
+		fail(c, http.StatusForbidden)
 	}
 }
 

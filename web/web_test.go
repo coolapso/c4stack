@@ -317,6 +317,22 @@ func TestCSRF(t *testing.T) {
 	}
 }
 
+// A rejected request leaves its response unwritten, so the app can render an error page.
+func TestCSRFRejectionsCanBeRendered(t *testing.T) {
+	r := newEngine(t, Config{})
+	render := func(c *gin.Context) {
+		c.Next()
+		if c.IsAborted() && !c.Writer.Written() {
+			c.String(c.Writer.Status(), "error page")
+		}
+	}
+	r.POST("/submit", render, CSRF, func(c *gin.Context) { c.Status(http.StatusOK) })
+	b := newBrowser(t, r)
+	if rec := b.post("/submit", url.Values{}, nil); rec.Code != http.StatusForbidden || rec.Body.String() != "error page" {
+		t.Fatalf("rejection: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMaxBody(t *testing.T) {
 	r := newEngine(t, Config{MaxBodyBytes: 10})
 	read := func(c *gin.Context) {

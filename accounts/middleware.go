@@ -17,10 +17,13 @@ const accountKey = "c4stack/accounts"
 // and finds the account, creating it on first sign-in. Visitors without a session are
 // sent to the login page, and identities without a verified email to a page that asks
 // them to confirm it. Responses are marked not to be stored.
+//
+// A request it stops without a redirect gets only a status, not yet written, so
+// middleware that runs before it can render an error page after c.Next.
 func (s *Accounts) RequireSignIn(c *gin.Context) {
 	if s.idp == nil {
 		web.Log(c).Error("accounts: RequireSignIn needs an identity provider")
-		c.AbortWithStatus(http.StatusInternalServerError)
+		fail(c, http.StatusInternalServerError)
 		return
 	}
 	web.CSRF(c)
@@ -34,7 +37,7 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 	}
 	if err != nil {
 		web.Log(c).Error("session validation failed", "error", err)
-		c.AbortWithStatus(http.StatusServiceUnavailable)
+		fail(c, http.StatusServiceUnavailable)
 		return
 	}
 	if id.Email == "" || !id.EmailVerified {
@@ -56,12 +59,12 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 		redirect(c, s.cfg.Paths.Deleted+"?unfinished=1", http.StatusConflict)
 		return
 	case errors.Is(err, errStaleAddress):
-		c.AbortWithStatus(http.StatusConflict)
+		fail(c, http.StatusConflict)
 		return
 	}
 	if err != nil {
 		web.Log(c).Error("account lookup failed", "error", err)
-		c.AbortWithStatus(http.StatusInternalServerError)
+		fail(c, http.StatusInternalServerError)
 		return
 	}
 	c.Header("Cache-Control", "no-store")
@@ -86,6 +89,13 @@ func redirect(c *gin.Context, target string, htmxStatus int) {
 		return
 	}
 	c.Redirect(http.StatusSeeOther, target)
+	c.Abort()
+}
+
+// fail stops the request with status, leaving the response unwritten for middleware
+// that renders errors.
+func fail(c *gin.Context, status int) {
+	c.Status(status)
 	c.Abort()
 }
 

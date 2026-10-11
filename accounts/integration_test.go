@@ -36,6 +36,7 @@ type testIdentity struct {
 	mu        sync.Mutex
 	sessions  map[string]identity.Identity
 	deleteErr error
+	authErr   error
 	deleted   []string
 	logouts   int
 }
@@ -45,6 +46,9 @@ func (p *testIdentity) Name() string { return p.name }
 func (p *testIdentity) Authenticate(r *http.Request) (identity.Identity, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.authErr != nil {
+		return identity.Identity{}, p.authErr
+	}
 	c, err := r.Cookie("session")
 	if err != nil {
 		return identity.Identity{}, identity.ErrNoSession
@@ -588,6 +592,22 @@ func TestAnotherIdentityTakesOverTheAddress(t *testing.T) {
 	f.do(http.MethodGet, "/account", "a", nil, nil)
 	if got, _ := f.accounts.Get(ctx, a.ID); got.Email != "second@example.com" {
 		t.Fatalf("after the first address stopped being verified: %q", got.Email)
+	}
+}
+
+// When the provider cannot validate a session, RequireSignIn leaves the response
+// unwritten, so the app can render its own error page.
+func TestSignInFailuresCanBeRendered(t *testing.T) {
+	f := newFixture(t)
+	f.r.GET("/rendered", func(c *gin.Context) {
+		c.Next()
+		if c.IsAborted() && !c.Writer.Written() {
+			c.String(c.Writer.Status(), "error page")
+		}
+	}, f.accounts.RequireSignIn, func(c *gin.Context) { c.Status(http.StatusOK) })
+	f.idp.authErr = errors.New("provider down")
+	if rec := f.do(http.MethodGet, "/rendered", "ada", nil, nil); rec.Code != http.StatusServiceUnavailable || rec.Body.String() != "error page" {
+		t.Fatalf("provider failure: %d %q", rec.Code, rec.Body.String())
 	}
 }
 
