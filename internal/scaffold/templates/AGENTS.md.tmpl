@@ -34,7 +34,7 @@ app was generated, they were:
 - Never change a migration file once it has been applied anywhere. Add a new file.
 - Enable a module (`apikeys`, `credits`, `credits/expiry`) by adding its `Migrations` to
   the list in `main.go` before the app's own, constructing it in `setup` and mounting
-  its pages on the `/account` group.
+  its page on a group of the `/account` group, such as `/account/api-keys`.
 - Prices are set on the server. Take credit with `Debit` and a reference that makes a
   retry safe. For long work, reserve credit in an app table under `WithAccount`, report
   it through the `Holds` function, and charge it with `Capture` when the work is done.

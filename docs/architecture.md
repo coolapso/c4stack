@@ -79,7 +79,7 @@ func setup(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return err
 	}
-	accts, err := accounts.New(a, idp, accounts.Config{LoginPath: "/login"})
+	accts, err := accounts.New(a, idp, accounts.Config{})
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ layout := newLayout(assets) // layout.go starts from the default design
 r.GET("/assets/*path", assets.Serve)
 r.GET("/", home)
 idp.Mount(r, layout)   // GET /login
-accts.Mount(r, layout) // /account/settings, /account/delete, /logout and their pages
+accts.Mount(r, layout) // the account pages at Config.Paths: /account/settings, /logout, …
 account := r.Group("/account", accts.RequireSignIn)
 account.GET("", overview) // the app's own signed-in pages
 ```
@@ -118,8 +118,10 @@ tables.
 A module constructor registers the module's operator commands, its background jobs and
 its account-deletion hook. It fails with a clear error when the app's migration list lacks
 the module, so the two cannot get out of step unnoticed. `Mount` adds the module's
-default pages at fixed paths under the router group the app passes in, usually the
-signed-in `/account` group.
+default pages where the app says: the keys and credits pages at the group the app
+passes in, such as `/account/api-keys`, and the account pages at the paths in
+`accounts.Config.Paths`. An app that wants its own version of one page builds it on the
+module's functions and mounts the module's other pages.
 
 Module tables are Searchbase Cloud's, the first app on these conventions, plus what the
 modules add. Module migrations use `IF NOT EXISTS` throughout, so they adopt tables an
@@ -401,7 +403,8 @@ goes through `accounts`.
 ### accounts
 
 ```sql
-accounts(id uuid, primary_email UNIQUE, created_at, updated_at, deletion_started_at)
+accounts(id uuid, primary_email UNIQUE, created_at, updated_at,
+         deletion_started_at, deletion_confirmed_at)
 account_identities(id uuid, account_id → accounts ON DELETE CASCADE, provider, subject,
                    email, email_verified, created_at, updated_at, UNIQUE (provider, subject))
 deleted_identities(identity_hash bytea, deleted_at)
@@ -409,7 +412,8 @@ deleted_identities(identity_hash bytea, deleted_at)
 
 ```go
 type Account struct{ ID, Email string; CreatedAt time.Time } // Email is the primary address
-type Config struct{ LoginPath string }
+type Config struct{ Paths Paths }
+type Paths struct{ Login, Logout, Unverified, Settings, Delete, Deleted, EmailChanged string }
 
 func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) // nil idp: no sign-in
 func (s *Accounts) RequireSignIn(c *gin.Context)
@@ -417,25 +421,35 @@ func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) Delete(c *gin.Context) error // ErrNotDeleted or ErrCleanupPending on failure
-func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout)
-// POST /logout, GET /auth/email-unverified, GET /account/settings,
-// GET and POST /account/delete, GET /account/deleted, GET /account/email-changed
+func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) // every page at its path
+func (s *Accounts) Pages(layout ui.Layout) *Pages         // the handlers, to mount some
+// Pages: Settings, DeleteForm, Delete, Logout, Unverified, Deleted, EmailChanged and
+// MountProfile
 ```
+
+The paths default to Searchbase's: `/login`, `/logout`, `/auth/email-unverified`,
+`/account/settings`, `/account/delete`, `/account/deleted` and `/account/email-changed`.
+`RequireSignIn` and the pages use the configured paths for every redirect and link.
 
 Signing out lives here rather than in the provider adapter, because it is the same for
 every provider. The operator command is `accounts delete-local <account-id>`.
 
 **`RequireSignIn`** checks CSRF, authenticates the session, then finds the account,
 creating it on first sign-in. It sets `Cache-Control: no-store`. Unauthenticated requests
-are redirected to `LoginPath` with a safe `next` path, or get `HX-Redirect` from HTMX.
-An identity without a verified email goes to `/auth/email-unverified` and gets no
+are redirected to `Paths.Login` with a safe `next` path, or get `HX-Redirect` from
+HTMX. An identity without a verified email goes to `Paths.Unverified` and gets no
 account.
 
 **Finding the account.** A sign-in finds its account by provider and subject. An
 identity the app has not seen joins the account whose `primary_email` is its verified
 address, from whichever provider, or gets a new account. Users therefore keep their
-accounts when the app changes identity provider. Each identity's address is kept current
-on sign-in; the account's primary address changes through the profile UI's email change.
+accounts when the app changes identity provider.
+
+Each identity's address is kept current on sign-in. When the identity that holds the
+account's primary address reports a new verified address, the primary address follows,
+so the old address no longer leads a new identity to the account. If the new address is
+already another account's, the primary address stays, and since no identity of the
+account verifies it any more, a new identity with it is turned away rather than joined.
 
 A process that only needs account IDs, such as an API gateway, constructs the module
 with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mount` and
@@ -449,18 +463,24 @@ with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mo
 3. `idp.Delete` runs with a context detached from the request, so a closed tab cannot
    stop it halfway, and with a one-minute budget. If the provider fails, the mark is
    cleared and nothing else changes; the user can retry.
-4. Only after the provider confirms, one transaction does the local deletion:
+4. Once the provider confirms, `deletion_confirmed_at` records it.
+5. One transaction does the local deletion:
    1. It locks the account row and its identities.
    2. It records a hash of each identity in `deleted_identities`.
    3. It runs the `OnDelete` hooks: modules first, then the app.
    4. It deletes the account. Foreign keys cascade or anonymise.
-5. The browser goes to `/account/deleted`.
+6. The browser goes to `Paths.Deleted`.
 
 If the local transaction fails after the provider deleted the identity, the failure is
 logged with the account ID, and an operator runs `accounts delete-local`. The two
-systems are not atomic. If the address signs up again first, the new identity finds the
-marked account, finishes its deletion and gets a new, empty account. A sign-in by one of
-the account's own identities clears a mark the provider refused to act on.
+systems are not atomic. Until then:
+- A sign-up with the account's address finishes a confirmed deletion and gets a new,
+  empty account.
+- A sign-up with the address of an account whose deletion is started but not confirmed
+  is turned away, from any provider: only the provider's confirmation lets local data
+  go.
+- A sign-in by another of the account's identities finishes a confirmed deletion, and
+  clears a mark the provider refused to act on.
 
 Account creation checks `deleted_identities` under the identity's lock, so a request
 that validated its session just before deletion cannot recreate the account.
@@ -488,9 +508,8 @@ func (k *Keys) Authenticate(ctx context.Context, raw string) (Key, error)
 func (k *Keys) LockActive(ctx context.Context, tx *sql.Tx, accountID, keyID string) error
 func (k *Keys) RequireKey(c *gin.Context)
 func Current(c *gin.Context) Key
-func (k *Keys) Mount(r gin.IRouter, layout ui.Layout)
-// GET /api-keys, GET /api-keys/list, POST /api-keys,
-// POST /api-keys/:id with action rename, revoke or delete
+func (k *Keys) Mount(r gin.IRouter, layout ui.Layout) // r: the page's group, e.g. /account/api-keys
+// GET "", GET "/list", POST "", POST "/:id" with action rename, revoke or delete
 ```
 
 **Storage.** A raw key is the prefix, an underscore and 32 random bytes in base64url.
@@ -508,7 +527,7 @@ spend.
 
 **The keys page.** Each row has dialogs to rename or revoke an active key, and to delete
 a revoked one after typing its name. Changes close the dialog and reload the list from
-`/api-keys/list`.
+the page's `/list`.
 
 ### payments and payments/creem
 
@@ -591,9 +610,8 @@ func Label(e Entry) string
 func (cr *Credits) Quote(creditCents int64) (Quote, error)
 func (cr *Credits) Purchase(ctx context.Context, account accounts.Account, creditCents int64, successURL string) (Purchase, error)
 func (cr *Credits) PaymentStatus(ctx context.Context, accountID, intentID string) (string, error)
-func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout)
-// GET and POST /credits, GET /credits/quote, /credits/summary, /credits/balance
-// and /credits/payment-status
+func (cr *Credits) Mount(r gin.IRouter, layout ui.Layout) // r: the page's group, e.g. /account/credits
+// GET and POST "", GET "/quote", "/summary", "/balance" and "/payment-status"
 func (cr *Credits) Webhook(c *gin.Context)
 ```
 
@@ -638,7 +656,7 @@ rules and the webhook outcome table.
 type Policy struct{ InactiveMonths, NoticeDays int } // required
 
 type Config struct {
-	Sender     email.Sender // required
+	Sender     email.TrackingSender // required: sends and reports delivery
 	Policy     Policy
 	AppName    string                     // named in the default warning
 	CreditsURL string                     // linked from the warning
@@ -649,25 +667,41 @@ func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error)
 func (x *Expiry) Run(ctx context.Context) (Result, error)
 ```
 
-`New` adds the `accounts.credit_expiry_warned_at` column, the `credits expire` command
-and an hourly job during `serve`. The job runs under an advisory lock, so replicas and
-deployments sharing the database don't duplicate it.
+```sql
+credit_expiry_warnings(account_id → accounts ON DELETE CASCADE, activity_at, message_id,
+                       sent_at, announced_expiry, delivered_at, expires_at)
+```
 
-- **Activity.** Purchases, charges and adjustments count as activity.
-- **Warnings.** A warning goes out `NoticeDays` before the credit would expire, to the
-  account's primary address and outside any transaction. Only a delivered warning is
-  recorded; an undelivered one is tried again on the next run.
-- **Expiry.** Credit expires once `InactiveMonths` passed since the last activity and a
-  full notice period passed since the warning, so never earlier than announced. New
-  activity needs a new warning, and a hold defers expiry. Shortening `NoticeDays` also
-  shortens warnings already sent.
+`New` registers the `credits expire` command and an hourly job during `serve`. The job
+runs under an advisory lock, so replicas and deployments sharing the database don't
+duplicate it. Each run:
+1. **Checks delivery.** It asks the email provider about every warning not yet
+   delivered. A delivered warning gets its deadline: a full notice period from delivery,
+   and never before the date it announced. A failed warning, or one undelivered for
+   three days, is removed so it is sent again.
+2. **Warns.** A warning goes out `NoticeDays` before the credit would expire, to the
+   account's primary address and outside any transaction, announcing the nominal date or
+   a full notice period from now, whichever is later.
+3. **Expires.** Credit expires once its delivered warning's deadline has passed, if the
+   warning is about the account's last activity and the app holds none of it.
+
+Purchases, charges and adjustments count as activity, and new activity needs a new
+warning. Deadlines are stored, so changing the policy never brings one forward.
 
 ### email and email/scaleway
 
 ```go
 type Message struct{ To, Subject, Text string }
-type Sender interface{ Send(ctx context.Context, m Message) error }
+type Sender interface{ Send(ctx context.Context, m Message) (id string, err error) }
+type Tracker interface {
+	Delivery(ctx context.Context, id string) (Delivery, time.Time, error) // Pending, Delivered, Failed
+}
+type TrackingSender interface{ Sender; Tracker }
 ```
+
+A nil error from `Send` means the provider accepted the message, not that it arrived.
+The Scaleway adapter reports a message delivered once Scaleway's status is `sent`: the
+recipient's mail system took it.
 
 `scaleway.New(scaleway.Config{SecretKey, ProjectID, Region, From, FromName, ReplyTo})`.
 The region defaults to `fr-par`. Errors carry the HTTP status, never the provider's
@@ -790,7 +824,7 @@ These features were considered and decided as follows.
 | Separate tables for reviews and for refunds waiting for their payment | One `payment_reviews` table | Every event that can't be applied is recorded with a fixed reason. Commands list and resolve them. |
 | Module tables | Searchbase Cloud's, plus additions | Searchbase is the first app on these conventions. With its tables, it adopts the modules in one release, without moving or copying data, and its previous release keeps running during the switch. `internal/porttest` proves it. |
 | Linking accounts | By verified email | A new identity joins the account with its verified address, from any provider, so users keep their accounts across provider changes and re-registrations. The provider's verified flag is trusted, and deleted accounts are gone, so an address never inherits someone else's account. |
-| A deletion mark | Yes, one column | Set before the provider is asked and cleared if it refuses. It stops a re-registration from joining an account whose deletion did not finish, and lets that sign-up finish it. Cancel commands and a pending state are not needed. |
+| Deletion marks | Two columns: started and confirmed | The started mark stops a sign-up from joining, or deleting, an account while the provider decides. Only the confirmed mark lets a sign-up finish a deletion, so local data never goes before the provider confirms. Cancel commands are not needed. |
 | Identity tombstones | Yes, as one hash table | Checked at account creation under the identity lock, it stops an in-flight request recreating a deleted person's account with their email. Per-request session validation already rejects stale sessions. |
 | Expiry metrics, a scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. Apps add metrics if they need them. |
 | Server timeouts as environment variables | No | Safe fixed defaults. `DrainDelay` and `ShutdownTimeout` are `web.Server` fields; an app exposes them as variables if it wants. |

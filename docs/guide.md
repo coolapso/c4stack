@@ -5,9 +5,11 @@ generates: `main.go` wires modules, `routes.go` mounts routes, `layout.go` and
 `pages.templ` hold the design. After editing a `.templ` file, run `task templ:generate`.
 After adding a migration, run `task db:migrate`.
 
-The account pages live under `/account`: settings at `/account/settings`, deletion at
-`/account/delete`, API keys at `/account/api-keys` and credits at `/account/credits`.
-The app's own signed-in pages go beside them, in the `/account` group in `routes.go`.
+The account pages live under `/account` by default: settings at `/account/settings`,
+deletion at `/account/delete`, API keys at `/account/api-keys` and credits at
+`/account/credits`. The app's own signed-in pages go beside them, in the `/account`
+group in `routes.go`. Every one of these paths can move; see "Move or replace an account
+page".
 
 `examples/textlab` in this repository is a complete app that uses every module.
 
@@ -99,7 +101,7 @@ Never change a migration file once it has been applied anywhere. Add a new one.
 ## Enable API keys, credits or expiry
 
 Each module needs its migrations in `main.go`, its constructor, and a `Mount` for its
-pages on the `/account` group. List module migrations before the app's own.
+page on a group of its own. List module migrations before the app's own.
 
 ```go
 // main.go
@@ -117,7 +119,7 @@ Migrations: []app.Migrations{
 ```go
 keys, err := apikeys.New(a, apikeys.Config{Prefix: "acme"}) // keys look like acme_…
 // routes.go
-keys.Mount(account, layout) // /account/api-keys
+keys.Mount(account.Group("/api-keys"), layout)
 api := r.Group("/api/v1", keys.RequireKey)
 ```
 
@@ -134,7 +136,7 @@ cr, err := credits.New(a, accts, credits.Config{
 	Policy:   credits.Policy{MinPurchaseCents: 500, MaxPurchaseCents: 50_000, FeeBasisPoints: 390, FeeFixedCents: 40},
 })
 // routes.go
-cr.Mount(account, layout) // /account/credits
+cr.Mount(account.Group("/credits"), layout)
 r.POST("/webhooks/payments", cr.Webhook)
 ```
 
@@ -145,8 +147,9 @@ charges stay, the credits page says that buying credit is not available, and `We
 answers 404. Use it while a payment provider reviews the site, or in a process that
 only spends credit.
 
-**Expiry** needs credits and an email sender. Without a sender it refuses to start, so
-credit never expires unwarned.
+**Expiry** needs credits and an email sender that reports delivery, an
+`email.TrackingSender` such as the Scaleway adapter. Without one it refuses to start, so
+credit never expires without a delivered warning.
 
 ```go
 mail, err := scaleway.New(scaleway.Config{SecretKey: cfg.ScalewaySecretKey, ProjectID: cfg.ScalewayProjectID, From: "noreply@acme.example", FromName: "Acme"})
@@ -323,10 +326,39 @@ layout := ui.Layout{
 
 `examples/textlab/layout.templ` is a complete custom layout.
 
-**Replace one default page.** Write the page you want on the module's functions instead
-of mounting the module's pages. For example, the keys page uses `keys.List`,
-`keys.Create`, `keys.Rename`, `keys.Revoke` and `keys.Delete`; the credits page uses
-`cr.Summary`, `cr.History`, `cr.Quote`, `cr.Purchase` and `cr.PaymentStatus`.
+## Move or replace an account page
+
+**Move.** The keys and credits pages go wherever their group is. The account pages go
+where `accounts.Config.Paths` says; every redirect and link follows:
+
+```go
+accts, err := accounts.New(a, idp, accounts.Config{Paths: accounts.Paths{
+	Settings: "/preferences",
+	Delete:   "/preferences/close",
+}})
+```
+
+**Replace.** Write the page you want on the module's functions instead of mounting the
+module's page. The keys page uses `keys.List`, `keys.Create`, `keys.Rename`,
+`keys.Revoke` and `keys.Delete`; the credits page uses `cr.Summary`, `cr.History`,
+`cr.Quote`, `cr.Purchase` and `cr.PaymentStatus`.
+
+To replace one account page, mount the others from `accts.Pages` at their paths, and
+yours at its path:
+
+```go
+p := accts.Pages(layout)
+r.GET("/account/settings", accts.RequireSignIn, mySettings) // yours
+r.GET("/account/delete", accts.RequireSignIn, p.DeleteForm)
+r.POST("/account/delete", accts.RequireSignIn, p.Delete)
+r.POST("/logout", web.CSRF, p.Logout)
+r.GET("/auth/email-unverified", p.Unverified)
+r.GET("/account/deleted", p.Deleted)
+r.GET("/account/email-changed", p.EmailChanged)
+```
+
+Keeping the default settings page, mount `p.Settings` on a group at its path and call
+`p.MountProfile` on that group, so the provider's profile UI works.
 
 ## Allow more in the Content Security Policy
 
@@ -353,7 +385,7 @@ Providers are small interfaces. Implement one and pass it where the default goes
 |---|---|---|
 | `identity.Provider` | `Name`, `Authenticate`, `Logout`, `Delete` | `accounts.New` |
 | `payments.Provider` | `Name`, `CheckoutOrigin`, `CreateCheckout`, `ParseWebhook` | `credits.Config.Payments` |
-| `email.Sender` | `Send` | `expiry.Config.Sender` |
+| `email.TrackingSender` | `Send`, `Delivery` | `expiry.Config.Sender` |
 
 ```go
 type Keycloak struct{ /* ... */ }

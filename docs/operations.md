@@ -146,8 +146,10 @@ acme accounts delete-local <account-id>
 
 It runs every module's and the app's deletion hooks, forfeits remaining credit and deletes
 the account, in one transaction. If the user signs up again with the same address before
-you do, the sign-up finishes the deletion itself and starts a new, empty account; the
-command then reports that the account no longer exists.
+you do, the sign-up finishes the deletion itself, once the provider's confirmation was
+recorded, and starts a new, empty account; the command then reports that the account no
+longer exists. If even the confirmation could not be recorded, a sign-up with the
+address is turned away until you run the command.
 
 Every deletion goes through the app, so its data is removed with it.
 
@@ -180,9 +182,11 @@ hour. One replica runs it at a time. To run it now:
 acme credits expire
 ```
 
-A warning that cannot be delivered is tried again on the next run. Credit only expires
-after its owner's warning was delivered and the full notice period has passed. Without a
-working email sender, nothing expires.
+Each run asks Scaleway what became of the warnings it has not seen delivered. A warning
+counts once Scaleway reports it `sent`, meaning the recipient's mail system took it.
+One that fails, or is still undelivered after three days, is sent again. Credit only
+expires after its owner's warning was delivered and the full notice period from
+delivery has passed, and never before the date the warning announced. Without a working
+email sender, nothing expires.
 
-To shorten the notice period, wait until no warnings are outstanding: the new period
-also applies to warnings already sent.
+Changing the policy applies to new warnings; deadlines already announced stay.
