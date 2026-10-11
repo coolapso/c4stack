@@ -273,6 +273,29 @@ func TestTheNoticeRunsFromDelivery(t *testing.T) {
 	}
 }
 
+// Shortening the notice period never shortens a warning already sent, even one
+// delivered after the change.
+func TestShorterPoliciesNeverShortenAWarning(t *testing.T) {
+	f := newFixture(t)
+	ada := f.account(t, "ada@example.com", 1000)
+	f.mail.next = email.Pending
+	f.now = start.AddDate(0, 11, 15)
+	f.run(t)
+	f.expiry.cfg.Policy.NoticeDays = 1
+	delivered := f.now.Add(2 * time.Hour)
+	f.mail.deliver(delivered)
+	f.now = delivered.Add(time.Minute)
+	f.run(t)
+	f.now = delivered.AddDate(0, 0, 30).Add(-time.Minute)
+	if r := f.run(t); r.Expired != 0 || f.balance(t, ada) != 1000 {
+		t.Fatalf("expired before 30 days from delivery: %+v", r)
+	}
+	f.now = delivered.AddDate(0, 0, 30).Add(time.Minute)
+	if r := f.run(t); r.Expired != 1 {
+		t.Fatalf("after 30 days from delivery: %+v", r)
+	}
+}
+
 // Shortening the notice period never brings a deadline forward.
 func TestAnnouncedDeadlinesNeverShorten(t *testing.T) {
 	f := newFixture(t)

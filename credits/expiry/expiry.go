@@ -194,10 +194,11 @@ const activity = `
 
 // sent is a warning the provider has not reported delivered yet.
 type sent struct {
-	accountID string
-	messageID string
-	sentAt    time.Time
-	announced time.Time
+	accountID  string
+	messageID  string
+	sentAt     time.Time
+	noticeDays int
+	announced  time.Time
 }
 
 // confirmAll asks the provider what became of each undelivered warning. A delivered
@@ -225,7 +226,7 @@ func (x *Expiry) confirmAll(ctx context.Context, now time.Time, r *Result) error
 
 func (x *Expiry) undelivered(ctx context.Context, after string) ([]sent, error) {
 	rows, err := x.app.DB().QueryContext(ctx, `
-		SELECT account_id, message_id, sent_at, announced_expiry
+		SELECT account_id, message_id, sent_at, notice_days, announced_expiry
 		FROM credit_expiry_warnings
 		WHERE delivered_at IS NULL AND message_id IS NOT NULL AND account_id::text > $1
 		ORDER BY account_id::text
@@ -238,7 +239,7 @@ func (x *Expiry) undelivered(ctx context.Context, after string) ([]sent, error) 
 	var batch []sent
 	for rows.Next() {
 		var w sent
-		if err := rows.Scan(&w.accountID, &w.messageID, &w.sentAt, &w.announced); err != nil {
+		if err := rows.Scan(&w.accountID, &w.messageID, &w.sentAt, &w.noticeDays, &w.announced); err != nil {
 			return nil, err
 		}
 		batch = append(batch, w)
@@ -253,7 +254,9 @@ func (x *Expiry) confirm(ctx context.Context, now time.Time, w sent) error {
 	}
 	switch {
 	case state == email.Delivered:
-		expires := at.Add(time.Duration(x.cfg.Policy.NoticeDays) * 24 * time.Hour)
+		// The notice period the warning was sent with, so a policy change made since
+		// never shortens it.
+		expires := at.AddDate(0, 0, w.noticeDays)
 		if expires.Before(w.announced) {
 			expires = w.announced
 		}
@@ -362,16 +365,17 @@ func (x *Expiry) warn(ctx context.Context, now time.Time, d due) error {
 		return fmt.Errorf("send warning: %w", err)
 	}
 	_, err = x.app.DB().ExecContext(ctx, `
-		INSERT INTO credit_expiry_warnings (account_id, activity_at, message_id, sent_at, announced_expiry)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO credit_expiry_warnings (account_id, activity_at, message_id, sent_at, notice_days, announced_expiry)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (account_id) DO UPDATE
 		SET activity_at = excluded.activity_at,
 		    message_id = excluded.message_id,
 		    sent_at = excluded.sent_at,
+		    notice_days = excluded.notice_days,
 		    announced_expiry = excluded.announced_expiry,
 		    delivered_at = NULL,
 		    expires_at = NULL`,
-		d.accountID, d.lastActivity, id, now, d.announced,
+		d.accountID, d.lastActivity, id, now, x.cfg.Policy.NoticeDays, d.announced,
 	)
 	return err
 }

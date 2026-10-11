@@ -466,7 +466,11 @@ shape and add what is missing, such as new columns and tables.
    file that no set has stops the run before anything changes.
 
 Keep each step additive, so the release before the move keeps running against the
-converged database while a deployment switches over. `internal/porttest` moves
+converged database while a deployment switches over.
+
+Expiry warnings the app sent before the move count only if it knows they were
+delivered. Otherwise leave them out: their recipients are warned again, and their
+credit expires a full notice period after that warning arrives. `internal/porttest` moves
 Searchbase Cloud's database this way and checks every step.
 
 ## Add an operator command

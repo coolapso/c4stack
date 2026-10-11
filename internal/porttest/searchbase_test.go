@@ -7,8 +7,7 @@
 // converged database while a deployment switches over.
 //
 // testdata/searchbase holds Searchbase's migrations 001 to 004 as Searchbase applied
-// them, and 005, which Searchbase adds for the move. testdata/searchbase_after holds
-// the migration Searchbase adds after the modules, to carry its expiry warnings over.
+// them, and 005, the one migration Searchbase adds for the move.
 package porttest_test
 
 import (
@@ -46,7 +45,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed testdata/searchbase/*.sql testdata/searchbase_after/*.sql
+//go:embed testdata/searchbase/*.sql
 var testdata embed.FS
 
 var quiet = slog.New(slog.DiscardHandler)
@@ -63,12 +62,11 @@ func files(t *testing.T, dir string) fs.FS {
 func searchbaseFiles(t *testing.T) fs.FS { return files(t, "testdata/searchbase") }
 
 // config lists Searchbase's own history first, because it created the tables the
-// modules adopt, and its later migrations after the modules.
+// modules adopt.
 func config(t *testing.T) app.Config {
 	return app.Config{Name: "searchbase", Migrations: []app.Migrations{
 		{Namespace: "searchbase", Files: searchbaseFiles(t)},
 		accounts.Migrations, apikeys.Migrations, credits.Migrations, expiry.Migrations,
-		{Namespace: "searchbase_app", Files: files(t, "testdata/searchbase_after")},
 	}}
 }
 
@@ -500,11 +498,19 @@ func TestSearchbaseMovesOntoC4Stack(t *testing.T) {
 		t.Fatalf("balance after a capture: %d", s.BalanceCents)
 	}
 
-	// Grace's warning from before the move counts: her credit expires, and Ada's does
-	// not.
+	// Searchbase never learned whether its warnings arrived, so Grace's warning from
+	// before the move does not count: she is warned again, and her credit expires a
+	// full notice period after that warning is delivered. Ada is not due.
 	r, err := p.expiry.Run(ctx)
-	if err != nil || r.Expired != 1 || r.Warned != 0 || p.summary(t, w.grace).BalanceCents != 0 {
+	if err != nil || r.Expired != 0 || r.Warned != 1 || len(p.mail.sent) != 1 || p.mail.sent[0].To != "grace@example.com" {
 		t.Fatalf("expiry: %+v %v", r, err)
+	}
+	if _, err := p.expiry.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p.summary(t, w.grace).BalanceCents != 700 ||
+		!scalar[bool](t, db, `SELECT expires_at > now() + interval '29 days' FROM credit_expiry_warnings WHERE account_id = $1`, w.grace) {
+		t.Fatal("Grace's credit is not kept for a full notice period after the new warning")
 	}
 
 	// A new identity with Ada's address, such as after a change of provider, joins her
@@ -615,7 +621,7 @@ func TestSearchbaseSchemaConverges(t *testing.T) {
 	}
 
 	modulesOnly := open(t)
-	if err := postgres.Migrate(ctx, modulesOnly, sets(app.Config{Migrations: cfg.Migrations[1:5]}), quiet); err != nil {
+	if err := postgres.Migrate(ctx, modulesOnly, sets(app.Config{Migrations: cfg.Migrations[1:]}), quiet); err != nil {
 		t.Fatal(err)
 	}
 	ported := describe(t, portedDB, columns)
