@@ -34,7 +34,7 @@ vars:
   SHARED_TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.SHARED_TEST_DB_PORT}}/test?sslmode=disable
   SHARED_PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
   SHARED_SECRETS: '{{if .INFISICAL_PROJECT}}infisical run --projectId={{.INFISICAL_PROJECT}} --env={{.INFISICAL_ENV | default "dev"}} --{{end}}'
-  SHARED_STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.1
+  SHARED_STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.2
   SHARED_TAG:
     sh: (git describe --tags --always --dirty=-dev 2>/dev/null || echo dev) | sed 's/^v//'
   # The disposable test database. Its data lives in memory and disappears with it.
