@@ -51,7 +51,8 @@ task dev                  # http://localhost:8080
   runbooks
 - [Architecture](docs/architecture.md): packages, extension points and design decisions
 - [Credits contract](docs/credits.md): ledger rules and webhook outcomes
-- [Release notes](docs/releases)
+- [Releases](https://github.com/coolapso/c4stack/releases), with notes generated from the
+  commits
 - [Textlab](examples/textlab): an example app that uses every module
 
 ## Status
@@ -88,9 +89,9 @@ test keys from the maintainer's Infisical project, so it needs the `infisical` C
 logged in, with access to that project. Without it, run the example with its own `.env`,
 as [its README](examples/textlab/README.md) describes.
 
-`task release:verify VERSION=vX.Y.Z` runs everything a release needs. It neither tags nor
-publishes. [Maintaining](docs/maintaining.md) covers repository settings, security reports
-and releases.
+Releases are the owner's: `task release:full` runs every check above, then semrel tags
+the next version and publishes its GitHub release. [Maintaining](docs/maintaining.md)
+covers repository settings, security reports and releases.
 
 ## License
 

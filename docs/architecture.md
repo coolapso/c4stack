@@ -837,7 +837,7 @@ carry no lint dependency in `go.mod` and a newer version arrives with the framew
 test-database tasks and adds `check` (with golangci-lint), `test`, `test:integration`,
 `test:app` (generate a starter app from this checkout, run its tasks and serve it end to
 end), `test:upgrade` (move a generated app to the next release), `test:example`,
-`cli:build` and `release:verify`.
+`cli:build`, and the releases: `release:next`, `release:gh` and `release:full`.
 
 ## Design decisions
 

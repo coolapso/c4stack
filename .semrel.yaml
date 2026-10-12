@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://registry.semrel.io/schemas/core/v1.json
+schemaVersion: 1
+tagPrefix: v
+branches:
+  - name: main
+
+rules:
+  - type: feat
+    bump: minor
+  - type: fix
+    bump: patch
+  - type: ref
+    bump: patch
+  - type: build
+    bump: patch
+
+# Stay below 1.0.0: a breaking change bumps the minor version instead of the major.
+version_ceiling: "1.0.0"
+ceiling_strategy: clamp
+
+# The notes go to the GitHub release; no CHANGELOG.md is committed.
+commit_changelog: false
+tag_exists_strategy: error
+plugins:
+  - uses: "@semrel/provider-github"
+    phase: release 

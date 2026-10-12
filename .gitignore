@@ -1,4 +1,7 @@
 /bin/
 /.task/
 /tmp/
+# semrel's plugins, caches and local release log; .semrel.lock pins the plugins
+/.semrel/*/
+/.semrel-analytics.jsonl
 .env

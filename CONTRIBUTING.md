@@ -29,10 +29,12 @@ A change to the generator, the shared Taskfile or the example also needs
 example in headless Chromium.
 
 When an API changes, update `docs/guide.md`, `docs/architecture.md` and the example app
-with it. Behaviour changes and new migrations go in the next release's notes under
-`docs/releases`. Never change a migration file that has been released.
+with it. Never change a migration file that has been released.
 
-Use focused [Conventional Commits](https://www.conventionalcommits.org).
+Use focused [Conventional Commits](https://www.conventionalcommits.org). They decide
+releases, and their subjects become the release notes: `feat` makes a minor release,
+`fix`, `ref` and `build` a patch release. Name any behaviour change or new migration in
+the subject, and mark a breaking change with `!` or a `BREAKING CHANGE:` footer.
 
 ## Contributor License Agreement
 

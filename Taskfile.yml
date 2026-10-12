@@ -8,6 +8,8 @@ vars:
   # A port of its own, so the framework's tests can run next to an app's.
   TEST_DB_PORT: '55433'
   TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.TEST_DB_PORT}}/test?sslmode=disable
+  REPOSITORY: github.com/coolapso/c4stack
+  # semrel (https://semrel.io) computes release versions; .semrel.yaml configures it.
 
 includes:
   app:
@@ -116,18 +118,45 @@ tasks:
     cmds:
       - go build -o bin/c4stack ./cmd/c4stack
 
-  release:verify:
-    desc: 'Check that this commit can be released, for example: task release:verify VERSION=v0.1.0'
-    requires:
-      vars: [VERSION]
+  release:next:
+    desc: Show the version the commits since the last release would get
+    cmds:
+      - 'semrel release --dry-run --no-color'
+
+  # Searchbase's release:gh, with semrel in place of go-semantic-release.
+  release:gh:
+    desc: Release the current branch on GitHub with semrel
     cmds:
       - |
-        echo "{{.VERSION}}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "VERSION must be a release such as v0.1.0."; exit 1; }
-        [ -z "$(git status --porcelain)" ] || { echo "Commit or stash your changes first."; exit 1; }
-        if git rev-parse -q --verify "refs/tags/{{.VERSION}}" >/dev/null; then
-          echo "{{.VERSION}} is already tagged."; exit 1
+        export REPOSITORY="{{.REPOSITORY}}"
+        # semrel's GitHub plugin reads the repository from it.
+        export GITHUB_REPOSITORY="${REPOSITORY#github.com/}"
+        git pull origin $(git branch --show-current) --rebase
+        git push origin $(git branch --show-current)
+        if [ -z "$GITHUB_TOKEN" ]; then
+          echo "GITHUB_TOKEN is not set, using gh cli"
+          export GITHUB_TOKEN=$(gh auth token)
         fi
-        [ -f "docs/releases/{{.VERSION}}.md" ] || { echo "Write docs/releases/{{.VERSION}}.md first."; exit 1; }
+        # semrel tags locally first, which needs a committer, as in a CI checkout.
+        git config user.name >/dev/null || git config user.name "github-actions[bot]"
+        git config user.email >/dev/null || git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        # Install the plugin pinned in .semrel.lock. A plugin missing at release time is
+        # skipped with a warning rather than failing the release.
+        semrel plugin restore
+        out=$(mktemp)
+        trap 'rm -f "$out"' EXIT
+        semrel release --no-color --output-file "$out"
+        # Read single lines only: the file also holds the multi-line changelog.
+        tag=$(sed -n 's/^TAG=//p' "$out")
+        if [ "$(sed -n 's/^RELEASED=//p' "$out")" = true ] && [ -n "$tag" ]; then
+          gh release view "$tag" >/dev/null || { echo "semrel tagged $tag, but no GitHub release was published."; exit 1; }
+          # GitHub created the published tag; replace semrel's local one with it.
+          git fetch origin --tags --force
+        fi
+
+  release:full:
+    desc: Run every check, then release on GitHub
+    cmds:
       - task: check
       - task: test:integration
         vars: {CLI_ARGS: -race ./...}
@@ -135,5 +164,4 @@ tasks:
       - task: test:upgrade
       - task: test:example
       - task: cli:build
-      # Tagging and publishing are the owner's decision; this task does neither.
-      - echo "{{.VERSION}} passed every check. Tag and publish it when you decide to."
+      - task: release:gh

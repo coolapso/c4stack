@@ -545,7 +545,7 @@ task framework:update VERSION=v0.2.0
 
 It moves the Go dependency and the shared tasks to the release together, then tidies,
 regenerates, tests and builds. Then:
-1. Read the release notes in `docs/releases/`.
+1. Read the [release notes](https://github.com/coolapso/c4stack/releases).
 2. Run `task db:migrate` locally.
 3. Deploy: run the migrate job before rolling out the new image.
 

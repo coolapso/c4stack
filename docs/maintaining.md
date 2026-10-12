@@ -32,7 +32,20 @@ promises the reporter:
 
 ## Releases
 
-1. Write the release notes in `docs/releases/vX.Y.Z.md`, with behaviour changes and
-   migrations.
-2. Run `task release:verify VERSION=vX.Y.Z`.
-3. The owner tags and pushes the release.
+Releases work like Searchbase's, with [semrel](https://semrel.io) in place of
+go-semantic-release. semrel picks each version from the Conventional Commits since the
+last release, as `.semrel.yaml` configures: `feat` makes a minor release; `fix`, `ref`
+and `build` make a patch release. Versions stay below 1.0.0, so a breaking change makes
+a minor release too. The release notes are generated from the commit subjects.
+
+- `task release:next` shows the next version and its notes.
+- `task release:full` runs every check, then `task release:gh`. The Release workflow
+  (Actions → Release → Run workflow) runs it on GitHub's runner.
+- `task release:gh`:
+  1. Pulls and pushes the current branch.
+  2. Uses `GITHUB_TOKEN`, or `gh`'s token when it is not set.
+  3. Restores the GitHub plugin pinned in `.semrel.lock`.
+  4. Runs semrel, whose plugin publishes the GitHub release; GitHub creates the tag on
+     the pushed commit.
+
+To move to 1.0.0, raise `version_ceiling` in `.semrel.yaml`.

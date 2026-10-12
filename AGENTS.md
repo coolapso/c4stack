@@ -82,6 +82,9 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - Run `task templ:generate` after editing `.templ` files and commit the generated code.
   It leaves the example module alone; the example runs its own.
 - When an API changes, update `docs/guide.md`, `docs/architecture.md` and the example app
-  with it. Behaviour changes and new migrations go in the next release's notes.
-- `task release:verify VERSION=vX.Y.Z` before a release. Focused Conventional Commits.
-  Do not tag or push tags; releases are the owner's call.
+  with it.
+- Focused Conventional Commits. semrel picks each version and writes the release notes
+  from them (`.semrel.yaml`), so a commit's subject names any behaviour change or new
+  migration, and a breaking change carries `!` or a `BREAKING CHANGE:` footer. Never
+  run `task release:gh`, `task release:full` or the Release workflow, tag, or push
+  tags; releases are the owner's call.
