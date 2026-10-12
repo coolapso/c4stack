@@ -25,6 +25,8 @@ task db:up db:migrate
 task dev                  # http://localhost:8080
 ```
 
+From the repository root, `task serve` runs the last two steps.
+
 ```sh
 curl -X POST http://localhost:8080/api/v1/analyse \
   -H "Authorization: Bearer tl_…" -H "Idempotency-Key: $(uuidgen)" \

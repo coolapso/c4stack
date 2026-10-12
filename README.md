@@ -79,7 +79,12 @@ task test:integration  # with a disposable PostgreSQL
 task test:app          # generate the starter app and serve it end to end
 task test:upgrade      # move a generated app to the next release
 task test:example      # the example app, with browser tests
+task serve             # run the example app on http://localhost:8080
 ```
+
+`task serve` needs `examples/textlab/.env`: copy `.env.example` and fill in a Hanko
+tenant and Creem test-mode keys. It starts the example's database, migrates it, and
+serves with live reload.
 
 `task release:verify VERSION=vX.Y.Z` runs everything a release needs. It neither tags nor
 publishes. [Maintaining](docs/maintaining.md) covers repository settings, security reports

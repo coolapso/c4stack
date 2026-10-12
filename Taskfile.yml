@@ -77,6 +77,17 @@ tasks:
       - task test:integration
       - task test:browser
 
+  serve:
+    desc: Serve the example app with live reload on http://localhost:8080, with its database and migrations
+    dir: examples/textlab
+    preconditions:
+      - sh: test -f .env
+        msg: 'Copy examples/textlab/.env.example to examples/textlab/.env and fill it in: a Hanko tenant whose app URL is http://localhost:8080, and Creem test-mode keys.'
+    cmds:
+      - task db:up
+      - task db:migrate
+      - task dev
+
   cli:build:
     desc: Build the generator into bin/c4stack
     cmds:
