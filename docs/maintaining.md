@@ -29,7 +29,7 @@ out of the `main` ruleset's targets.
 
 ## Security reports
 
-Reports arrive as private advisories, or by email to thehq@coolapso.sh. `SECURITY.md`
+Reports arrive as private advisories, or by email to security@coolapso.sh. `SECURITY.md`
 promises the reporter:
 1. An acknowledgement within 3 working days.
 2. A decision, with severity, within 10 working days.

@@ -9,7 +9,7 @@ Report it privately. Please don't open a public issue, discussion or pull reques
 
 - **Preferred:** [report it on GitHub](https://github.com/coolapso/c4stack/security/advisories/new),
   from the repository's Security tab. Only you and the maintainers can see the report.
-- **Or email** [thehq@coolapso.sh](mailto:thehq@coolapso.sh) with "C4Stack security" in
+- **Or email** [security@coolapso.sh](mailto:security@coolapso.sh) with "C4Stack security" in
   the subject.
 
 Include what you can of:
