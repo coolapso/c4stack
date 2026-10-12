@@ -1,5 +1,7 @@
 # C4Stack
 
+![Eurogopher](eurogopher.png)
+
 C4Stack is a Go module of building blocks for small web apps on one European stack: Go,
 Gin, Templ, HTMX and PostgreSQL, with Hanko for sign-in, Creem for payments and Scaleway
 for email. A generator creates new apps that pin a C4Stack release, so fixes and new
