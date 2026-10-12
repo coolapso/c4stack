@@ -15,13 +15,9 @@ concurrency:
 
 jobs:
   checks:
-    # The self-hosted runner provides Docker with Compose and Chromium; the steps below
-    # install the rest. Pull requests from forks never run on it. The job needs no
-    # secrets and publishes nothing. A fork can edit this condition in its own pull
-    # request, so it holds only while fork workflows wait for approval; see
-    # docs/maintaining.md.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: self-hosted
+    # GitHub's runner provides Docker with Compose and Chrome; the steps below install
+    # the rest. The job needs no secrets and publishes nothing.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5

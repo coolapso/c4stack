@@ -34,11 +34,6 @@ with it. Behaviour changes and new migrations go in the next release's notes und
 
 Use focused [Conventional Commits](https://www.conventionalcommits.org).
 
-## Checks on pull requests
-
-The checks run on a self-hosted runner, which never runs code from forks. After
-reviewing a pull request from a fork, a maintainer runs the checks on it.
-
 ## Contributor License Agreement
 
 All contributors must accept the C4Stack [Contributor License Agreement](CLA.md) before a
