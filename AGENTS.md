@@ -59,8 +59,9 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 
 ## Open source
 
-- The repository is public under Apache-2.0, copyright Coolapso AB, and contributions
-  come in under `CLA.md`. Never commit secrets, real tenant, project or account IDs,
+- The repository is public under Apache-2.0. C4Stack is owned personally by its author,
+  coolapso (Carlos Colaço); Coolapso AB uses it under that license, as it does
+  Searchbase. Contributions come in under `CLA.md`, which grants to the owner. Never commit secrets, real tenant, project or account IDs,
   customer data or internal hostnames. Tests and docs use example domains.
 - A bundled third-party file keeps its license file next to it and an entry in `NOTICE`.
 - Checks run on a self-hosted runner. No workflow may run a fork's code on it: keep the

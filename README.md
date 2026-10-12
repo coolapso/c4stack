@@ -10,9 +10,10 @@ that are hard to get right: sign-in and account deletion, browser and API securi
 API keys, a prepaid credit ledger with payment webhooks, migrations, health checks and
 graceful shutdown.
 
-C4Stack is made by [Coolapso](https://coolapso.sh). It grew out of
-[Searchbase Cloud](https://searchbase.md), and its tests prove that Searchbase's
-database moves onto it in one release, without moving or copying data.
+C4Stack is an independent open-source project by [@coolapso](https://github.com/coolapso).
+[Coolapso](https://coolapso.sh), the company behind Searchbase Cloud, builds its products
+on it. C4Stack grew out of [Searchbase Cloud](https://searchbase.md), and its tests prove
+that Searchbase's database moves onto it in one release, without moving or copying data.
 
 ## Quickstart
 
@@ -86,7 +87,7 @@ and releases.
 
 ## License
 
-C4Stack is licensed under the [Apache License 2.0](LICENSE), copyright 2026 Coolapso AB.
+C4Stack is licensed under the [Apache License 2.0](LICENSE), copyright 2026 Carlos Colaço (coolapso).
 Bundled third-party files keep their own licenses; [NOTICE](NOTICE) lists them.
 
 The starter files that `c4stack new` writes into your app are yours: use, change and

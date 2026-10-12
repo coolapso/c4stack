@@ -64,7 +64,7 @@ Out of scope:
 Test against your own deployment: an app generated with `c4stack new`, or the example.
 Never test against an app you don't run, such as Searchbase Cloud, and never use real
 people's data. Research that stays within these lines, and reports made under this
-policy, are welcome. Coolapso AB will not pursue legal action over them.
+policy, are welcome. The project owner will not pursue legal action over them.
 
 ## How C4Stack protects apps
 
