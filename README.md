@@ -82,10 +82,11 @@ task test:example      # the example app, with browser tests
 task serve             # run the example app on http://localhost:8082
 ```
 
-`task serve` starts the example's database, migrates it, and serves with live reload. It
-fetches the Creem test keys from the maintainer's Infisical project, so it needs the
-`infisical` CLI, logged in, with access to that project. Without it, run the example
-with its own `.env`, as [its README](examples/textlab/README.md) describes.
+`task serve` starts the example's database, migrates it, and serves with live reload.
+When the server stops, it stops the database too, keeping its data. It fetches the Creem
+test keys from the maintainer's Infisical project, so it needs the `infisical` CLI,
+logged in, with access to that project. Without it, run the example with its own `.env`,
+as [its README](examples/textlab/README.md) describes.
 
 `task release:verify VERSION=vX.Y.Z` runs everything a release needs. It neither tags nor
 publishes. [Maintaining](docs/maintaining.md) covers repository settings, security reports
