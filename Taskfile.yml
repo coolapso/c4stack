@@ -77,16 +77,37 @@ tasks:
       - task test:integration
       - task test:browser
 
+  # The maintainer's daily setup. The example gets the Creem test keys from the
+  # Infisical project Searchbase Cloud's development tasks use, and Searchbase's Hanko
+  # development tenant, whose app URL is http://localhost:8082. Nothing is kept in a
+  # local file. Without access to that project, use the example's .env; see
+  # examples/textlab/README.md.
   serve:
-    desc: Serve the example app with live reload on http://localhost:8080, with its database and migrations
+    desc: Serve the example app with live reload on http://localhost:8082, with settings from Infisical
     dir: examples/textlab
-    preconditions:
-      - sh: test -f .env
-        msg: 'Copy examples/textlab/.env.example to examples/textlab/.env and fill it in: a Hanko tenant whose app URL is http://localhost:8080, and Creem test-mode keys.'
+    vars:
+      INFISICAL_PROJECT_ID: 4f12d18e-e075-4a6c-ba6c-367bec3e62e7
+      CREEM_API_KEY:
+        sh: infisical secrets get --plain --projectId {{.INFISICAL_PROJECT_ID}} --env prod --path creem test
+      CREEM_WEBHOOK_SECRET:
+        sh: infisical secrets get --plain --projectId {{.INFISICAL_PROJECT_ID}} --env prod --path creem test_webhook_secret
+      # A new key each run, so cookies and open pages from an earlier run stop working.
+      SECRET_KEY:
+        sh: openssl rand -hex 32
+    env:
+      TEXTLAB_PUBLIC_URL: http://localhost:8082
+      TEXTLAB_DATABASE_URL: postgres://textlab:textlab@localhost:5433/textlab?sslmode=disable
+      TEXTLAB_SECRET_KEY: '{{.SECRET_KEY}}'
+      TEXTLAB_HANKO_API_URL: https://c2050ac9-0875-471d-9bf8-8ba1117b60d4.hanko.io
+      TEXTLAB_CREEM_PRODUCT_ID: prod_3XE2xgtVlwJ64ehEItnBo3
+      TEXTLAB_CREEM_API_KEY: '{{.CREEM_API_KEY}}'
+      TEXTLAB_CREEM_WEBHOOK_SECRET: '{{.CREEM_WEBHOOK_SECRET}}'
+      TEXTLAB_LOG_FORMAT: text
+      TEXTLAB_LOG_LEVEL: debug
     cmds:
       - task db:up
       - task db:migrate
-      - task dev
+      - task dev DEV_PORT=8082
 
   cli:build:
     desc: Build the generator into bin/c4stack

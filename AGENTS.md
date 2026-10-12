@@ -61,8 +61,10 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 
 - The repository is public under Apache-2.0. C4Stack is owned personally by its author,
   coolapso (Carlos Colaço); Coolapso AB uses it under that license, as it does
-  Searchbase. Contributions come in under `CLA.md`, which grants to the owner. Never commit secrets, real tenant, project or account IDs,
-  customer data or internal hostnames. Tests and docs use example domains.
+  Searchbase. Contributions come in under `CLA.md`, which grants to the owner.
+- Never commit secrets or customer data; Taskfiles fetch keys from Infisical when they
+  run. Identifiers such as Infisical project IDs, Hanko tenant URLs and Creem product
+  IDs are not secrets. Tests and docs use example domains.
 - A bundled third-party file keeps its license file next to it, an entry in `NOTICE`,
   and a `linguist-vendored` line in `.gitattributes`.
 - Workflows run on GitHub-hosted runners, never self-hosted ones, and hold no secrets.

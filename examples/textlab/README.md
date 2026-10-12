@@ -25,7 +25,8 @@ task db:up db:migrate
 task dev                  # http://localhost:8080
 ```
 
-From the repository root, `task serve` runs the last two steps.
+At the repository root, `task serve` runs the same steps for the maintainer, with
+settings from Infisical instead of `.env`.
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/analyse \
