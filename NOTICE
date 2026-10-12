@@ -1,0 +1,15 @@
+C4Stack
+Copyright 2026 Coolapso AB
+
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+The starter files that `c4stack new` writes into an app, from
+internal/scaffold/templates, are also yours to use, change and license as you
+like, without attribution.
+
+C4Stack bundles these third-party files, each under its own license, kept next
+to it:
+- htmx, ui/files/htmx.js: Zero-Clause BSD, ui/files/htmx.LICENSE.txt
+- Hanko Elements, identity/hanko/assets/elements.js: MIT,
+  identity/hanko/assets/LICENSE.txt; the libraries it includes are listed in
+  identity/hanko/assets/elements.js.LICENSE.txt
