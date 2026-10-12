@@ -53,7 +53,8 @@ func TestStarterApp(t *testing.T) {
 	sh(nil, "go", "tool", "templ", "generate")
 	sh(nil, "go", "mod", "tidy")
 
-	list := sh(nil, "task", "--list")
+	// Task colours its output when CI is set, even into a pipe, which splits "* dev:".
+	list := sh([]string{"NO_COLOR=1"}, "task", "--list")
 	for _, task := range []string{"dev:", "build:", "check:", "test:integration:", "db:migrate:", "framework:update:", "container:push:"} {
 		if !strings.Contains(list, "* "+task) {
 			t.Errorf("task --list lacks %s", task)
