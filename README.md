@@ -10,6 +10,10 @@ that are hard to get right: sign-in and account deletion, browser and API securi
 API keys, a prepaid credit ledger with payment webhooks, migrations, health checks and
 graceful shutdown.
 
+C4Stack is made by [Coolapso](https://coolapso.sh). It grew out of
+[Searchbase Cloud](https://searchbase.md), and its tests prove that Searchbase's
+database moves onto it in one release, without moving or copying data.
+
 ## Quickstart
 
 You need Go 1.26 or later, [Task](https://taskfile.dev) 3.53.1 or later, Docker, and a
@@ -22,9 +26,6 @@ cd acme                   # put your Hanko API URL in .env
 task db:up db:migrate
 task dev                  # http://localhost:8080
 ```
-
-While the repository is private, set `GOPRIVATE=github.com/coolapso/c4stack` and make
-sure Git reaches GitHub with your credentials; Go and Task both fetch from it.
 
 ## Modules
 
@@ -52,6 +53,22 @@ sure Git reaches GitHub with your credentials; Go and Task both fetch from it.
 - [Release notes](docs/releases)
 - [Textlab](examples/textlab): an example app that uses every module
 
+## Status
+
+C4Stack is young, and opinionated: it is the stack Coolapso builds its own products on.
+From v0.1.0, the public packages change only by addition and released migrations never
+change. Each release's notes list its behaviour changes and migrations.
+[Not in scope](docs/architecture.md#not-in-scope) lists what C4Stack leaves out on
+purpose.
+
+## Contributing and security
+
+Bug reports and fixes are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how,
+including the Contributor License Agreement. Report vulnerabilities privately, as
+[SECURITY.md](SECURITY.md) describes.
+
+Want help building on C4Stack? Coolapso offers consulting: [coolapso.sh](https://coolapso.sh).
+
 ## Developing C4Stack
 
 ```sh
@@ -64,4 +81,13 @@ task test:example      # the example app, with browser tests
 ```
 
 `task release:verify VERSION=vX.Y.Z` runs everything a release needs. It neither tags nor
-publishes.
+publishes. [Maintaining](docs/maintaining.md) covers repository settings, security reports
+and releases.
+
+## License
+
+C4Stack is licensed under the [Apache License 2.0](LICENSE), copyright 2026 Coolapso AB.
+Bundled third-party files keep their own licenses; [NOTICE](NOTICE) lists them.
+
+The starter files that `c4stack new` writes into your app are yours: use, change and
+license them as you like, without attribution.

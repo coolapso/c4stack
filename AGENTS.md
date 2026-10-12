@@ -21,7 +21,8 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - `taskfiles/app.yml` is the shared Taskfile apps include remotely. Its tasks run from
   the app root (`dir: '{{.ROOT_DIR}}'`), push nothing on their own, and hold no secrets.
   Its own variables start with `SHARED_`, because Task merges them over the app's.
-- `~/Dev/searchbasecloud` is the reference app, and the modules' compatibility target.
+- Searchbase Cloud is the reference app, and the modules' compatibility target. It is
+  private; the owner's checkout is `~/Dev/searchbasecloud`.
   Module tables, paths and behaviour are Searchbase's unless a rule here says otherwise;
   `internal/porttest` must keep proving that Searchbase moves onto C4Stack with one
   release. Searchbase is read-only: never build, test, format, migrate or change git
@@ -55,6 +56,18 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
   recoverable cases for an operator over adding machinery.
 - Comments and docs describe the present. History belongs in git and release notes.
 - SQL in multi-line strings, one clause per line. gofmt; no line-length reflowing.
+
+## Open source
+
+- The repository is public under Apache-2.0, copyright Coolapso AB, and contributions
+  come in under `CLA.md`. Never commit secrets, real tenant, project or account IDs,
+  customer data or internal hostnames. Tests and docs use example domains.
+- A bundled third-party file keeps its license file next to it and an entry in `NOTICE`.
+- Checks run on a self-hosted runner. No workflow may run a fork's code on it: keep the
+  fork condition in `checks.yaml`, and never check out pull request code in a
+  `pull_request_target` workflow.
+- Security reports follow `SECURITY.md`; `docs/maintaining.md` has the repository
+  settings it relies on.
 
 ## Workflow
 
