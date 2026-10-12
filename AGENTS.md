@@ -63,7 +63,8 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
   coolapso (Carlos Colaço); Coolapso AB uses it under that license, as it does
   Searchbase. Contributions come in under `CLA.md`, which grants to the owner. Never commit secrets, real tenant, project or account IDs,
   customer data or internal hostnames. Tests and docs use example domains.
-- A bundled third-party file keeps its license file next to it and an entry in `NOTICE`.
+- A bundled third-party file keeps its license file next to it, an entry in `NOTICE`,
+  and a `linguist-vendored` line in `.gitattributes`.
 - Checks run on a self-hosted runner. No workflow may run a fork's code on it: keep the
   fork condition in `checks.yaml`, and never check out pull request code in a
   `pull_request_target` workflow.

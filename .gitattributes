@@ -1,0 +1,5 @@
+# Bundled third-party files and generated code stay out of GitHub's language
+# statistics; generated code is also collapsed in diffs.
+identity/hanko/assets/elements.js linguist-vendored
+ui/files/htmx.js linguist-vendored
+*_templ.go linguist-generated
