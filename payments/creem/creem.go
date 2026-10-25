@@ -21,9 +21,13 @@ import (
 	"github.com/coolapso/c4stack/payments"
 )
 
-// DefaultCheckoutOrigin is where Creem hosts checkout pages unless the store uses its
-// own domain.
+// DefaultCheckoutOrigin is where Creem hosts live checkout pages unless the store uses
+// its own domain.
 const DefaultCheckoutOrigin = "https://www.creem.io"
+
+// testCheckoutOrigin is where Creem hosts test-mode checkout pages, also for a store
+// with its own domain.
+const testCheckoutOrigin = "https://creem.io"
 
 // Config configures the adapter.
 type Config struct {
@@ -33,8 +37,9 @@ type Config struct {
 	WebhookSecret string
 	// ProductID is the one-time product every checkout uses, with a custom price.
 	ProductID string
-	// CheckoutOrigin is where checkout pages are hosted. Zero means
-	// DefaultCheckoutOrigin; set it when the store uses a custom domain.
+	// CheckoutOrigin is where live checkout pages are hosted. Zero means
+	// DefaultCheckoutOrigin; set it when the store uses a custom domain. A test key's
+	// checkouts are always on Creem's own domain.
 	CheckoutOrigin string
 	// APIURL overrides the API base URL. Zero picks Creem's live or test API from the
 	// key.
@@ -56,10 +61,11 @@ func New(cfg Config) (*Creem, error) {
 	if cfg.APIKey == "" || cfg.WebhookSecret == "" || cfg.ProductID == "" {
 		return nil, errors.New("creem: the API key, webhook secret and product ID are required")
 	}
+	test := strings.HasPrefix(cfg.APIKey, "creem_test_")
 	api := cfg.APIURL
 	if api == "" {
 		api = "https://api.creem.io"
-		if strings.HasPrefix(cfg.APIKey, "creem_test_") {
+		if test {
 			api = "https://test-api.creem.io"
 		}
 	}
@@ -73,6 +79,11 @@ func New(cfg Config) (*Creem, error) {
 	checkout, err := url.Parse(origin)
 	if err != nil || checkout.Scheme != "https" || checkout.Host == "" || (checkout.Path != "" && checkout.Path != "/") {
 		return nil, errors.New("creem: the checkout origin must be an https origin")
+	}
+	// An app that sets its live custom domain would otherwise reject every test-mode
+	// checkout, which Creem serves on its own domain.
+	if test {
+		checkout, _ = url.Parse(testCheckoutOrigin)
 	}
 	return &Creem{
 		cfg:      cfg,

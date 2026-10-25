@@ -127,7 +127,8 @@ Users create, rename and revoke keys, and delete revoked ones.
 
 **Credits** take purchases through a payment provider. Add `ACME_CREEM_API_KEY`,
 `ACME_CREEM_WEBHOOK_SECRET` and `ACME_CREEM_PRODUCT_ID` to `config.go`. The product is a
-one-time product with a custom price.
+one-time product with a custom price. If the live store has its own checkout domain, set
+`CheckoutOrigin` to it; test keys always use Creem's domain.
 
 ```go
 pay, err := creem.New(creem.Config{APIKey: cfg.CreemAPIKey, WebhookSecret: cfg.CreemWebhookSecret, ProductID: cfg.CreemProductID})

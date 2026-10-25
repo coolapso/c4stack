@@ -42,15 +42,19 @@ func TestNew(t *testing.T) {
 		t.Error("accepted a plain-HTTP checkout origin")
 	}
 	live, _ := New(Config{APIKey: "creem_live", WebhookSecret: "s", ProductID: "p"})
+	custom, _ := New(Config{APIKey: "creem_live", WebhookSecret: "s", ProductID: "p", CheckoutOrigin: "https://pay.example"})
 	test, _ := New(Config{APIKey: "creem_test_x", WebhookSecret: "s", ProductID: "p", CheckoutOrigin: "https://pay.example"})
-	if live.api != "https://api.creem.io" || test.api != "https://test-api.creem.io" || test.CheckoutOrigin() != "https://pay.example" {
-		t.Errorf("APIs %q %q, origin %q", live.api, test.api, test.CheckoutOrigin())
+	if live.api != "https://api.creem.io" || test.api != "https://test-api.creem.io" {
+		t.Errorf("APIs %q %q", live.api, test.api)
+	}
+	if live.CheckoutOrigin() != DefaultCheckoutOrigin || custom.CheckoutOrigin() != "https://pay.example" || test.CheckoutOrigin() != "https://creem.io" {
+		t.Errorf("origins %q %q %q", live.CheckoutOrigin(), custom.CheckoutOrigin(), test.CheckoutOrigin())
 	}
 }
 
 func TestCreateCheckout(t *testing.T) {
 	var got map[string]any
-	checkoutURL := "https://www.creem.io/checkout/ch_1"
+	checkoutURL := "https://creem.io/test/checkout/prod_credits/ch_1"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/checkouts" || r.Header.Get("X-Api-Key") != "creem_test_key" {
 			w.WriteHeader(http.StatusUnauthorized)

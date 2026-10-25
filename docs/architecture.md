@@ -575,7 +575,9 @@ type Provider interface {
   `request_id` and as `intent_id` metadata.
 - An API key starting with `creem_test_` selects Creem's test API.
 - Webhooks are verified with HMAC-SHA256 from the `creem-signature` header.
-- The `checkout_url` Creem returns must match `CheckoutOrigin`.
+- The `checkout_url` Creem returns must match `CheckoutOrigin`. That is the configured
+  custom domain or `DefaultCheckoutOrigin` for a live key, and always `https://creem.io`
+  for a test key, because Creem serves test-mode checkouts there.
 
 ### credits (opt-in)
 
