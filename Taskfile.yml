@@ -80,7 +80,8 @@ tasks:
       - task test:browser
 
   # The maintainer's daily setup. The example gets the Creem test keys from the
-  # Infisical project Searchbase Cloud's development tasks use; nothing is kept in a
+  # Infisical project Searchbase Cloud's development tasks use, in its local
+  # environment, as Searchbase's own app:serve does; nothing is kept in a
   # local file. Its other settings are in examples/textlab/Taskfile.yml, and sign-in
   # codes arrive in Mailpit at http://localhost:8025. Without access to that project,
   # give the example your own Creem test keys; see examples/textlab/README.md.
@@ -88,11 +89,11 @@ tasks:
     desc: Serve the example app with live reload on http://localhost:8082, with settings from Infisical
     dir: examples/textlab
     vars:
-      INFISICAL_PROJECT_ID: 4f12d18e-e075-4a6c-ba6c-367bec3e62e7
+      INFISICAL_PROJECT_ID: 7b164ffd-8588-43f9-8c98-291204864d4d
       CREEM_API_KEY:
-        sh: infisical secrets get --plain --projectId {{.INFISICAL_PROJECT_ID}} --env prod --path creem test
+        sh: infisical secrets get --plain --silent --projectId {{.INFISICAL_PROJECT_ID}} --env local --path /creem API_KEY
       CREEM_WEBHOOK_SECRET:
-        sh: infisical secrets get --plain --projectId {{.INFISICAL_PROJECT_ID}} --env prod --path creem test_webhook_secret
+        sh: infisical secrets get --plain --silent --projectId {{.INFISICAL_PROJECT_ID}} --env local --path /creem WEBHOOK_SECRET
     env:
       TEXTLAB_PUBLIC_URL: http://localhost:8082
       TEXTLAB_CREEM_PRODUCT_ID: prod_3XE2xgtVlwJ64ehEItnBo3
