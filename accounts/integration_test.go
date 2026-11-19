@@ -789,3 +789,70 @@ func TestNamesOff(t *testing.T) {
 		t.Fatal("the settings page asks for a name")
 	}
 }
+
+func TestDeletionChecks(t *testing.T) {
+	f := newFixture(t)
+	refuse := true
+	var checkErr error
+	f.accounts.CheckDeletion(func(ctx context.Context, tx *sql.Tx, id string) error {
+		if checkErr != nil {
+			return checkErr
+		}
+		if refuse {
+			return &DeletionRefused{Reason: "Cancel your subscription first."}
+		}
+		return nil
+	})
+	// The form says why, instead of asking.
+	page := f.do(http.MethodGet, "/account/delete", "ada", nil, nil).Body.String()
+	if !strings.Contains(page, "Cancel your subscription first.") || strings.Contains(page, "delete-confirmation") {
+		t.Fatalf("delete page:\n%s", page)
+	}
+	if page := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String(); !strings.Contains(page, "Cancel your subscription first.") {
+		t.Fatal("the settings page's dialog doesn't say why")
+	}
+	rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Cancel your subscription first.") {
+		t.Fatalf("refused deletion: %d", rec.Code)
+	}
+	if len(f.idp.deleted) != 0 || f.count(t, `SELECT count(*) FROM accounts WHERE deletion_started_at IS NOT NULL`) != 0 {
+		t.Fatal("a refused deletion asked the provider or marked the account")
+	}
+	// A check that fails isn't a refusal, and deletes nothing either.
+	checkErr = errors.New("the database went away")
+	if rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusBadGateway || len(f.idp.deleted) != 0 {
+		t.Fatalf("failing check: %d, deleted %v", rec.Code, f.idp.deleted)
+	}
+	checkErr, refuse = nil, false
+	if rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusSeeOther || len(f.idp.deleted) != 1 {
+		t.Fatalf("allowed deletion: %d, deleted %v", rec.Code, f.idp.deleted)
+	}
+}
+
+func TestDeletionChecksWithATxProvider(t *testing.T) {
+	f := newTxFixture(t)
+	f.signUp(t, "ann", "ann@example.com")
+	f.accounts.CheckDeletion(func(ctx context.Context, tx *sql.Tx, id string) error {
+		return &DeletionRefused{Reason: "Not yet."}
+	})
+	res := f.do(http.MethodPost, "/account/delete", "ann", url.Values{"confirmation": {"DELETE"}})
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts`) + f.count(t, `SELECT count(*) FROM tx_users`); n != 2 {
+		t.Fatal("a refused deletion deleted something")
+	}
+}
+
+func TestSettingsSections(t *testing.T) {
+	f := newFixture(t)
+	f.accounts.AddSection(func(c *gin.Context) templ.Component {
+		return templ.Raw(`<section id="extra">` + Current(c).Email + `</section>`)
+	})
+	f.accounts.AddSection(func(c *gin.Context) templ.Component { return nil })
+	page := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String()
+	extra, del := strings.Index(page, `<section id="extra">ada@example.com</section>`), strings.Index(page, `id="delete-title"`)
+	if extra < 0 || del < extra {
+		t.Fatalf("the section is missing or after deletion:\n%s", page)
+	}
+}

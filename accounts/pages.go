@@ -125,6 +125,10 @@ type settingsView struct {
 	paths   Paths
 	names   bool
 	recent  bool
+	// sections are other modules' settings panels.
+	sections []templ.Component
+	// refused is why the account can't be deleted now; the delete form shows it.
+	refused string
 	// signInAgain is the sign-out form's next path when deletion needs a fresh sign-in.
 	signInAgain string
 	// confirmURL is the provider's page to confirm it's the user, which replaces the
@@ -150,6 +154,11 @@ func (p *Pages) view(c *gin.Context) settingsView {
 	if cf, ok := p.s.idp.(confirmer); ok {
 		v.confirmURL = cf.ConfirmURL(paths.Delete)
 	}
+	refused, err := p.s.refusal(c.Request.Context(), v.account.ID)
+	if err != nil {
+		web.Log(c).Error("checking whether the account can be deleted failed", "error", err)
+	}
+	v.refused = refused
 	return v
 }
 
@@ -158,6 +167,11 @@ func (p *Pages) Settings(c *gin.Context) {
 	v := p.view(c)
 	if p.profile != nil {
 		v.profile = p.profile.ProfileSection(c)
+	}
+	for _, section := range p.s.sections {
+		if s := section(c); s != nil {
+			v.sections = append(v.sections, s)
+		}
 	}
 	p.layout.Render(c, http.StatusOK, "Account settings", settingsPage(v))
 }
@@ -243,7 +257,11 @@ func (p *Pages) Delete(c *gin.Context) {
 		return
 	}
 	err := p.s.Delete(c)
+	var refused *DeletionRefused
 	switch {
+	case errors.As(err, &refused):
+		v.refused = refused.Reason
+		p.layout.Render(c, http.StatusConflict, "Delete account", deletePage(v))
 	case errors.Is(err, ErrNotDeleted):
 		web.Log(c).Warn("account deletion failed at the identity provider", "error", err)
 		v.notice = "Your account could not be deleted right now. Nothing was removed. Try again in a moment."

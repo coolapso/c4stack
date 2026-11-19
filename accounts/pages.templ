@@ -42,6 +42,9 @@ templ settingsPage(v settingsView) {
 			<p><strong>{ v.account.Email }</strong></p>
 		</section>
 	}
+	for _, section := range v.sections {
+		@section
+	}
 	<section class="panel danger" aria-labelledby="delete-title">
 		<div class="panel-header">
 			<div>
@@ -78,7 +81,9 @@ templ deletePage(v settingsView) {
 }
 
 templ deleteForm(v settingsView, inDialog bool) {
-	if !v.recent {
+	if v.refused != "" {
+		<p class="notice warning" role="alert">{ v.refused }</p>
+	} else if !v.recent {
 		<p>For your security, deleting your account needs a recent sign-in. Sign in again to continue.</p>
 		<div class="dialog-actions">
 			if v.confirmURL != "" {

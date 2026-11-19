@@ -24,8 +24,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/coolapso/c4stack/app"
 	"github.com/coolapso/c4stack/identity"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -114,6 +116,9 @@ type Accounts struct {
 	txp   identity.TxProvider
 	cfg   Config
 	hooks []func(ctx context.Context, tx *sql.Tx, accountID string) error
+	// checks can refuse a deletion; sections are other modules' settings panels.
+	checks   []func(ctx context.Context, tx *sql.Tx, accountID string) error
+	sections []func(c *gin.Context) templ.Component
 }
 
 // New returns the accounts module for idp. It registers the accounts delete-local
@@ -145,6 +150,21 @@ func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) {
 		Run:   s.deleteLocalCommand,
 	})
 	return s, nil
+}
+
+// CheckDeletion adds a check that can refuse to delete an account, such as while it has
+// a subscription that would charge again. Checks run before the identity provider is
+// asked, so a refusal deletes nothing. To refuse, a check returns a *DeletionRefused,
+// whose reason the delete page shows; any other error fails the deletion.
+func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) {
+	s.checks = append(s.checks, check)
+}
+
+// AddSection adds a panel to the settings page, after the account's own and before
+// deletion, such as another module's. It renders for the signed-in request; a nil
+// component shows nothing.
+func (s *Accounts) AddSection(section func(c *gin.Context) templ.Component) {
+	s.sections = append(s.sections, section)
 }
 
 // Names reports whether accounts have names (Config.Names).

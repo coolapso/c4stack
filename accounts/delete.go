@@ -25,9 +25,49 @@ var (
 	ErrCleanupPending = errors.New("accounts: local cleanup is pending")
 )
 
+// DeletionRefused is what a CheckDeletion check returns to refuse a deletion. Reason
+// tells the person what to do first.
+type DeletionRefused struct {
+	Reason string
+}
+
+func (e *DeletionRefused) Error() string { return "accounts: deletion refused: " + e.Reason }
+
+// runChecks runs the CheckDeletion checks inside tx.
+func (s *Accounts) runChecks(ctx context.Context, tx *sql.Tx, accountID string) error {
+	for _, check := range s.checks {
+		if err := check(ctx, tx, accountID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refusal returns the reason a check refuses to delete the account now, if one does.
+// The delete form shows it instead of asking.
+func (s *Accounts) refusal(ctx context.Context, accountID string) (string, error) {
+	if len(s.checks) == 0 {
+		return "", nil
+	}
+	tx, err := s.app.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var refused *DeletionRefused
+	if err := s.runChecks(ctx, tx, accountID); errors.As(err, &refused) {
+		return refused.Reason, nil
+	} else if err != nil {
+		return "", err
+	}
+	return "", nil
+}
+
 // Delete deletes the signed-in account: first the identity at the provider, then, once
 // the provider confirms, the local data in one transaction with every OnDelete hook.
 // It continues if the browser disconnects, and clears the browser session afterwards.
+// A CheckDeletion check that refuses stops it before the provider is asked, with an
+// error that wraps ErrNotDeleted and the *DeletionRefused.
 //
 // A provider that keeps its users in the app's database (an identity.TxProvider) deletes
 // them inside that one transaction, so everything is deleted or nothing is, and the
@@ -52,6 +92,9 @@ func (s *Accounts) Delete(c *gin.Context) error {
 		}
 		_ = s.idp.Logout(c.Writer, c.Request)
 		return nil
+	}
+	if err := s.checkInTx(ctx, account.ID); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotDeleted, err)
 	}
 	if _, err := s.app.DB().ExecContext(ctx, `
 		UPDATE accounts
@@ -105,7 +148,27 @@ func (s *Accounts) deleteSignedIn(ctx context.Context, r *http.Request, accountI
 	if id.Subject != asked.Subject || !id.Recent(time.Now()) {
 		return errSessionChanged
 	}
+	if err := s.runChecks(ctx, tx, accountID); err != nil {
+		return err
+	}
 	if err := s.deleteTx(ctx, tx, accountID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// checkInTx runs the checks in a transaction of their own, for a provider outside the
+// app's database, before it is asked to delete the identity.
+func (s *Accounts) checkInTx(ctx context.Context, accountID string) error {
+	if len(s.checks) == 0 {
+		return nil
+	}
+	tx, err := s.app.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.runChecks(ctx, tx, accountID); err != nil {
 		return err
 	}
 	return tx.Commit()

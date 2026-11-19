@@ -462,6 +462,8 @@ func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
 func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
+func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) // refuse: *DeletionRefused
+func (s *Accounts) AddSection(section func(c *gin.Context) templ.Component) // a panel on the settings page
 func (s *Accounts) Delete(c *gin.Context) error // ErrNotDeleted or ErrCleanupPending on failure
 func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) // every page at its path
 func (s *Accounts) Pages(layout ui.Layout) *Pages         // the handlers, to mount some
@@ -494,6 +496,13 @@ first signed-in page, and changes it on the settings page. A name is trimmed and
 to 100 characters, none of them control or formatting characters, which could hide or
 reorder what others read. It is the account's, whichever identity signed in, and goes
 with it on deletion. The `oidc` provider gives it to clients under the `profile` scope.
+
+**Other modules** add panels to the settings page with `AddSection`, after the
+account's own and before deletion, and can refuse a deletion with `CheckDeletion`, such
+as `subscriptions` while a subscription would charge again. Checks run before the
+identity provider is asked, in the deletion's transaction for a `TxProvider`, so a
+refusal deletes nothing. The delete page and the settings page's dialog show the
+refusal's reason instead of the form.
 
 **Finding the account.** A sign-in finds its account by provider and subject. An
 identity the app has not seen joins the account whose `primary_email` is its verified
