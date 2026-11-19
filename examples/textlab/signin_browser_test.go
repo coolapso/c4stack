@@ -169,23 +169,47 @@ func TestSignInBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor("/")
-	if err := chromedp.Do(ctx,
-		chromedp.Navigate(public+"/login?next=/account"),
-		chromedp.WaitVisible(`[data-passkey-start]`),
-		chromedp.Click(`[data-passkey-start]`),
-	); err != nil {
+	// clickPasskey clicks the page's passkey button. The virtual authenticator answers at
+	// once, so the page can navigate away while chromedp still finishes the click, or
+	// before it, through the login page's autofill, which chromedp reports as a node it
+	// can't find: the waitFor after it checks where it led.
+	clickPasskey := func() {
+		t.Helper()
+		if err := chromedp.Do(ctx, chromedp.WaitVisible(`[data-passkey-start]`)); err != nil {
+			t.Fatal(err)
+		}
+		if err := chromedp.Do(ctx, chromedp.Click(`[data-passkey-start]`)); err != nil && !strings.Contains(err.Error(), "Could not find node") {
+			t.Fatal(err)
+		}
+	}
+	// The login page's address field already asks the authenticator through autofill,
+	// which the virtual authenticator sometimes answers by itself: either way, it's a
+	// sign-in with the passkey. The button is clicked only if the page is still there.
+	if err := chromedp.Do(ctx, chromedp.Navigate(public+"/login?next=/account")); err != nil {
 		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if at, _ := chromedp.Run(ctx, chromedp.Location()); strings.TrimPrefix(at, public) == "/account" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("neither the passkey button nor autofill signed in")
+		}
+		// Never wait on the button for long: autofill may take the page away meanwhile.
+		short, cancel := context.WithTimeout(ctx, time.Second)
+		err := chromedp.Do(short, chromedp.Click(`[data-passkey-start]`, chromedp.NodeVisible))
+		cancel()
+		if err == nil || strings.Contains(err.Error(), "Could not find node") {
+			break
+		}
 	}
 	waitFor("/account")
 
 	// Confirm with the passkey before deleting the account.
-	if err := chromedp.Do(ctx,
-		chromedp.Navigate(public+"/login/confirm?next=/account/delete"),
-		chromedp.WaitVisible(`[data-passkey-start]`),
-		chromedp.Click(`[data-passkey-start]`),
-	); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(public+"/login/confirm?next=/account/delete")); err != nil {
 		t.Fatal(err)
 	}
+	clickPasskey()
 	waitFor("/account/delete")
 	if page, _ := chromedp.Run(ctx, chromedp.Text(`main`)); !strings.Contains(page, "Type DELETE to confirm") {
 		t.Fatalf("the delete page asks to confirm again:\n%s", page)
