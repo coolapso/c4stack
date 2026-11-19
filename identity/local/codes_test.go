@@ -336,7 +336,16 @@ func TestWrongEntriesPauseTheAddressButNotKnownBrowsers(t *testing.T) {
 
 	guessUntilPaused(t, f, "ann@example.com")
 
-	// The user is told, once.
+	// The user is told, once, by the notice job: the guesser's request sends nothing
+	// that would make it slower for an address with an account.
+	for _, m := range f.mail.to("ann@example.com") {
+		if strings.Contains(m.Subject, "are paused") {
+			t.Fatal("the request sent the paused notice")
+		}
+	}
+	if err := f.l.sendNotices(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	paused := 0
 	for _, m := range f.mail.to("ann@example.com") {
 		if strings.Contains(m.Subject, "are paused") {

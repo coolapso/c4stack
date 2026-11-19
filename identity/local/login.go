@@ -368,7 +368,6 @@ func (p *loginPages) verify(c *gin.Context) {
 		p.renderCode(c, status, d)
 		return
 	}
-	p.l.deliver(c.Request.Context(), res.notices...)
 	if res.message != "" {
 		d.err = res.message
 		p.renderCode(c, http.StatusUnprocessableEntity, d)
@@ -381,11 +380,10 @@ func (p *loginPages) verify(c *gin.Context) {
 }
 
 // verifyResult is what checking a code did: a session to set, or a message for the
-// page, and notices to send.
+// page.
 type verifyResult struct {
 	session session
 	message string
-	notices []string
 }
 
 // verifyCode checks a code in one transaction. It locks the code's user, then the code,
@@ -461,8 +459,7 @@ func (l *Local) verifyCode(c *gin.Context, a attempt, code string) (verifyResult
 			return err
 		}
 		if decoy || !hmac.Equal(l.codeHash(a.CodeID, code), hash) {
-			ids, msg, err := l.wrongCode(ctx, tx, a.CodeID, wrong+1, net, wrongs, userID.String)
-			res.notices, res.message = ids, msg
+			res.message, err = l.wrongCode(ctx, tx, a.CodeID, wrong+1, net, wrongs, userID.String)
 			return err
 		}
 		if err := deleteCode(ctx, tx, a.CodeID); err != nil {
@@ -483,23 +480,24 @@ func (l *Local) verifyCode(c *gin.Context, a attempt, code string) (verifyResult
 // wrongCode counts a wrong entry on the code and on the counters it was sent under, and
 // returns the message for the page. A code ends at its fifth wrong entry. When the entry
 // pauses the address's shared counters, the address's user gets a notice: once a
-// window, because the counter reaches its limit once a window.
-func (l *Local) wrongCode(ctx context.Context, tx *sql.Tx, codeID string, wrong int, net, wrongs counter, userID string) ([]string, string, error) {
+// window, because the counter reaches its limit once a window. The notice job sends it,
+// never this request: an email sent only for an address with a user would make the
+// answer slower for it, and tell anyone timing it that the address has an account.
+func (l *Local) wrongCode(ctx context.Context, tx *sql.Tx, codeID string, wrong int, net, wrongs counter, userID string) (string, error) {
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE local_codes
 		SET wrong_entries = wrong_entries + 1
 		WHERE id = $1`, codeID,
 	); err != nil {
-		return nil, "", err
+		return "", err
 	}
 	if _, _, err := l.add(ctx, tx, net); err != nil {
-		return nil, "", err
+		return "", err
 	}
 	n, until, err := l.add(ctx, tx, wrongs)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-	var notices []string
 	if wrongs.limit == wrongAddressDay && n == wrongAddressDay.max {
 		if userID == "" {
 			err := tx.QueryRowContext(ctx, `
@@ -508,25 +506,23 @@ func (l *Local) wrongCode(ctx context.Context, tx *sql.Tx, codeID string, wrong 
 				WHERE email = $1`, wrongs.subject,
 			).Scan(&userID)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, "", err
+				return "", err
 			}
 		}
 		if userID != "" {
-			id, err := l.queueNotice(ctx, tx, userID, CodesPaused, wrongs.subject, noticeData{At: time.Now(), Until: until})
-			if err != nil {
-				return nil, "", err
+			if _, err := l.queueNotice(ctx, tx, userID, CodesPaused, wrongs.subject, noticeData{At: time.Now(), Until: until}); err != nil {
+				return "", err
 			}
-			notices = append(notices, id)
 		}
 	}
 	if wrong >= wrongPerCode {
-		return notices, "Too many wrong codes. Send a new one.", deleteCode(ctx, tx, codeID)
+		return "Too many wrong codes. Send a new one.", deleteCode(ctx, tx, codeID)
 	}
 	left := wrongPerCode - wrong
 	if left == 1 {
-		return notices, "That code isn't right. 1 try left.", nil
+		return "That code isn't right. 1 try left.", nil
 	}
-	return notices, fmt.Sprintf("That code isn't right. %d tries left.", left), nil
+	return fmt.Sprintf("That code isn't right. %d tries left.", left), nil
 }
 
 func deleteCode(ctx context.Context, tx *sql.Tx, id string) error {

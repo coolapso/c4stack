@@ -575,7 +575,10 @@ below are the defaults. An app brings its own words, look and templates through
 **Security notices** are queued in `local_notices`, in the transaction that made the
 change, so the change and its notice commit together.
 - The request sends the notice right after the commit, with a context detached from the
-  request. Closing the tab therefore cannot stop it.
+  request. Closing the tab therefore cannot stop it. The one exception is "codes
+  paused", which only the job sends: it goes only to an address with a user, so sending
+  it in the guesser's request would make that answer slower, and tell anyone timing it
+  that the address has an account.
 - A job every minute retries those that are still queued, with growing gaps.
 - A notice still unsent after 3 days is dropped, and the drop is logged with its kind
   and the user's ID.
