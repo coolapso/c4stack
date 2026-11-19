@@ -18,6 +18,10 @@ small paid text API:
   account deletes its jobs.
 - **Optional expiry.** With Scaleway email, which reports delivery, unused credit
   expires after a warning. With SMTP, as in development, it never expires.
+- **An OpenID Connect provider.** Another service can sign people in with Textlab's
+  accounts (`oidc`), as a client set by `TEXTLAB_OIDC_CLIENT_ID`,
+  `TEXTLAB_OIDC_CLIENT_SECRET` and `TEXTLAB_OIDC_REDIRECT_URIS` (comma-separated). The
+  issuer is `TEXTLAB_PUBLIC_URL`. Without a client, the provider has none.
 - **Replaceable providers.** `build` takes the identity, payment and email providers,
   so the tests pass their own.
 

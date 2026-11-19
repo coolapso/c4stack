@@ -4,6 +4,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -183,5 +185,55 @@ func TestTextlab(t *testing.T) {
 	}
 	if rec := api(h, http.MethodGet, "/api/v1/balance", key, nil, nil); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("a deleted account's key: %d", rec.Code)
+	}
+}
+
+// TestOIDC signs in to the test app's OpenID Connect client as ada, through Textlab's
+// own wiring. The oidc module's tests cover the protocol.
+func TestOIDC(t *testing.T) {
+	_, h, _ := newTextlab(t, origin)
+	if got := decode(t, api(h, http.MethodGet, "/.well-known/openid-configuration", "", nil, nil)); got["issuer"] != origin {
+		t.Fatalf("discovery %v", got)
+	}
+	var cookies []*http.Cookie
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, origin+strings.TrimPrefix(target, origin), nil)
+		req.AddCookie(&http.Cookie{Name: "session", Value: "ada"})
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		cookies = append(cookies, rec.Result().Cookies()...)
+		return rec
+	}
+	verifier := strings.Repeat("v", 50)
+	sum := sha256.Sum256([]byte(verifier))
+	redirect := "https://notes.example.com/callback"
+	rec := get("/oidc/authorize?" + url.Values{
+		"client_id": {"notes"}, "redirect_uri": {redirect}, "response_type": {"code"},
+		"scope": {"openid email"}, "state": {"s1"}, "nonce": {"n1"},
+		"code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"},
+	}.Encode())
+	rec = get(rec.Header().Get("Location"))
+	back, _ := url.Parse(rec.Header().Get("Location"))
+	if !strings.HasPrefix(back.String(), redirect+"?") || back.Query().Get("state") != "s1" {
+		t.Fatalf("sent to %s", back)
+	}
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {back.Query().Get("code")}, "redirect_uri": {redirect}, "code_verifier": {verifier}}
+	req := httptest.NewRequest(http.MethodPost, origin+"/oidc/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("notes", testClientSecret)
+	tok := httptest.NewRecorder()
+	h.ServeHTTP(tok, req)
+	idToken, _ := decode(t, tok)["id_token"].(string)
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token response %s", tok.Body.String())
+	}
+	payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil || claims["email"] != "ada@example.com" || claims["nonce"] != "n1" {
+		t.Fatalf("claims %s", payload)
 	}
 }

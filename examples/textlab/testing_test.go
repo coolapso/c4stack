@@ -17,6 +17,9 @@ import (
 	"github.com/coolapso/c4stack/payments"
 )
 
+// testClientSecret is the secret of the OpenID Connect client the test app has.
+const testClientSecret = "test-client-secret"
+
 // testIdentity signs in whoever the "session" cookie names, with a verified address.
 type testIdentity struct{}
 
@@ -85,7 +88,13 @@ func newTextlab(t *testing.T, publicURL string) (*app.App, http.Handler, *testPa
 	t.Helper()
 	a := apptest.New(t, app.Config{Name: "textlab", Migrations: appMigrations})
 	pay := &testPayments{}
-	handler, err := build(a, config{PublicURL: publicURL, SecretKey: strings.Repeat("s", 32)}, providers{
+	handler, err := build(a, config{
+		PublicURL:        publicURL,
+		SecretKey:        strings.Repeat("s", 32),
+		OIDCClientID:     "notes",
+		OIDCClientSecret: testClientSecret,
+		OIDCRedirectURIs: []string{"https://notes.example.com/callback"},
+	}, providers{
 		identity: testIdentity{},
 		payments: pay,
 	})

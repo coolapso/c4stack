@@ -25,8 +25,13 @@ type config struct {
 	SMTPURL           string
 	ScalewaySecretKey string
 	ScalewayProjectID string
-	LogLevel          slog.Level
-	LogFormat         string
+	// One service that may sign people in with Textlab's accounts over OpenID Connect,
+	// such as an app of your own. Without it, the provider has no clients.
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCRedirectURIs []string
+	LogLevel         slog.Level
+	LogFormat        string
 }
 
 func env(name string) string {
@@ -47,6 +52,9 @@ func loadConfig() (config, error) {
 		ScalewayProjectID:   env("SCALEWAY_PROJECT_ID"),
 		EmailFrom:           env("EMAIL_FROM"),
 		SMTPURL:             env("SMTP_URL"),
+		OIDCClientID:        env("OIDC_CLIENT_ID"),
+		OIDCClientSecret:    env("OIDC_CLIENT_SECRET"),
+		OIDCRedirectURIs:    list(env("OIDC_REDIRECT_URIS")),
 		LogFormat:           env("LOG_FORMAT"),
 	}
 	if cfg.Addr == "" {
@@ -72,6 +80,9 @@ func loadConfig() (config, error) {
 	}
 	if len(missing) > 0 {
 		return config{}, errors.New("set " + strings.Join(missing, ", "))
+	}
+	if cfg.OIDCClientID != "" && (cfg.OIDCClientSecret == "" || len(cfg.OIDCRedirectURIs) == 0) {
+		return config{}, errors.New("with TEXTLAB_OIDC_CLIENT_ID, set TEXTLAB_OIDC_CLIENT_SECRET and TEXTLAB_OIDC_REDIRECT_URIS")
 	}
 	if (cfg.SMTPURL == "") == (cfg.ScalewaySecretKey == "") {
 		return config{}, errors.New("set either TEXTLAB_SMTP_URL or TEXTLAB_SCALEWAY_SECRET_KEY and TEXTLAB_SCALEWAY_PROJECT_ID")

@@ -1,6 +1,6 @@
 // Command textlab is an example C4Stack app: a small paid text API. It shows a custom
-// layout, API keys, prepaid credit with holds and expiry, and an app table that
-// references accounts.
+// layout, API keys, prepaid credit with holds and expiry, an OpenID Connect provider
+// other services sign in with, and an app table that references accounts.
 package main
 
 import (
@@ -16,6 +16,7 @@ import (
 	"github.com/coolapso/c4stack/email/scaleway"
 	"github.com/coolapso/c4stack/email/smtp"
 	"github.com/coolapso/c4stack/identity/local"
+	"github.com/coolapso/c4stack/oidc"
 	"github.com/coolapso/c4stack/payments/creem"
 	"github.com/coolapso/c4stack/web"
 
@@ -35,6 +36,7 @@ var appMigrations = []app.Migrations{
 	accounts.Migrations,
 	local.Migrations,
 	apikeys.Migrations,
+	oidc.Migrations,
 	credits.Migrations,
 	expiry.Migrations,
 	{Namespace: "app", Files: migrations.Files},

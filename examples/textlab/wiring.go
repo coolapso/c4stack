@@ -14,6 +14,7 @@ import (
 	"github.com/coolapso/c4stack/credits/expiry"
 	"github.com/coolapso/c4stack/email"
 	"github.com/coolapso/c4stack/identity"
+	"github.com/coolapso/c4stack/oidc"
 	"github.com/coolapso/c4stack/payments"
 	"github.com/coolapso/c4stack/ui"
 	"github.com/coolapso/c4stack/web"
@@ -79,6 +80,11 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 		}
 	}
 
+	provider, err := oidcProvider(a, accts, cfg, p.identity)
+	if err != nil {
+		return nil, err
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey, TrustedProxies: cfg.TrustedProxies})
 	if err != nil {
@@ -100,6 +106,7 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	if p.login != nil {
 		p.login.Mount(r, t.layout)
 	}
+	provider.Mount(r, t.layout)
 
 	// The account pages, and the console's own signed-in pages beside them.
 	accts.Mount(r, t.layout)
@@ -117,6 +124,35 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	api.POST("/jobs", t.createJob)
 	api.POST("/jobs/:id/complete", t.completeJob)
 	return r, nil
+}
+
+// oidcProvider makes Textlab an OpenID Connect provider for the client in its
+// settings, if any. Every account may sign in to it. A sign-in the client wants fresh
+// (prompt=login, max_age) goes through the identity provider's confirm page.
+func oidcProvider(a *app.App, accts *accounts.Accounts, cfg config, idp identity.Provider) (*oidc.Provider, error) {
+	clients := map[string]oidc.Client{}
+	if cfg.OIDCClientID != "" {
+		clients[cfg.OIDCClientID] = oidc.Client{
+			ID:           cfg.OIDCClientID,
+			SecretHash:   oidc.HashSecret(cfg.OIDCClientSecret),
+			RedirectURIs: cfg.OIDCRedirectURIs,
+		}
+	}
+	oc := oidc.Config{
+		Issuer:    cfg.PublicURL,
+		SecretKey: cfg.SecretKey,
+		Client: func(_ context.Context, id string) (oidc.Client, error) {
+			c, ok := clients[id]
+			if !ok {
+				return oidc.Client{}, oidc.ErrUnknownClient
+			}
+			return c, nil
+		},
+	}
+	if c, ok := idp.(interface{ ConfirmURL(next string) string }); ok {
+		oc.Reauthenticate = c.ConfirmURL
+	}
+	return oidc.New(a, accts, oc)
 }
 
 // heldByJobs reports the credit reserved by an account's pending jobs.
