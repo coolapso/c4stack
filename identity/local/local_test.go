@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,32 @@ func TestDefaultMessages(t *testing.T) {
 	}
 	if got := defaultMessage(Notice{Kind: SignUpCode, AppName: "Textlab"}).Text; !strings.Contains(got, "a Textlab account") {
 		t.Fatalf("article: %s", got)
+	}
+}
+
+// leakySender fails with everything the message says, as a careless adapter might.
+type leakySender struct{}
+
+func (leakySender) Send(_ context.Context, m email.Message) (string, error) {
+	return "", fmt.Errorf("refused %s: %s %s", strings.ToUpper(m.To), m.Subject, m.Text)
+}
+
+func TestSenderErrorsCarryNothingTheEmailDoes(t *testing.T) {
+	l := &Local{cfg: Config{Sender: leakySender{}, Message: defaultMessage}}
+	for _, n := range []Notice{
+		{Kind: SignInCode, To: "ann@example.com", AppName: "Acme", Code: "4821 0937"},
+		{Kind: AddressChanged, To: "ann@example.com", AppName: "Acme", OldEmail: "ann@example.com", NewEmail: "ann@example.org"},
+		{Kind: PasskeyAdded, To: "ann@example.com", AppName: "Acme", Passkey: "Ann's work laptop"},
+	} {
+		err := l.sendNow(context.Background(), n)
+		if err == nil {
+			t.Fatal("no error")
+		}
+		for _, secret := range []string{"ann@example", "4821", "0937", "Ann's work laptop"} {
+			if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
+				t.Errorf("%v: the error carries %q: %v", n.Kind, secret, err)
+			}
+		}
 	}
 }
 

@@ -16,7 +16,8 @@ type Message struct {
 // Sender sends transactional email, such as Scaleway Transactional Email.
 type Sender interface {
 	// Send hands m to the provider and returns the provider's ID for it. A nil error
-	// means the provider accepted the message, not that it arrived.
+	// means the provider accepted the message, not that it arrived. Callers log the
+	// error, so it must not carry the recipient or the message's text.
 	Send(ctx context.Context, m Message) (id string, err error)
 }
 

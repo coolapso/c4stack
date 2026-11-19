@@ -119,12 +119,34 @@ func (l *Local) notice(kind Kind, to string) Notice {
 	}
 }
 
-// sendNow sends an email in the request, for codes the person is waiting for.
+// sendNow sends an email in the request, for codes the person is waiting for. Its
+// error is logged, so it never carries what the email does: whatever the sender's
+// error says, the addresses, the code and the passkey's name are taken out.
 func (l *Local) sendNow(ctx context.Context, n Notice) error {
 	m := l.cfg.Message(n)
 	m.To = n.To
-	_, err := l.cfg.Sender.Send(ctx, m)
-	return err
+	if _, err := l.cfg.Sender.Send(ctx, m); err != nil {
+		return errors.New("local: the email provider refused the message: " + redact(err.Error(),
+			n.To, n.OldEmail, n.NewEmail, n.Code, strings.ReplaceAll(n.Code, " ", ""), n.Passkey))
+	}
+	return nil
+}
+
+// redact replaces each of the values in s, ignoring case, with "[redacted]".
+func redact(s string, values ...string) string {
+	for _, v := range values {
+		if len(v) < 3 {
+			continue
+		}
+		for {
+			i := strings.Index(strings.ToLower(s), strings.ToLower(v))
+			if i < 0 {
+				break
+			}
+			s = s[:i] + "[redacted]" + s[i+len(v):]
+		}
+	}
+	return s
 }
 
 // queueNotice writes a security notice inside the transaction that made the change, so
