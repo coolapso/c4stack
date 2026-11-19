@@ -59,6 +59,11 @@ func TestBrowser(t *testing.T) {
 	}
 	err := chromedp.Do(ctx,
 		chromedp.Navigate(public+"/account/api-keys"),
+		// A new account gives its name first, then goes on to the page it asked for.
+		chromedp.WaitVisible(`#name`),
+		chromedp.SendKeys(`#name`, "Ada Lovelace"),
+		chromedp.Submit(`#name`),
+		chromedp.WaitVisible(`#create-key-button`),
 		chromedp.WaitVisible(`.console-side`),
 		chromedp.Click(`#create-key-button`),
 		chromedp.WaitVisible(`#create-key-dialog`),

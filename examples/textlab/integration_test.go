@@ -34,12 +34,23 @@ type browser struct {
 
 func newBrowser(t *testing.T, h http.Handler) *browser {
 	b := &browser{t: t, handler: h}
+	// Textlab asks a new account for its name first.
 	rec := b.do(http.MethodGet, "/account/api-keys", nil, nil)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/account/name?") {
+		t.Fatalf("console without a name: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = b.do(http.MethodGet, rec.Header().Get("Location"), nil, nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("console: %d", rec.Code)
+		t.Fatalf("name page: %d", rec.Code)
 	}
 	b.token = regexp.MustCompile(`<meta name="csrf-token" content="([^"]+)"`).FindStringSubmatch(rec.Body.String())[1]
 	b.cookies = rec.Result().Cookies()
+	if rec := b.do(http.MethodPost, "/account/name", url.Values{"name": {"Ada Lovelace"}, "next": {"/account/api-keys"}}, nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("saving the name: %d", rec.Code)
+	}
+	if rec := b.do(http.MethodGet, "/account/api-keys", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("console: %d", rec.Code)
+	}
 	return b
 }
 
@@ -192,6 +203,7 @@ func TestTextlab(t *testing.T) {
 // own wiring. The oidc module's tests cover the protocol.
 func TestOIDC(t *testing.T) {
 	_, h, _ := newTextlab(t, origin)
+	newBrowser(t, h) // ada signs up and gives her name
 	if got := decode(t, api(h, http.MethodGet, "/.well-known/openid-configuration", "", nil, nil)); got["issuer"] != origin {
 		t.Fatalf("discovery %v", got)
 	}
@@ -212,7 +224,7 @@ func TestOIDC(t *testing.T) {
 	redirect := "https://notes.example.com/callback"
 	rec := get("/oidc/authorize?" + url.Values{
 		"client_id": {"notes"}, "redirect_uri": {redirect}, "response_type": {"code"},
-		"scope": {"openid email"}, "state": {"s1"}, "nonce": {"n1"},
+		"scope": {"openid email profile"}, "state": {"s1"}, "nonce": {"n1"},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"},
 	}.Encode())
 	rec = get(rec.Header().Get("Location"))
@@ -233,7 +245,7 @@ func TestOIDC(t *testing.T) {
 	}
 	payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
 	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil || claims["email"] != "ada@example.com" || claims["nonce"] != "n1" {
+	if err := json.Unmarshal(payload, &claims); err != nil || claims["email"] != "ada@example.com" || claims["name"] != "Ada Lovelace" || claims["nonce"] != "n1" {
 		t.Fatalf("claims %s", payload)
 	}
 }

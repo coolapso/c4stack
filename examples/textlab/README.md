@@ -5,6 +5,8 @@ small paid text API:
 
 - **Sign-in of its own.** People sign up and sign in with a code by email or a passkey
   (`identity/local`). In development, the codes arrive in Mailpit.
+- **Names.** Accounts have names (`accounts.Config.Names`): a new account gives one
+  before its first page, and changes it on the settings page.
 - **Custom layout.** `layout.templ` and `static/console.css` replace the default design
   with a sidebar console. The default settings, API keys and credits pages render
   inside it.
@@ -19,7 +21,8 @@ small paid text API:
 - **Optional expiry.** With Scaleway email, which reports delivery, unused credit
   expires after a warning. With SMTP, as in development, it never expires.
 - **An OpenID Connect provider.** Another service can sign people in with Textlab's
-  accounts (`oidc`), as a client set by `TEXTLAB_OIDC_CLIENT_ID`,
+  accounts (`oidc`), with their names under the profile scope, as a client set by
+  `TEXTLAB_OIDC_CLIENT_ID`,
   `TEXTLAB_OIDC_CLIENT_SECRET` and `TEXTLAB_OIDC_REDIRECT_URIS` (comma-separated). The
   issuer is `TEXTLAB_PUBLIC_URL`. Without a client, the provider has none.
 - **Replaceable providers.** `build` takes the identity, payment and email providers,

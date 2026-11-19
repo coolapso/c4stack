@@ -50,9 +50,10 @@ func (m *mailbox) code(t *testing.T) string {
 }
 
 // TestSignInBrowser drives Textlab's own sign-in in headless Chromium, with its virtual
-// authenticator: sign up with an emailed code, add a passkey on the settings page, sign
-// out, sign in with the passkey, and confirm with it before deleting the account. Any
-// console error, uncaught exception or CSP violation on the way fails the test.
+// authenticator: sign up with an emailed code, give a name, add a passkey on the
+// settings page, sign out, sign in with the passkey, and confirm with it before deleting
+// the account. Any console error, uncaught exception or CSP violation on the way fails
+// the test.
 func TestSignInBrowser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	// Passkeys need a domain, not an IP address, so the app is reached as localhost.
@@ -140,6 +141,11 @@ func TestSignInBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := chromedp.Do(ctx, chromedp.SendKeys(`#code`, mail.code(t)), chromedp.Submit(`#code`)); err != nil {
+		t.Fatal(err)
+	}
+	// A new account gives its name first.
+	waitFor("/account/name?next=%2Faccount")
+	if err := chromedp.Do(ctx, chromedp.SendKeys(`#name`, "Ann Example"), chromedp.Submit(`#name`)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor("/account")

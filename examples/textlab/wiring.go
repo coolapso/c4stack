@@ -48,7 +48,9 @@ type textlab struct {
 // build wires the modules and routes. It is separate from setup so tests can pass
 // their own providers.
 func build(a *app.App, cfg config, p providers) (http.Handler, error) {
-	accts, err := accounts.New(a, p.identity, accounts.Config{})
+	// Accounts have names: people give one after signing up, and services that sign in
+	// with Textlab get it with the profile scope.
+	accts, err := accounts.New(a, p.identity, accounts.Config{Names: true})
 	if err != nil {
 		return nil, err
 	}
