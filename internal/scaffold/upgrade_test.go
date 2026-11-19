@@ -165,7 +165,13 @@ func TestUpgrade(t *testing.T) {
 // changeRelease turns a copy of the checkout into the next release.
 func changeRelease(t *testing.T, dir string) {
 	t.Helper()
-	write(t, filepath.Join(dir, "accounts", "migrations", "002_upgrade_probe.sql"), "CREATE TABLE upgrade_probe (id integer);\n")
+	// The probe migration takes the next free number after the module's own.
+	existing, err := filepath.Glob(filepath.Join(dir, "accounts", "migrations", "*.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := fmt.Sprintf("%03d_upgrade_probe.sql", len(existing)+1)
+	write(t, filepath.Join(dir, "accounts", "migrations", probe), "CREATE TABLE upgrade_probe (id integer);\n")
 	write(t, filepath.Join(dir, "accounts", "probe.go"), `package accounts
 
 import (
