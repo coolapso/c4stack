@@ -1,0 +1,44 @@
+package subscriptions
+
+import "github.com/coolapso/c4stack/ui"
+
+templ panel(v panelView) {
+	<section class="panel" aria-labelledby="subscriptions-title">
+		<div class="panel-header">
+			<div>
+				<h2 id="subscriptions-title">Subscriptions</h2>
+				<p>What you pay for, and when it renews.</p>
+			</div>
+			<a class="btn small" href={ templ.SafeURL(v.base + "/billing") }>Manage billing</a>
+		</div>
+		if len(v.running) == 0 {
+			<p class="muted">None running.</p>
+		}
+		for _, s := range v.running {
+			<div class="cluster" data-subscription={ s.ID }>
+				<p><strong>{ label(s) }</strong> <span class="muted">{ describe(s) }</span></p>
+				if s.Live() {
+					<button type="button" class="btn ghost small" data-dialog-open={ "cancel-subscription-" + s.ID }>Cancel</button>
+					@ui.Dialog(ui.DialogProps{ID: "cancel-subscription-" + s.ID, Title: "Cancel " + s.Product.Name + "?", Danger: true}) {
+						if s.PeriodEnd.IsZero() {
+							<p>It runs until the end of the period you paid for, then ends. You won't be charged again.</p>
+						} else {
+							<p>It runs until { s.PeriodEnd.UTC().Format("2 January 2006") }, then ends. You won't be charged again.</p>
+						}
+						<form method="post" action={ templ.SafeURL(v.base + "/" + s.ID + "/cancel") } data-busy-form>
+							@ui.CSRFField(v.c)
+							<input type="hidden" name="next" value={ v.next }/>
+							<div class="dialog-actions">
+								<button type="button" class="btn ghost" data-dialog-close>Keep it</button>
+								<button type="submit" class="btn danger">
+									Cancel subscription
+									@ui.Spinner()
+								</button>
+							</div>
+						</form>
+					}
+				}
+			</div>
+		}
+	</section>
+}

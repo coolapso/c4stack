@@ -32,6 +32,7 @@ registers.
 | `payments/creem` | The Creem adapter |
 | `credits` | Opt-in. Ledger, holds, purchases, webhooks, history and the credits page |
 | `credits/expiry` | Opt-in. Expires unused credit after a delivered warning |
+| `subscriptions` | Opt-in. Subscriptions through a payment provider: checkout, webhooks, reviews and the settings panel |
 | `email` | The email sender interface |
 | `email/scaleway` | The Scaleway Transactional Email adapter |
 | `email/smtp` | An SMTP adapter, for development with a local mail catcher such as Mailpit |
@@ -48,7 +49,8 @@ through `app`.
   Each adapter depends on its interface, and on `web` and `ui` where it renders pages.
   `identity/local` keeps tables, commands and jobs, so it depends on `app` too, and on
   `email` to send codes. Nothing depends on it.
-- `accounts` depends on `identity`. `apikeys`, `oidc` and `credits` depend on `accounts`.
+- `accounts` depends on `identity`. `apikeys`, `oidc`, `credits` and `subscriptions`
+  depend on `accounts`.
   `credits/expiry` depends on `credits` and `email`. Nothing points back: `accounts` learns
   about other modules only through the deletion hooks they register.
 - The app depends on everything it uses.
@@ -932,6 +934,120 @@ duplicate it. Each run:
 Purchases, charges and adjustments count as activity, and new activity needs a new
 warning. Deadlines are stored, so changing the policy never brings one forward.
 
+### subscriptions (opt-in)
+
+Subscriptions an account buys through a payment provider that implements
+`payments.Subscriber`, and their state from its webhooks. Prices live at the provider,
+on its products; what a subscription gives an account is the app's.
+
+```sql
+subscriptions(id uuid, account_id → accounts ON DELETE SET NULL, provider,
+              provider_subscription_id, provider_customer_id, product, target, units,
+              status, period_end, state_at, created_at, updated_at,
+              UNIQUE (provider, provider_subscription_id))
+subscription_events(provider, event_id, received_at, PRIMARY KEY (provider, event_id))
+subscription_reviews(id, provider, event_id, subscription_id → subscriptions ON DELETE SET NULL,
+                     reason, created_at, resolved_at, resolution, UNIQUE (provider, event_id))
+```
+
+```go
+type Product struct {
+	ID, ProviderID, Name string // the app's ID, the provider's product, what people see
+	MaxUnits             int    // seats or packs; zero means 1
+	Group                string // one live subscription per group and target, such as a plan
+}
+type Config struct {
+	Payments  payments.Subscriber
+	Products  []Product
+	Proration payments.Proration // how a change's difference is charged; zero: at once
+}
+type Subscription struct {
+	ID, AccountID string
+	Product       Product
+	Target        string // what it's for, in the app's words, such as a vault
+	Units         int
+	Status        payments.SubscriptionStatus
+	PeriodEnd     time.Time
+	CreatedAt     time.Time
+}
+
+func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, error)
+func (s *Subscriptions) Checkout(ctx context.Context, accountID string, r CheckoutRequest) (url string, err error)
+func (s *Subscriptions) List(ctx context.Context, accountID string) ([]Subscription, error)
+func (s *Subscriptions) Get(ctx context.Context, accountID, id string) (Subscription, error)
+func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error // at the period's end
+func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r ChangeRequest) error
+func (s *Subscriptions) PortalURL(ctx context.Context, accountID string) (string, error)
+func (s *Subscriptions) Webhook(c *gin.Context)
+func (s *Subscriptions) Mount(r gin.IRouter, layout ui.Layout) // r: e.g. /account/subscriptions
+// POST "", POST "/:id/cancel", POST "/:id/change", GET "/billing"; and the settings panel
+func (s *Subscriptions) CheckoutCSP() web.CSP // for a page with a checkout form
+```
+
+**Several per account.** An account can hold a plan, packs and add-ons side by side,
+each its own subscription. `Group` keeps products exclusive: at most one live
+subscription in a group for a target, so one plan per account, or one room pack per
+vault with the vault's ID as the target. A subscription changes between the products of
+its group with `Change`, and between numbers of units up to `MaxUnits`.
+
+**Checkout and state.** `Checkout` stores a `pending` subscription and opens the
+provider's checkout with the subscription's ID as the reference. From then on, every
+change arrives as a signed webhook: the checkout's completion links the provider's
+subscription and customer, and each event after it carries the subscription's state.
+The success URL only brings the buyer back; it starts nothing. `Cancel` and `Change`
+lock the subscription while they call the provider, so changes go one at a time (another
+meanwhile gets `ErrBusy`): two at once could each charge a proration. `Change` reads the
+provider's state first and sends only what isn't so already, so a retry after a change
+that half happened doesn't charge its proration again; the units it keeps must fit the
+new product. Both then read the state back, so the account sees the change before the
+webhook; that read isn't ordered against webhooks, so it leaves `state_at` alone. Statuses: `active`, `trialing`, `past_due` (a failed payment the provider
+retries), `unpaid`, `paused`, `canceling` (runs until `PeriodEnd`, then ends) and
+`canceled`. A subscription is *live* when it would charge again: all but `canceling`
+and `canceled`.
+
+**Webhooks.** An event is taken once: its ID is recorded in the transaction that
+applies it, so a retry changes nothing and a failure leaves it for the next retry. The
+subscription is found by the reference, which the checkout's metadata carries into
+every event, or by the provider's ID, and locked. Events can arrive hours late and out
+of order: a state applies only if the event is newer than the one shown (`state_at`), and
+an older event only brings the IDs it carries. A product or number of units the app
+doesn't allow isn't applied, though the rest of the state is: a checkout completed with
+another product, a move out of the group, or more units than the product's limit, such
+as from a change made in the provider's dashboard. Activations in one group take turns
+under an advisory lock, so two that complete at once see each other. Reviews, each with
+its reason:
+
+| Reason | What happened |
+|---|---|
+| `unknown_subscription` | An event for one of the app's products names no subscription the app started. |
+| `reference_mismatch` | The reference names a subscription linked to another provider subscription. |
+| `linked_twice` | Two of the app's subscriptions claim one provider subscription. |
+| `unknown_product` | The subscription moved to a product the app doesn't list; not applied. |
+| `product_mismatch`, `product_change`, `too_many_units` | A checkout completed with another product, a subscription left its group, or it has more units than its product allows; the product or units aren't applied. |
+| `refunded`, `disputed` | A payment was refunded or disputed: the operator decides what follows. |
+| `deleted_account` | A subscription of a deleted account would charge again, such as a checkout completed after the deletion. The module cancels it at once; the operator decides about its payment. |
+| `second_in_group` | Two checkouts for one group both completed: the account pays twice. |
+| `several_items`, `unknown_status`, `missing_reference`, `checkout_not_completed` | The provider's event can't be read as one subscription's state. |
+
+**Deletion.** An account can't be deleted while a subscription would charge it again:
+the delete page says to cancel it first, and deletion works right after, while the
+canceled subscription runs out (`accounts.CheckDeletion`). The records stay, without
+their account, target or provider customer; the provider's subscription ID stays, so
+late webhooks still find them. A checkout completed after the deletion, or a deleted
+account's subscription that comes back to life, is canceled at the provider at once and
+goes to review.
+
+**The settings panel** lists the subscriptions that haven't ended, with their renewal
+or end date, a Cancel dialog for each live one, and "Manage billing", which opens the
+provider's billing page. An account that never subscribed has no panel.
+
+**Cleanup and commands.** An hourly job deletes checkouts nobody completed within 30
+days, since a checkout's page may stay open long, and the record of events older than
+30 days. The
+commands are `subscriptions list <account-id>`, `subscriptions reviews`,
+`subscriptions resolve <review-id> <note…>` and `subscriptions sync <subscription-id>`,
+which reads the provider's state and applies it.
+
 ### email and email/scaleway
 
 ```go
@@ -1098,6 +1214,10 @@ These features were considered and decided as follows.
 | A recent sign-in before deletion and passkey changes | Yes, 5 minutes | It proves the owner is present rather than an unattended browser. Five minutes is Searchbase's window for passkey changes; one window keeps one rule and one message. |
 | A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
 | Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
+| Deleting an account with a subscription that renews | Refused until it's canceled | Deleting it would leave the subscription charging nobody. Canceling at the period's end is enough, so nobody waits for a yearly plan to run out. |
+| Refunds and disputes of subscriptions | Review | What a refund ends (the subscription, an add-on, nothing) is the operator's decision, as for credit. |
+| Several subscriptions per account | Yes, with groups and targets | A plan, packs and add-ons for one vault are separate subscriptions. A group keeps a plan single; a target keeps an add-on to one thing. |
+| A price made of a base and per-unit prices, in one subscription | No | Creem prices a subscription as one product times its units, and documents no subscription with several items. Such a price is several subscriptions, one per price, or a product priced for the whole. |
 | Storing OpenID Connect requests before sign-in | No, sealed in the URL | Nothing is written for a visitor who never signs in, so a flood of requests costs no storage. The browser cookie gives what a stored request would: it continues only where it began. |
 | Refresh tokens, logout and introspection in the provider | No | Its clients sign people in and keep their own sessions; access tokens only read userinfo, right after the exchange. |
 | Public OpenID Connect clients | No | Every client is a server with a secret. A public client could be added as a new kind of client. |
@@ -1106,12 +1226,13 @@ These features were considered and decided as follows.
 ## Not in scope
 
 These are not built:
-- subscriptions, organisations, roles and entitlements
+- organisations, roles and entitlements: what a subscription gives an account is the
+  app's
 - internationalisation
 - rate limiting, which belongs to the ingress, except sign-in's counters, which count
   addresses the ingress never sees
 - metrics exporters
 - an admin UI
 
-Subscriptions or organisations would be new modules that depend on `accounts` and join
-deletion through `OnDelete`, in the same way `credits` does.
+Organisations would be a new module that depends on `accounts` and joins deletion
+through `OnDelete`, in the same way `credits` does.

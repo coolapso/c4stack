@@ -10,6 +10,7 @@ environment prefix `ACME_`.
 | An email sender | every app on C4Stack's own sign-in (`identity/local`) | Scaleway Transactional Email, or an SMTP server that offers STARTTLS. Sign-in depends on its codes arriving: each sending domain needs SPF, DKIM and DMARC. Security notices ask people to reply, so replies to the sending address (or its `ReplyTo`) must reach a person. |
 | Hanko | every app on Hanko's sign-in | A tenant with the app's URL. Allow account deletion, so deletion can go through the app. Require email verification: accounts are linked by verified address. The `hanko` cookie must reach the app's host. |
 | Creem | buying credit | A one-time product with a custom price, and a webhook to `https://<host>/webhooks/payments` (or wherever the app mounts `Webhook`). Use a `creem_test_` key until you go live. |
+| Creem | subscriptions | A recurring product for each thing the app sells, and a webhook to `https://<host>/webhooks/subscriptions` (or wherever the app mounts the module's `Webhook`). The customer portal cancels at once, while the settings page cancels at the period's end. |
 | Scaleway Transactional Email | credit expiry | A project with a verified sending domain and a key allowed to send. |
 | PostgreSQL | every app | PostgreSQL 13 or later; C4Stack is tested with 18. |
 
@@ -258,12 +259,33 @@ acme credits resolve <review-id> <what you did>
 
 `docs/credits.md` explains each reason and the usual fix.
 
+### Subscription reviews
+
+Subscription events that cannot be applied as they stand are recorded instead of
+guessed. The log has `subscription event needs review` with a reason;
+`docs/architecture.md` ("subscriptions") lists them. Check them regularly:
+
+```sh
+acme subscriptions reviews
+acme subscriptions list <account-id>
+acme subscriptions sync <subscription-id>   # read its state from the provider
+acme subscriptions resolve <review-id> <what you did>
+```
+
+A `second_in_group` means the account pays twice for one plan: cancel or refund one in
+the provider's dashboard. A `deleted_account` means a deleted account's subscription
+was paid, such as a checkout finished after the deletion: the module canceled it at
+once (the log says if that failed); refund as the policy says. `product_change` and
+`too_many_units` come from changes made in the provider's dashboard that the app's
+products don't allow: undo them there, or `sync` once they fit.
+
 ### Payment webhooks were down
 
 Creem retries a failed webhook after 30 seconds, 5 minutes, 30 minutes and 6 hours. If
 the app or its database was unavailable for longer, compare the payments in the Creem
 dashboard with the purchases in `payment_intents`. Credit the missed ones with
-`credits adjust`, using the purchase ID as part of the reference.
+`credits adjust`, using the purchase ID as part of the reference. For subscriptions,
+`subscriptions sync <subscription-id>` reads each one's state from Creem.
 
 ### Credit expiry
 

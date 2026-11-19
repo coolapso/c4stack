@@ -185,6 +185,39 @@ OnRun: func(ctx context.Context, r expiry.Result, err error) {
 },
 ```
 
+## Sell subscriptions
+
+`subscriptions` sells subscriptions through a payment provider that implements
+`payments.Subscriber`, such as Creem's adapter. Make each recurring product at the
+provider, with its price and billing period, and list them:
+
+```go
+// main.go: after accounts'.
+subscriptions.Migrations,
+
+// setup: creem.New(...) without a ProductID is enough when the app sells no credit.
+subs, err := subscriptions.New(a, accts, subscriptions.Config{
+	Payments: pay,
+	Products: []subscriptions.Product{
+		{ID: "plus-monthly", ProviderID: cfg.PlusMonthlyProduct, Name: "Plus, monthly", Group: "plan"},
+		{ID: "plus-yearly", ProviderID: cfg.PlusYearlyProduct, Name: "Plus, yearly", Group: "plan"},
+		{ID: "vaults", ProviderID: cfg.VaultsProduct, Name: "More vaults", MaxUnits: 10},
+	},
+})
+
+// routes.go
+subs.Mount(account.Group("/subscriptions"), layout) // and a panel on the settings page
+r.POST("/webhooks/subscriptions", subs.Webhook)
+pricing := account.Group("/plans", web.AllowCSP(subs.CheckoutCSP()))
+```
+
+A page sells with a form that posts `product`, and `units` or `target` when they
+apply, to the subscriptions group, which sends the browser to the provider's
+checkout. A plan's page changes it with a form to `/<id>/change` (`product`, `units`).
+What a subscription gives an account is the app's: read `subs.List`, and decide from
+each one's product, units and status, such as `active` and `canceling` until the
+period ends, and `past_due` while the provider retries.
+
 ## Add an API endpoint that debits credit idempotently
 
 A client retries a request it is not sure went through, with the same `Idempotency-Key`

@@ -49,6 +49,7 @@ file to fill in.
 | `payments`, `payments/creem` | The payment provider interface and the Creem adapter |
 | `credits` | Opt-in prepaid credit: ledger, holds, purchases, webhooks and history |
 | `credits/expiry` | Opt-in expiry of unused credit, after a delivered warning |
+| `subscriptions` | Opt-in subscriptions through a payment provider: checkout, webhooks, reviews and a settings panel |
 | `email`, `email/scaleway`, `email/smtp` | The email sender interface, and the Scaleway and SMTP adapters |
 
 ## Docs

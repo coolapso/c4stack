@@ -8,15 +8,15 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 
 - Public packages are the apps' API: `web`, `app`, `app/apptest`, `ui`, `identity`,
   `identity/hanko`, `identity/local`, `accounts`, `apikeys`, `oidc`, `payments`,
-  `payments/creem`, `credits`, `credits/expiry`, `email`, `email/scaleway` and
-  `email/smtp`. Start new names unexported and export
-  them when an app needs them. Keep changes additive after v0.1.0.
+  `payments/creem`, `credits`, `credits/expiry`, `subscriptions`, `email`,
+  `email/scaleway` and `email/smtp`. Start new names unexported and export them when an
+  app needs them. Keep changes additive after v0.1.0.
 - Dependencies point one way: `web` and `internal/postgres` at the bottom; interfaces
   (`identity`, `payments`, `email`) depend on nothing in C4Stack; modules depend on
   `accounts`; nothing depends on a module. Errors live in the package that owns them.
-- New capabilities, such as subscriptions, are new modules or optional interfaces,
-  never new required methods on an existing interface. Provider-specific payloads stay
-  in adapters.
+- New capabilities are new modules or optional interfaces, such as `subscriptions` and
+  `payments.Subscriber`, never new required methods on an existing interface.
+  Provider-specific payloads stay in adapters.
 - `internal/scaffold/templates` holds app-owned starter files only. Never put shared
   logic, SQL or assets there.
 - `taskfiles/app.yml` is the shared Taskfile apps include remotely. Its tasks run from
