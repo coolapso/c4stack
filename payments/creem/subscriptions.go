@@ -46,11 +46,11 @@ func (c *Creem) CreateSubscriptionCheckout(ctx context.Context, co payments.Subs
 	if result.ID == "" {
 		return payments.Session{}, errors.New("creem: unreadable checkout response")
 	}
-	u, err := url.Parse(result.URL)
-	if err != nil || u.Scheme != c.checkout.Scheme || u.Host != c.checkout.Host || u.User != nil {
-		return payments.Session{}, errors.New("creem: the checkout URL is not on the checkout origin")
+	checkoutURL, err := c.checkoutURL(result.URL)
+	if err != nil {
+		return payments.Session{}, err
 	}
-	return payments.Session{ID: result.ID, URL: result.URL}, nil
+	return payments.Session{ID: result.ID, URL: checkoutURL}, nil
 }
 
 // CompletedCheckout reads a checkout, and returns the subscription it started.

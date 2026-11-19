@@ -27,8 +27,9 @@ import (
 const DefaultCheckoutOrigin = "https://www.creem.io"
 
 // testCheckoutOrigin is where Creem hosts test-mode checkout pages, also for a store
-// with its own domain.
-const testCheckoutOrigin = "https://creem.io"
+// with its own domain. The API gives them on creem.io, which redirects here; see
+// checkoutURL.
+const testCheckoutOrigin = "https://www.creem.io"
 
 // Config configures the adapter.
 type Config struct {
@@ -152,11 +153,27 @@ func (c *Creem) CreateCheckout(ctx context.Context, co payments.Checkout) (payme
 	if err := json.Unmarshal(data, &result); err != nil || result.ID == "" {
 		return payments.Session{}, errors.New("creem: unreadable checkout response")
 	}
-	u, err := url.Parse(result.URL)
-	if err != nil || u.Scheme != c.checkout.Scheme || u.Host != c.checkout.Host || u.User != nil {
-		return payments.Session{}, errors.New("creem: the checkout URL is not on the checkout origin")
+	checkoutURL, err := c.checkoutURL(result.URL)
+	if err != nil {
+		return payments.Session{}, err
 	}
-	return payments.Session{ID: result.ID, URL: result.URL}, nil
+	return payments.Session{ID: result.ID, URL: checkoutURL}, nil
+}
+
+// checkoutURL checks a checkout URL Creem returned, and returns where to send the
+// browser. Creem gives checkouts on creem.io, which redirects to www.creem.io: a page's
+// form-action must allow every host its form's navigation passes through, so the
+// browser goes straight to www.creem.io, the checkout origin, instead of being stopped
+// at the redirect.
+func (c *Creem) checkoutURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err == nil && u.Host == "creem.io" && c.checkout.Host == "www.creem.io" {
+		u.Host = "www.creem.io"
+	}
+	if err != nil || u.Scheme != c.checkout.Scheme || u.Host != c.checkout.Host || u.User != nil {
+		return "", errors.New("creem: the checkout URL is not on the checkout origin")
+	}
+	return u.String(), nil
 }
 
 // ParseWebhook verifies and decodes a Creem webhook about a credit purchase.

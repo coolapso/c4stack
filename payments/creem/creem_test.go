@@ -55,7 +55,7 @@ func TestNew(t *testing.T) {
 	if live.api != "https://api.creem.io" || test.api != "https://test-api.creem.io" {
 		t.Errorf("APIs %q %q", live.api, test.api)
 	}
-	if live.CheckoutOrigin() != DefaultCheckoutOrigin || custom.CheckoutOrigin() != "https://pay.example" || test.CheckoutOrigin() != "https://creem.io" {
+	if live.CheckoutOrigin() != DefaultCheckoutOrigin || custom.CheckoutOrigin() != "https://pay.example" || test.CheckoutOrigin() != "https://www.creem.io" {
 		t.Errorf("origins %q %q %q", live.CheckoutOrigin(), custom.CheckoutOrigin(), test.CheckoutOrigin())
 	}
 }
@@ -75,7 +75,9 @@ func TestCreateCheckout(t *testing.T) {
 	c := adapter(t, srv.URL)
 
 	s, err := c.CreateCheckout(context.Background(), payments.Checkout{Reference: "intent-1", AmountCents: 1083, Email: "ada@example.com", SuccessURL: "https://app.example/credits"})
-	if err != nil || s.ID != "ch_1" || s.URL != checkoutURL {
+	// creem.io redirects to www.creem.io, which the page's form-action allows: the
+	// browser goes there directly.
+	if err != nil || s.ID != "ch_1" || s.URL != "https://www.creem.io/test/checkout/prod_credits/ch_1" {
 		t.Fatalf("session %+v, %v", s, err)
 	}
 	if got["product_id"] != "prod_credits" || got["request_id"] != "intent-1" || got["custom_price"] != float64(1083) ||

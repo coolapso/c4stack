@@ -61,7 +61,7 @@ func TestCreateSubscriptionCheckout(t *testing.T) {
 	s, err := c.CreateSubscriptionCheckout(context.Background(), payments.SubscriptionCheckout{
 		Reference: "ref-1", ProductID: "prod_plus", Units: 3, Email: "ann@example.com", SuccessURL: "https://app.example/ok",
 	})
-	if err != nil || s.ID != "ch_1" {
+	if err != nil || s.ID != "ch_1" || s.URL != "https://www.creem.io/test/checkout/prod_plus/ch_1" {
 		t.Fatalf("session %+v, %v", s, err)
 	}
 	b := api.bodies[0]

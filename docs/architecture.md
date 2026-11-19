@@ -796,8 +796,11 @@ type SubscriptionEvent struct {
 - An API key starting with `creem_test_` selects Creem's test API.
 - Webhooks are verified with HMAC-SHA256 from the `creem-signature` header.
 - The `checkout_url` Creem returns must match `CheckoutOrigin`. That is the configured
-  custom domain or `DefaultCheckoutOrigin` for a live key, and always `https://creem.io`
-  for a test key, because Creem serves test-mode checkouts there.
+  custom domain or `DefaultCheckoutOrigin` for a live key, and always
+  `https://www.creem.io` for a test key, because Creem serves test-mode checkouts
+  there. Creem gives them on `creem.io`, which redirects to `www.creem.io`; the adapter
+  sends the browser to `www.creem.io` directly, because a form's navigation stops at
+  any host the page's `form-action` doesn't allow, and the button would spin forever.
 
 ### credits (opt-in)
 
