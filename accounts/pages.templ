@@ -9,6 +9,26 @@ templ settingsPage(v settingsView) {
 	<div class="page-header">
 		<h1>Account settings</h1>
 	</div>
+	if v.names {
+		<section class="panel" aria-labelledby="name-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="name-title">Name</h2>
+					<p>What others see you as.</p>
+				</div>
+			</div>
+			<form class="cluster" method="post" action={ templ.SafeURL(v.paths.Name) } data-busy-form>
+				@ui.CSRFField(v.c)
+				<input type="hidden" name="next" value={ v.paths.Settings }/>
+				<label class="sr-only" for="account-name">Name</label>
+				<input id="account-name" name="name" value={ v.account.Name } autocomplete="name" maxlength="100" required/>
+				<button type="submit" class="btn small">
+					Save
+					@ui.Spinner()
+				</button>
+			</form>
+		</section>
+	}
 	if v.profile != nil {
 		@v.profile
 	} else {
@@ -116,6 +136,42 @@ templ signOutForm(v settingsView, next, label, class string) {
 			@ui.Spinner()
 		</button>
 	</form>
+}
+
+templ namePage(v nameView) {
+	<div class="narrow stack">
+		<div class="page-header">
+			<h1>What should we call you?</h1>
+		</div>
+		<p class="lead">This is the name others see. You can change it in your account settings.</p>
+		<form class="stack" method="post" action={ templ.SafeURL(v.action) } data-busy-form>
+			@ui.CSRFField(v.c)
+			<input type="hidden" name="next" value={ v.next }/>
+			<div class="field">
+				<label for="name">Name</label>
+				<input
+					id="name"
+					name="name"
+					value={ v.name }
+					autocomplete="name"
+					maxlength="100"
+					required
+					autofocus
+					if v.invalid {
+						aria-invalid="true"
+						aria-describedby="name-error"
+					}
+				/>
+				if v.invalid {
+					<p id="name-error" class="field-error">Enter a name of up to 100 characters, without special characters.</p>
+				}
+			</div>
+			<button type="submit" class="btn primary">
+				Continue
+				@ui.Spinner()
+			</button>
+		</form>
+	</div>
 }
 
 templ deletedPage(cleanupPending bool) {

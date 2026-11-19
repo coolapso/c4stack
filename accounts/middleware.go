@@ -16,7 +16,8 @@ const accountKey = "c4stack/accounts"
 // state-changing requests, because sign-in is cookie-based, then validates the session
 // and finds the account, creating it on first sign-in. Visitors without a session are
 // sent to the login page, and identities without a verified email to a page that asks
-// them to confirm it. Responses are marked not to be stored.
+// them to confirm it. With Config.Names, an account without a name is sent to the name
+// page, except to delete it. Responses are marked not to be stored.
 //
 // A request it stops without a redirect gets only a status, not yet written, so
 // middleware that runs before it can render an error page after c.Next.
@@ -68,6 +69,14 @@ func (s *Accounts) RequireSignIn(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
+	if s.cfg.Names && account.Name == "" && c.Request.URL.Path != s.cfg.Paths.Name && c.Request.URL.Path != s.cfg.Paths.Delete {
+		target := s.cfg.Paths.Name
+		if c.Request.Method == http.MethodGet {
+			target += "?next=" + url.QueryEscape(c.Request.URL.RequestURI())
+		}
+		redirect(c, target, http.StatusForbidden)
+		return
+	}
 	c.Set(accountKey, account)
 	c.Request = c.Request.WithContext(identity.NewContext(c.Request.Context(), id))
 }

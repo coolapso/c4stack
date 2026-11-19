@@ -89,7 +89,7 @@ func TestStarterApp(t *testing.T) {
 	migrateEnv := []string{"ACME_DATABASE_URL=" + databaseURL}
 	shell(t, dir, migrateEnv, "task", "db:migrate")
 	status := shell(t, dir, migrateEnv, "task", "run", "--", "migrate", "status")
-	if !regexp.MustCompile(`accounts\s+1\s+-`).MatchString(status) || !regexp.MustCompile(`local\s+1\s+-`).MatchString(status) {
+	if !regexp.MustCompile(`accounts\s+2\s+-`).MatchString(status) || !regexp.MustCompile(`local\s+1\s+-`).MatchString(status) {
 		t.Fatalf("migrate status:\n%s", status)
 	}
 

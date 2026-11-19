@@ -30,7 +30,8 @@ app was generated, they were:
   `accts.RequireSignIn`; public forms use `web.CSRF`. Never protect an API-key route
   with either. C4Stack's own account pages are under `/account/settings` and
   `/account/delete`.
-- Read the signed-in account with `accounts.Current(c)`.
+- Read the signed-in account with `accounts.Current(c)`. Accounts have a name only with
+  `accounts.Config{Names: true}`.
 - Render pages with `layout.Render`; forms include `@ui.CSRFField(c)`.
 - New tables with personal data reference `accounts (id) ON DELETE CASCADE`, or are
   cleaned in an `accts.OnDelete` hook.

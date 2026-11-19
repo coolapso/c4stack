@@ -43,7 +43,7 @@ file to fill in.
 | `app` | The command entry point: `serve`, `migrate` and operator commands |
 | `ui` | The default design, layout types and content-hashed assets |
 | `identity`, `identity/local`, `identity/hanko` | The identity provider interface, C4Stack's own passwordless sign-in (codes by email and passkeys), and the Hanko adapter |
-| `accounts` | Accounts linked by verified email, sign-in middleware, settings and account deletion |
+| `accounts` | Accounts linked by verified email, optional names, sign-in middleware, settings and account deletion |
 | `apikeys` | Opt-in API keys with bearer authentication and a keys page |
 | `oidc` | Opt-in OpenID Connect provider, so other services sign people in with the app's accounts |
 | `payments`, `payments/creem` | The payment provider interface and the Creem adapter |

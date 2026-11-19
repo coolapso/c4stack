@@ -488,6 +488,19 @@ It keys its users by the issuer and the `sub` claim, the account's ID, never by 
 the address can change, and the subject never does. `docs/architecture.md` lists what
 the provider checks and what it doesn't offer.
 
+## Ask for names
+
+Accounts have no name unless the app asks for one, as an app where people see each
+other does:
+
+```go
+accts, err := accounts.New(a, idp, accounts.Config{Names: true})
+```
+
+A new account then gives its name on `/account/name` (`Paths.Name`) before its first
+signed-in page, and changes it on the settings page; deleting an account never needs
+one. Read it as `accounts.Current(c).Name`.
+
 ## Replace a provider
 
 Providers are small interfaces. Implement one and pass it where the default goes:

@@ -53,7 +53,10 @@ type Account struct {
 	// Email is the account's primary address. One of the account's identities verified
 	// it, unless every identity has since moved to an address the provider has not
 	// verified or that another account has.
-	Email     string
+	Email string
+	// Name is what the person asked to be called, when the app asks for names
+	// (Config.Names); empty until they give it.
+	Name      string
 	CreatedAt time.Time
 }
 
@@ -61,6 +64,7 @@ type Account struct {
 // them for every redirect and link. A zero field takes the default shown.
 type Paths struct {
 	Login        string // "/login", the identity provider's sign-in page
+	Name         string // "/account/name", where an account without a name gives one
 	Logout       string // "/logout"
 	Unverified   string // "/auth/email-unverified"
 	Settings     string // "/account/settings"
@@ -75,6 +79,7 @@ func (p *Paths) defaults() error {
 		def  string
 	}{
 		{&p.Login, "/login"},
+		{&p.Name, "/account/name"},
 		{&p.Logout, "/logout"},
 		{&p.Unverified, "/auth/email-unverified"},
 		{&p.Settings, "/account/settings"},
@@ -95,6 +100,10 @@ func (p *Paths) defaults() error {
 // Config configures the module.
 type Config struct {
 	Paths Paths
+	// Names asks every account for a name, such as for an app where people see each
+	// other: RequireSignIn sends an account without one to the name page first, except
+	// to delete it, and the settings page changes it. Off, accounts have no name.
+	Names bool
 }
 
 // Accounts is the accounts module.
@@ -138,6 +147,9 @@ func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) {
 	return s, nil
 }
 
+// Names reports whether accounts have names (Config.Names).
+func (s *Accounts) Names() bool { return s.cfg.Names }
+
 // OnDelete adds a hook to account deletion. Hooks run in the order they were added,
 // inside the transaction that deletes the account, so an error rolls everything back.
 // Use it for personal data that a foreign key with ON DELETE CASCADE cannot remove.
@@ -152,10 +164,10 @@ func (s *Accounts) Get(ctx context.Context, id string) (Account, error) {
 	}
 	var a Account
 	err := s.app.DB().QueryRowContext(ctx, `
-		SELECT id, primary_email, created_at
+		SELECT id, primary_email, COALESCE(name, ''), created_at
 		FROM accounts
 		WHERE id = $1`, id,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -187,13 +199,13 @@ func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, 
 	var email string
 	var verified, started, confirmed, current bool
 	err := s.app.DB().QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, a.created_at,
+		SELECT a.id, a.primary_email, COALESCE(a.name, ''), a.created_at,
 		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
 		       i.email, i.email_verified, `+primaryVerified+`
 		FROM account_identities i
 		JOIN accounts a ON a.id = i.account_id
 		WHERE i.provider = $1 AND i.subject = $2`, provider, id.Subject,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt, &started, &confirmed, &email, &verified, &current)
+	).Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt, &started, &confirmed, &email, &verified, &current)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return s.join(ctx, provider, id)
@@ -372,11 +384,11 @@ func (s *Accounts) joinTx(ctx context.Context, tx *sql.Tx, provider string, id i
 	var a Account
 	// A concurrent first sign-in of the same identity may have joined it already.
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, a.created_at
+		SELECT a.id, a.primary_email, COALESCE(a.name, ''), a.created_at
 		FROM account_identities i
 		JOIN accounts a ON a.id = i.account_id
 		WHERE i.provider = $1 AND i.subject = $2`, provider, id.Subject,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt)
+	).Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt)
 	if err == nil {
 		return a, nil
 	}
@@ -386,13 +398,13 @@ func (s *Accounts) joinTx(ctx context.Context, tx *sql.Tx, provider string, id i
 
 	var started, confirmed, current bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, a.created_at,
+		SELECT a.id, a.primary_email, COALESCE(a.name, ''), a.created_at,
 		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
 		       `+primaryVerified+`
 		FROM accounts a
 		WHERE a.primary_email = $1
 		FOR UPDATE`, id.Email,
-	).Scan(&a.ID, &a.Email, &a.CreatedAt, &started, &confirmed, &current)
+	).Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt, &started, &confirmed, &current)
 	found := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Account{}, err
@@ -423,6 +435,7 @@ func (s *Accounts) joinTx(ctx context.Context, tx *sql.Tx, provider string, id i
 		found = false
 	}
 	if !found {
+		a.Name = ""
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO accounts (primary_email)
 			VALUES ($1)

@@ -103,12 +103,17 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, Config{})
+}
+
+func newFixtureWith(t *testing.T, cfg Config) *fixture {
+	t.Helper()
 	f := &fixture{idp: &testIdentity{name: "test", sessions: map[string]identity.Identity{
 		"ada": {Subject: "ada", Email: "ada@example.com", EmailVerified: true, SignedInAt: time.Now()},
 	}}}
 	f.a = apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{Migrations, notes}})
 	var err error
-	f.accounts, err = New(f.a, f.idp, Config{})
+	f.accounts, err = New(f.a, f.idp, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,5 +720,72 @@ func TestReplaceOnePage(t *testing.T) {
 	}
 	if rec := f.do(http.MethodGet, "/account/delete", "ada", nil, nil); !strings.Contains(rec.Body.String(), "Type DELETE to confirm") {
 		t.Fatalf("kept page: %d", rec.Code)
+	}
+}
+
+func TestNames(t *testing.T) {
+	f := newFixtureWith(t, Config{Names: true})
+	if !f.accounts.Names() {
+		t.Fatal("Names() is false")
+	}
+	// Without a name, signed-in pages wait for one.
+	if rec := f.do(http.MethodGet, "/account?tab=1", "ada", nil, nil); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account/name?next=%2Faccount%3Ftab%3D1" {
+		t.Fatalf("no name: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := f.do(http.MethodGet, "/account", "ada", nil, http.Header{"Hx-Request": {"true"}}); rec.Code != http.StatusForbidden || !strings.HasPrefix(rec.Header().Get("HX-Redirect"), "/account/name") {
+		t.Fatalf("HTMX without a name: %d %q", rec.Code, rec.Header().Get("HX-Redirect"))
+	}
+	// The name page itself, and deletion, don't need one.
+	if rec := f.do(http.MethodGet, "/account/name?next=%2Faccount", "ada", nil, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "What should we call you?") || !strings.Contains(rec.Body.String(), `value="/account"`) {
+		t.Fatalf("name page: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.do(http.MethodGet, "/account/delete", "ada", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("delete page without a name: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	for _, bad := range []string{"", "   ", strings.Repeat("a", 101), "Eve\u202etxt.exe", "a\x00b", "a\nb", "\xff"} {
+		if rec := f.do(http.MethodPost, "/account/name", "ada", url.Values{"name": {bad}, "next": {"/account"}}, nil); rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("name %q: %d", bad, rec.Code)
+		}
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts WHERE name IS NOT NULL`); n != 0 {
+		t.Fatalf("%d names stored from refused input", n)
+	}
+	rec := f.do(http.MethodPost, "/account/name", "ada", url.Values{"name": {"  Ada Lovelace  "}, "next": {"/account"}}, nil)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account" {
+		t.Fatalf("saving the name: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := f.do(http.MethodGet, "/account", "ada", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("with a name: %d", rec.Code)
+	}
+	var id string
+	if err := f.a.DB().QueryRow(`SELECT id FROM accounts`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := f.accounts.Get(context.Background(), id); err != nil || a.Name != "Ada Lovelace" {
+		t.Fatalf("Get: %+v, %v", a, err)
+	}
+	// The settings page changes it; next stays local.
+	if page := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String(); !strings.Contains(page, `value="Ada Lovelace"`) || !strings.Contains(page, `action="/account/name"`) {
+		t.Fatalf("settings page:\n%s", page)
+	}
+	rec = f.do(http.MethodPost, "/account/name", "ada", url.Values{"name": {strings.Repeat("é", 100)}, "next": {"//evil.example"}}, nil)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account/settings" {
+		t.Fatalf("100 characters, foreign next: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := f.do(http.MethodPost, "/account/name", "", url.Values{"name": {"Mallory"}}, nil); rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+		t.Fatalf("signed out: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestNamesOff(t *testing.T) {
+	f := newFixture(t)
+	if rec := f.do(http.MethodGet, "/account", "ada", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("an account without a name: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/account/name", "ada", nil, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("name page: %d", rec.Code)
+	}
+	if page := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String(); strings.Contains(page, "account-name") {
+		t.Fatal("the settings page asks for a name")
 	}
 }

@@ -444,7 +444,7 @@ goes through `accounts`.
 ### accounts
 
 ```sql
-accounts(id uuid, primary_email UNIQUE, created_at, updated_at,
+accounts(id uuid, primary_email UNIQUE, name, created_at, updated_at,
          deletion_started_at, deletion_confirmed_at)
 account_identities(id uuid, account_id → accounts ON DELETE CASCADE, provider, subject,
                    email, email_verified, created_at, updated_at, UNIQUE (provider, subject))
@@ -452,24 +452,26 @@ deleted_identities(identity_hash bytea, deleted_at)
 ```
 
 ```go
-type Account struct{ ID, Email string; CreatedAt time.Time } // Email is the primary address
-type Config struct{ Paths Paths }
-type Paths struct{ Login, Logout, Unverified, Settings, Delete, Deleted, EmailChanged string }
+type Account struct{ ID, Email, Name string; CreatedAt time.Time } // Email is the primary address
+type Config struct{ Paths Paths; Names bool }
+type Paths struct{ Login, Name, Logout, Unverified, Settings, Delete, Deleted, EmailChanged string }
 
 func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) // nil idp: no sign-in
 func (s *Accounts) RequireSignIn(c *gin.Context)
 func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
+func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) Delete(c *gin.Context) error // ErrNotDeleted or ErrCleanupPending on failure
 func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) // every page at its path
 func (s *Accounts) Pages(layout ui.Layout) *Pages         // the handlers, to mount some
-// Pages: Settings, DeleteForm, Delete, Logout, Unverified, Deleted, EmailChanged and
-// MountProfile
+// Pages: Settings, NameForm, SaveName, DeleteForm, Delete, Logout, Unverified, Deleted,
+// EmailChanged and MountProfile
 ```
 
 The paths default to Searchbase's: `/login`, `/logout`, `/auth/email-unverified`,
-`/account/settings`, `/account/delete`, `/account/deleted` and `/account/email-changed`.
+`/account/settings`, `/account/delete`, `/account/deleted` and `/account/email-changed`,
+and `/account/name`, which Searchbase doesn't have.
 `RequireSignIn` and the pages use the configured paths for every redirect and link.
 
 Signing out lives here rather than in the provider adapter, because it is the same for
@@ -479,9 +481,19 @@ every provider. The operator command is `accounts delete-local <account-id>`.
 creating it on first sign-in. It sets `Cache-Control: no-store`. Unauthenticated requests
 are redirected to `Paths.Login` with a safe `next` path, or get `HX-Redirect` from
 HTMX. An identity without a verified email goes to `Paths.Unverified` and gets no
-account. A request it stops without a redirect, such as when the provider cannot be
-reached or the CSRF check fails, gets only its status, not yet written, so app
-middleware that runs before it can render the app's own error page.
+account. With `Config.Names`, an account without a name goes to `Paths.Name`, with
+the page it asked for as `next`, except for the name page and deletion: nobody has to
+give a name to delete their account. A request it stops without a redirect, such as
+when the provider cannot be reached or the CSRF check fails, gets only its status, not
+yet written, so app middleware that runs before it can render the app's own error
+page.
+
+**Names** are off by default: an app such as Searchbase, where nobody sees anyone
+else, has no use for them. With `Config.Names`, an account gives a name before its
+first signed-in page, and changes it on the settings page. A name is trimmed and has 1
+to 100 characters, none of them control or formatting characters, which could hide or
+reorder what others read. It is the account's, whichever identity signed in, and goes
+with it on deletion.
 
 **Finding the account.** A sign-in finds its account by provider and subject. An
 identity the app has not seen joins the account whose `primary_email` is its verified

@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/a-h/templ"
 	"github.com/coolapso/c4stack/identity"
@@ -32,7 +34,9 @@ type confirmer interface {
 //   - POST Logout signs out and continues to a local "next" path, or "/".
 //   - GET Unverified asks an identity without a verified email to confirm it.
 //   - GET Settings shows the email address, the provider's profile UI when it has one,
-//     signing out and account deletion. The profile UI's routes go under it.
+//     the name with Config.Names, signing out and account deletion. The profile UI's
+//     routes go under it.
+//   - GET and POST Name, with Config.Names, ask for the account's name and change it.
 //   - GET and POST Delete confirm and delete the account.
 //   - GET Deleted and EmailChanged confirm those changes after the session ended.
 //
@@ -50,6 +54,10 @@ func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) {
 	settings := r.Group(rel(paths.Settings), s.RequireSignIn)
 	p.MountProfile(settings)
 	settings.GET("", p.Settings)
+	if s.cfg.Names {
+		r.GET(rel(paths.Name), s.RequireSignIn, p.NameForm)
+		r.POST(rel(paths.Name), s.RequireSignIn, p.SaveName)
+	}
 	r.GET(rel(paths.Delete), s.RequireSignIn, p.DeleteForm)
 	r.POST(rel(paths.Delete), s.RequireSignIn, p.Delete)
 }
@@ -74,7 +82,8 @@ func relativeTo(r gin.IRouter) func(string) string {
 
 // Pages are the account pages' handlers, for apps that register some of them
 // themselves. Register each at its path in Config.Paths: the pages link to each other
-// there. Settings, DeleteForm and Delete need RequireSignIn, and Logout needs web.CSRF.
+// there. Settings, NameForm, SaveName, DeleteForm and Delete need RequireSignIn, and
+// Logout needs web.CSRF.
 type Pages struct {
 	s       *Accounts
 	layout  ui.Layout
@@ -114,6 +123,7 @@ type settingsView struct {
 	account Account
 	profile templ.Component
 	paths   Paths
+	names   bool
 	recent  bool
 	// signInAgain is the sign-out form's next path when deletion needs a fresh sign-in.
 	signInAgain string
@@ -133,6 +143,7 @@ func (p *Pages) view(c *gin.Context) settingsView {
 		c:           c,
 		account:     Current(c),
 		paths:       paths,
+		names:       p.s.cfg.Names,
 		recent:      id.Recent(time.Now()),
 		signInAgain: paths.Login + "?next=" + url.QueryEscape(paths.Delete),
 	}
@@ -149,6 +160,69 @@ func (p *Pages) Settings(c *gin.Context) {
 		v.profile = p.profile.ProfileSection(c)
 	}
 	p.layout.Render(c, http.StatusOK, "Account settings", settingsPage(v))
+}
+
+// maxName is the longest name, in characters.
+const maxName = 100
+
+// normalizeName trims a name and reports whether it is one: 1 to maxName characters,
+// without control or formatting characters, which could hide or reorder what others
+// read.
+func normalizeName(raw string) (string, bool) {
+	name := strings.TrimSpace(raw)
+	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxName {
+		return "", false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return "", false
+		}
+	}
+	return name, true
+}
+
+// nameView is what the name page shows.
+type nameView struct {
+	c       *gin.Context
+	action  string
+	name    string
+	next    string
+	invalid bool
+}
+
+// NameForm asks for the account's name, then continues to a local "next" path.
+func (p *Pages) NameForm(c *gin.Context) {
+	next := c.Query("next")
+	if !localPath(next) {
+		next = p.s.cfg.Paths.Settings
+	}
+	v := nameView{c: c, action: p.s.cfg.Paths.Name, name: Current(c).Name, next: next}
+	p.layout.Render(c, http.StatusOK, "Your name", namePage(v))
+}
+
+// SaveName stores the account's name and continues to a local "next" path, or the
+// settings page.
+func (p *Pages) SaveName(c *gin.Context) {
+	next := c.PostForm("next")
+	if !localPath(next) {
+		next = p.s.cfg.Paths.Settings
+	}
+	name, ok := normalizeName(c.PostForm("name"))
+	if !ok {
+		v := nameView{c: c, action: p.s.cfg.Paths.Name, name: c.PostForm("name"), next: next, invalid: true}
+		p.layout.Render(c, http.StatusUnprocessableEntity, "Your name", namePage(v))
+		return
+	}
+	if _, err := p.s.app.DB().ExecContext(c.Request.Context(), `
+		UPDATE accounts
+		SET name = $2, updated_at = now()
+		WHERE id = $1`, Current(c).ID, name,
+	); err != nil {
+		web.Log(c).Error("saving an account's name failed", "error", err)
+		p.layout.Error(c, http.StatusInternalServerError, "Something went wrong", "Your name was not saved. Please try again.")
+		return
+	}
+	c.Redirect(http.StatusSeeOther, next)
 }
 
 // DeleteForm asks to confirm the deletion.
