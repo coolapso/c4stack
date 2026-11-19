@@ -125,7 +125,7 @@ func authQuery() url.Values {
 }
 
 func TestParseRequest(t *testing.T) {
-	r, e := parseRequest(authQuery())
+	r, e := parseRequest(authQuery(), false)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -156,24 +156,28 @@ func TestParseRequest(t *testing.T) {
 	} {
 		q := authQuery()
 		want.change(q)
-		if _, e := parseRequest(q); e == nil || string(e.ErrorType) != want.err {
+		if _, e := parseRequest(q, false); e == nil || string(e.ErrorType) != want.err {
 			t.Errorf("%s: %v, want %s", name, e, want.err)
 		}
 	}
+	// profile only when accounts have names.
+	if r, _ := parseRequest(authQuery(), true); r == nil || strings.Join(r.Scopes, " ") != "openid email profile" {
+		t.Errorf("with names: %+v", r)
+	}
 	q := authQuery()
 	q.Set("max_age", "300")
-	if r, _ := parseRequest(q); r == nil || r.MaxAge == nil || *r.MaxAge != 300 {
+	if r, _ := parseRequest(q, false); r == nil || r.MaxAge == nil || *r.MaxAge != 300 {
 		t.Errorf("max_age: %+v", r)
 	}
 	q.Set("prompt", "login consent")
-	if r, _ := parseRequest(q); r == nil || r.MaxAge == nil || *r.MaxAge != 0 {
+	if r, _ := parseRequest(q, false); r == nil || r.MaxAge == nil || *r.MaxAge != 0 {
 		t.Errorf("prompt=login: %+v", r)
 	}
 }
 
 func testRequest(t *testing.T) *request {
 	t.Helper()
-	r, e := parseRequest(authQuery())
+	r, e := parseRequest(authQuery(), false)
 	if e != nil {
 		t.Fatal(e)
 	}

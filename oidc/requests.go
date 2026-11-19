@@ -49,7 +49,7 @@ func (p *Provider) authorize(c *gin.Context) {
 			"Go back to the app you came from and sign in again.")
 		return
 	}
-	r, e := parseRequest(q)
+	r, e := parseRequest(q, p.names)
 	if e == nil && q.Get("id_token_hint") != "" {
 		r.Hint, e = p.hintSubject(ctx, q.Get("id_token_hint"), client.ID)
 	}
@@ -99,8 +99,9 @@ type request struct {
 
 // parseRequest checks an authorization request's parameters, once its client and
 // redirect URI are known, and returns the request or the error for the client. Only the
-// authorization code flow with PKCE S256 is offered, answered in the query.
-func parseRequest(q url.Values) (*request, *oidc.Error) {
+// authorization code flow with PKCE S256 is offered, answered in the query. The profile
+// scope is granted only when accounts have names.
+func parseRequest(q url.Values, names bool) (*request, *oidc.Error) {
 	for _, v := range q {
 		if len(v) > 1 {
 			return nil, oidc.ErrInvalidRequest().WithDescription("a parameter is repeated")
@@ -152,6 +153,9 @@ func parseRequest(q url.Values) (*request, *oidc.Error) {
 	granted := []string{oidc.ScopeOpenID}
 	if slices.Contains(scopes, oidc.ScopeEmail) {
 		granted = append(granted, oidc.ScopeEmail)
+	}
+	if names && slices.Contains(scopes, oidc.ScopeProfile) {
+		granted = append(granted, oidc.ScopeProfile)
 	}
 	return &request{
 		Scopes:    granted,

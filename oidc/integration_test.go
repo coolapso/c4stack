@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -73,9 +74,14 @@ type fixture struct {
 
 func newFixture(t *testing.T, change ...func(*Config)) *fixture {
 	t.Helper()
+	return newFixtureWith(t, accounts.Config{}, change...)
+}
+
+func newFixtureWith(t *testing.T, ac accounts.Config, change ...func(*Config)) *fixture {
+	t.Helper()
 	f := &fixture{t: t, a: apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{accounts.Migrations, Migrations}})}
 	var err error
-	if f.accounts, err = accounts.New(f.a, testIdentity{}, accounts.Config{}); err != nil {
+	if f.accounts, err = accounts.New(f.a, testIdentity{}, ac); err != nil {
 		t.Fatal(err)
 	}
 	var notesHash, otherHash []byte
@@ -925,8 +931,8 @@ func TestUserinfoSubject(t *testing.T) {
 	id := newToken()
 	h := sha256.Sum256([]byte(id))
 	if _, err := f.a.DB().Exec(`
-		INSERT INTO oidc_access_tokens (token_hash, code_hash, account_id, client_id, scopes, email, email_verified, expires_at)
-		VALUES ($1, $2, $3, 'notes', '{openid,email}', 'ann@example.com', true, now() + interval '5 minutes')`,
+		INSERT INTO oidc_access_tokens (token_hash, code_hash, account_id, client_id, scopes, email, email_verified, name, expires_at)
+		VALUES ($1, $2, $3, 'notes', '{openid,email}', 'ann@example.com', true, '', now() + interval '5 minutes')`,
 		h[:], []byte("x"), ann); err != nil {
 		t.Fatal(err)
 	}
@@ -1016,4 +1022,52 @@ func (s *safeBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// TestNames: with names on, the profile scope gives the account's name; an account
+// without one gives it first.
+func TestNames(t *testing.T) {
+	f := newFixtureWith(t, accounts.Config{Names: true})
+	var d map[string]any
+	_ = json.Unmarshal(f.get("/.well-known/openid-configuration", nil).Body.Bytes(), &d)
+	if fmt.Sprint(d["scopes_supported"]) != "[openid email profile]" || !strings.Contains(fmt.Sprint(d["claims_supported"]), "name") {
+		t.Errorf("discovery: scopes %v, claims %v", d["scopes_supported"], d["claims_supported"])
+	}
+	b := f.browser("ann")
+	c := newRP("notes", redirectURI)
+	if u := location(t, b.get(b.authorize(t, c, nil).String())); u.Path != "/account/name" {
+		t.Fatalf("without a name: sent to %s", u)
+	}
+	if _, err := f.a.DB().Exec(`UPDATE accounts SET name = 'Ann Example'`); err != nil {
+		t.Fatal(err)
+	}
+	_, tk := f.redeem(c, b.code(t, c))
+	if tk.Scope != "openid email profile" || f.verify(t, tk.IDToken)["name"] != "Ann Example" {
+		t.Fatalf("scope %q, claims %v", tk.Scope, f.verify(t, tk.IDToken))
+	}
+	var info map[string]any
+	_ = json.Unmarshal(f.get(userinfoPath, http.Header{"Authorization": {"Bearer " + tk.AccessToken}}).Body.Bytes(), &info)
+	if info["name"] != "Ann Example" {
+		t.Errorf("userinfo %v", info)
+	}
+	// Without the profile scope, no name.
+	c = newRP("notes", redirectURI)
+	q := b.signIn(t, c, url.Values{"scope": {"openid email"}})
+	_, tk = f.redeem(c, q.Get("code"))
+	if _, ok := f.verify(t, tk.IDToken)["name"]; ok {
+		t.Error("a name without the profile scope")
+	}
+	// With names off, profile isn't granted, whatever the database holds.
+	off := newFixture(t)
+	if _, err := off.a.DB().Exec(`UPDATE accounts SET name = 'Ann Example'`); err != nil {
+		t.Fatal(err)
+	}
+	c = newRP("notes", redirectURI)
+	_, tk = off.redeem(c, off.browser("ann").code(t, c))
+	if tk.Scope != "openid email" {
+		t.Errorf("names off: scope %q", tk.Scope)
+	}
+	if _, ok := off.verify(t, tk.IDToken)["name"]; ok {
+		t.Error("names off: a name")
+	}
 }

@@ -482,7 +482,8 @@ configured with:
 - the issuer, the app's public URL, from which it discovers the endpoints at
   `/.well-known/openid-configuration`;
 - its client ID and secret, sent as `client_secret_basic` or `client_secret_post`;
-- the scopes `openid email`.
+- the scopes `openid email`, and `profile` for the account's name when the app asks
+  for names (see "Ask for names").
 
 It keys its users by the issuer and the `sub` claim, the account's ID, never by email:
 the address can change, and the subject never does. `docs/architecture.md` lists what
@@ -499,7 +500,8 @@ accts, err := accounts.New(a, idp, accounts.Config{Names: true})
 
 A new account then gives its name on `/account/name` (`Paths.Name`) before its first
 signed-in page, and changes it on the settings page; deleting an account never needs
-one. Read it as `accounts.Current(c).Name`.
+one. Read it as `accounts.Current(c).Name`. The `oidc` provider gives it to clients that
+ask for the `profile` scope.
 
 ## Replace a provider
 

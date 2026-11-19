@@ -493,7 +493,7 @@ else, has no use for them. With `Config.Names`, an account gives a name before i
 first signed-in page, and changes it on the settings page. A name is trimmed and has 1
 to 100 characters, none of them control or formatting characters, which could hide or
 reorder what others read. It is the account's, whichever identity signed in, and goes
-with it on deletion.
+with it on deletion. The `oidc` provider gives it to clients under the `profile` scope.
 
 **Finding the account.** A sign-in finds its account by provider and subject. An
 identity the app has not seen joins the account whose `primary_email` is its verified
@@ -613,9 +613,9 @@ notekpr's hosted service, whose servers each sign in with it.
 oidc_keys(id, public_key, private_key sealed, sealed_with, signs_from, signs_until, created_at)
 oidc_codes(code_hash bytea PK, account_id → accounts ON DELETE CASCADE, client_id,
            redirect_uri, scopes, nonce, code_challenge, auth_time, email, email_verified,
-           created_at, expires_at, used_at, reused_at)
+           name, created_at, expires_at, used_at, reused_at)
 oidc_access_tokens(token_hash bytea PK, code_hash, account_id → accounts ON DELETE CASCADE,
-                   client_id, scopes, email, email_verified, created_at, expires_at)
+                   client_id, scopes, email, email_verified, name, created_at, expires_at)
 ```
 
 ```go
@@ -663,7 +663,8 @@ continue page's URL: nothing is stored before someone signs in, and a request la
 minutes. A random value in the sealed `oidc` cookie ties it to the browser that started
 it, so a signed-in victim who opens someone else's URL gets a page, not a code.
 `prompt=none` gets `login_required`: the provider never signs in without its pages.
-Granted scopes are `openid` and `email`; others are dropped.
+Granted scopes are `openid`, `email`, and `profile` when accounts have names
+(`accounts.Config.Names`); others are dropped.
 
 **Continuing.** `/oidc/continue` sits behind `RequireSignIn`, so the sign-in pages come
 first when needed, with the continue URL as `next`. It checks the request again: its
@@ -675,8 +676,9 @@ seconds allow for the clocks that date requests and sign-ins differing. Then it 
 `Allow`, stores a code and redirects to the client.
 
 **Codes and tokens.** A code is 32 random bytes, stored as its SHA-256 with the account,
-client, redirect URI, scopes, nonce, PKCE challenge, sign-in time and the address with
-whether it is verified (the identity's verified address, when it is the account's). It
+client, redirect URI, scopes, nonce, PKCE challenge, sign-in time, the address with
+whether it is verified (the identity's verified address, when it is the account's), and
+the name. It
 lasts two minutes and is taken once: the exchange marks it used in the same statement
 that reads it. A second use revokes the access tokens the first one gave (RFC 6749,
 4.1.2); used codes stay until those tokens have expired, so a late reuse is still
@@ -684,7 +686,8 @@ caught. The exchange needs the client's secret, by `client_secret_basic` or
 `client_secret_post`, the same redirect URI, still registered, and the PKCE verifier,
 which the library would skip for confidential clients without the module's check. The ID token (RS256, 10
 minutes) carries `iss`, `sub`, `aud`, `azp`, `exp`, `iat`, `auth_time`, `nonce`,
-`at_hash`, `c_hash`, and `email` and `email_verified` with the email scope. The access
+`at_hash`, `c_hash`, `email` and `email_verified` with the email scope, and `name`
+with the profile scope. The access
 token is a random ID, stored as its SHA-256 and encrypted with the subject; it only
 reads userinfo, for 10 minutes, sent in the `Authorization` header or a POST body,
 never in the URL. Codes and access tokens cascade with their account.

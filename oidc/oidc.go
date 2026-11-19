@@ -130,9 +130,11 @@ type Provider struct {
 	accounts *accounts.Accounts
 	cfg      Config
 	issuer   string
-	op       *op.Provider
-	server   http.Handler
-	layout   ui.Layout
+	// names says the accounts have names, which the profile scope gives.
+	names  bool
+	op     *op.Provider
+	server http.Handler
+	layout ui.Layout
 	// requestKey seals sign-in requests; sealKey seals private keys, and keyCheck says
 	// which secret key sealed them.
 	requestKey []byte
@@ -159,7 +161,7 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Provider{app: a, accounts: accts, cfg: cfg, issuer: issuer}
+	p := &Provider{app: a, accounts: accts, cfg: cfg, issuer: issuer, names: accts.Names()}
 	derive := func(label string, n int) []byte {
 		if err != nil {
 			return nil
@@ -183,6 +185,10 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Provider, error) {
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "azp",
 			"at_hash", "c_hash", "email", "email_verified",
 		},
+	}
+	if p.names {
+		config.SupportedScopes = append(config.SupportedScopes, "profile")
+		config.SupportedClaims = append(config.SupportedClaims, "name")
 	}
 	copy(config.CryptoKey[:], tokenKey)
 	var opts []op.Option

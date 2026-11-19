@@ -55,9 +55,9 @@ func (s *storage) AuthRequestByCode(ctx context.Context, code string) (op.AuthRe
 		SET used_at = now()
 		WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
 		RETURNING account_id, client_id, redirect_uri, array_to_string(scopes, ' '), nonce,
-		    code_challenge, auth_time, email, email_verified`, h[:],
+		    code_challenge, auth_time, email, email_verified, name`, h[:],
 	).Scan(&g.accountID, &g.clientID, &g.redirectURI, &scopes, &g.nonce,
-		&g.challenge, &g.authTime, &g.email, &g.emailVerified)
+		&g.challenge, &g.authTime, &g.email, &g.emailVerified, &g.name)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := s.revokeCode(ctx, h[:]); err != nil {
 			return nil, err
@@ -134,15 +134,15 @@ func (s *storage) CreateAccessToken(ctx context.Context, tr op.TokenRequest) (st
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO oidc_access_tokens (
 		    token_hash, code_hash, account_id, client_id, scopes, email, email_verified,
-		    expires_at
+		    name, expires_at
 		)
 		VALUES (
-		    $1, $2, $3, $4, string_to_array($5, ' '), $6, $7,
-		    now() + make_interval(secs => $8)
+		    $1, $2, $3, $4, string_to_array($5, ' '), $6, $7, $8,
+		    now() + make_interval(secs => $9)
 		)
 		RETURNING expires_at`,
 		h[:], g.codeHash, g.accountID, g.clientID, strings.Join(g.scopes, " "), g.email,
-		g.emailVerified, accessTokenLifetime.Seconds(),
+		g.emailVerified, g.name, accessTokenLifetime.Seconds(),
 	).Scan(&expires)
 	if err != nil {
 		return "", time.Time{}, err
@@ -150,42 +150,46 @@ func (s *storage) CreateAccessToken(ctx context.Context, tr op.TokenRequest) (st
 	return id, expires, tx.Commit()
 }
 
-// SetUserinfoFromRequest fills the ID token's claims from the grant: the subject, and
-// the address if the email scope was granted.
+// SetUserinfoFromRequest fills the ID token's claims from the grant.
 func (s *storage) SetUserinfoFromRequest(_ context.Context, info *oidc.UserInfo, r op.IDTokenRequest, scopes []string) error {
 	g, ok := r.(*grant)
 	if !ok {
 		return errUnsupported
 	}
-	info.Subject = g.accountID
-	if slices.Contains(scopes, oidc.ScopeEmail) {
-		info.Email = g.email
-		info.EmailVerified = oidc.Bool(g.emailVerified)
-	}
+	fillUserinfo(info, g.accountID, scopes, g.email, g.emailVerified, g.name)
 	return nil
+}
+
+// fillUserinfo sets the claims the granted scopes give: the subject always, the address
+// with email, and the name, when there is one, with profile.
+func fillUserinfo(info *oidc.UserInfo, accountID string, scopes []string, email string, verified bool, name string) {
+	info.Subject = accountID
+	if slices.Contains(scopes, oidc.ScopeEmail) {
+		info.Email = email
+		info.EmailVerified = oidc.Bool(verified)
+	}
+	if slices.Contains(scopes, oidc.ScopeProfile) && name != "" {
+		info.Name = name
+	}
 }
 
 // SetUserinfoFromToken answers userinfo for an unexpired access token.
 func (s *storage) SetUserinfoFromToken(ctx context.Context, info *oidc.UserInfo, tokenID, subject, _ string) error {
 	h := sha256.Sum256([]byte(tokenID))
-	var accountID, scopes, email string
+	var accountID, scopes, email, name string
 	var verified bool
 	err := s.db().QueryRowContext(ctx, `
-		SELECT account_id, array_to_string(scopes, ' '), email, email_verified
+		SELECT account_id, array_to_string(scopes, ' '), email, email_verified, name
 		FROM oidc_access_tokens
 		WHERE token_hash = $1 AND expires_at > now()`, h[:],
-	).Scan(&accountID, &scopes, &email, &verified)
+	).Scan(&accountID, &scopes, &email, &verified, &name)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && accountID != subject {
 		return oidc.ErrAccessDenied().WithDescription("the access token is invalid or expired")
 	}
 	if err != nil {
 		return err
 	}
-	info.Subject = accountID
-	if slices.Contains(strings.Fields(scopes), oidc.ScopeEmail) {
-		info.Email = email
-		info.EmailVerified = oidc.Bool(verified)
-	}
+	fillUserinfo(info, accountID, strings.Fields(scopes), email, verified, name)
 	return nil
 }
 
@@ -285,6 +289,7 @@ type grant struct {
 	authTime      time.Time
 	email         string
 	emailVerified bool
+	name          string
 }
 
 var _ op.AuthRequest = (*grant)(nil)

@@ -105,7 +105,8 @@ func signedInSince(r *request, again bool) time.Time {
 }
 
 // issueCode stores a code for the request, signed in as account, and returns it. The
-// address and whether it is verified are taken now, for the ID token and userinfo.
+// address, whether it is verified, and the name are taken now, for the ID token and
+// userinfo.
 func (p *Provider) issueCode(ctx context.Context, r *request, account accounts.Account, who identity.Identity) (string, error) {
 	code := newToken()
 	h := sha256.Sum256([]byte(code))
@@ -113,14 +114,14 @@ func (p *Provider) issueCode(ctx context.Context, r *request, account accounts.A
 	_, err := p.app.DB().ExecContext(ctx, `
 		INSERT INTO oidc_codes (
 		    code_hash, account_id, client_id, redirect_uri, scopes, nonce, code_challenge,
-		    auth_time, email, email_verified, expires_at
+		    auth_time, email, email_verified, name, expires_at
 		)
 		VALUES (
-		    $1, $2, $3, $4, string_to_array($5, ' '), $6, $7, $8, $9, $10,
-		    now() + make_interval(secs => $11)
+		    $1, $2, $3, $4, string_to_array($5, ' '), $6, $7, $8, $9, $10, $11,
+		    now() + make_interval(secs => $12)
 		)`,
 		h[:], account.ID, r.ClientID, r.RedirectURI, strings.Join(r.Scopes, " "), r.Nonce, r.Challenge,
-		who.SignedInAt, account.Email, verified, codeLifetime.Seconds(),
+		who.SignedInAt, account.Email, verified, account.Name, codeLifetime.Seconds(),
 	)
 	return code, err
 }

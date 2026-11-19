@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS oidc_codes (
     auth_time timestamptz NOT NULL,
     email text NOT NULL,
     email_verified boolean NOT NULL,
+    name text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,
     used_at timestamptz,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS oidc_access_tokens (
     scopes text[] NOT NULL,
     email text NOT NULL,
     email_verified boolean NOT NULL,
+    name text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL
 );
