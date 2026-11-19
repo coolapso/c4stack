@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/coolapso/c4stack/accounts"
-	"github.com/coolapso/c4stack/identity/hanko"
 	"github.com/coolapso/c4stack/ui"
 	"github.com/coolapso/c4stack/web"
 	"github.com/gin-gonic/gin"
@@ -15,8 +14,13 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
+// signIn is the identity provider's sign-in pages.
+type signIn interface {
+	Mount(r gin.IRouter, layout ui.Layout)
+}
+
 // routes decides what [[.Title]] serves and where.
-func routes(cfg config, idp *hanko.Hanko, accts *accounts.Accounts) (http.Handler, error) {
+func routes(cfg config, idp signIn, accts *accounts.Accounts) (http.Handler, error) {
 	gin.SetMode(gin.ReleaseMode)
 	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey})
 	if err != nil {

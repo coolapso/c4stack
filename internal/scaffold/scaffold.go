@@ -4,9 +4,7 @@ package scaffold
 
 import (
 	"bytes"
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"go/format"
@@ -44,6 +42,9 @@ type Options struct {
 	// Local is the path of a C4Stack checkout to build against during development. The
 	// app then gets a replace directive and includes the checkout's shared Taskfile.
 	Local string
+	// Identity is the sign-in: "local", C4Stack's own (the default when zero), or
+	// "hanko".
+	Identity string
 }
 
 var (
@@ -68,7 +69,8 @@ type data struct {
 	Taskfile  string // the shared Taskfile include
 	Docs      string // where the pinned release's docs are
 	GoVersion string
-	SecretKey string
+	// Hanko is true for an app on Hanko's sign-in, false for one on C4Stack's own.
+	Hanko bool
 }
 
 // Generate creates opts.Dir with a new app. It validates everything before creating
@@ -103,11 +105,7 @@ func Generate(opts Options) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		mode := os.FileMode(0o644)
-		if rel == ".env" {
-			mode = 0o600
-		}
-		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
 			return err
 		}
@@ -136,9 +134,10 @@ func prepare(opts Options) (data, error) {
 	if mod == FrameworkModule || strings.HasPrefix(mod, FrameworkModule+"/") {
 		return data{}, errors.New("the app's module path cannot be C4Stack's own")
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return data{}, err
+	switch opts.Identity {
+	case "", "local", "hanko":
+	default:
+		return data{}, fmt.Errorf("unknown sign-in %q: use local or hanko", opts.Identity)
 	}
 	d := data{
 		Name:      opts.Name,
@@ -146,7 +145,7 @@ func prepare(opts Options) (data, error) {
 		Module:    mod,
 		EnvPrefix: strings.ToUpper(strings.ReplaceAll(opts.Name, "-", "_")),
 		GoVersion: GoVersion,
-		SecretKey: hex.EncodeToString(key),
+		Hanko:     opts.Identity == "hanko",
 	}
 	if opts.Local != "" {
 		local, err := localCheckout(opts.Local, opts.Dir)

@@ -11,6 +11,9 @@ its code grows.
   `migrations/`.
 - Environment variables use the `[[.EnvPrefix]]_` prefix and are read in `config.go`,
   except `[[.EnvPrefix]]_DATABASE_URL`, which `main.go` passes to `app.Main` for migrate.
+- Never create, load or document a `.env` file, and never add a dotenv library.
+  Development settings are in `Taskfile.yml`'s `env`; secrets come from a secret store
+  such as Infisical, at run time.
 
 ## C4Stack
 

@@ -140,6 +140,24 @@ tasks:
     cmds:
       - '{{.SHARED_SECRETS}} go run . migrate'
 
+  # Local mail ----------------------------------------------------------------
+
+  mail:up:
+    desc: Start Mailpit, which catches the app's emails; its inbox is http://localhost:8025
+    dir: '{{.ROOT_DIR}}'
+    env:
+      DB_PORT: '{{.SHARED_DB_PORT}}'
+    cmds:
+      - docker compose up -d --wait mailpit
+
+  mail:down:
+    desc: Stop Mailpit
+    dir: '{{.ROOT_DIR}}'
+    env:
+      DB_PORT: '{{.SHARED_DB_PORT}}'
+    cmds:
+      - docker compose stop mailpit
+
   # Quality -------------------------------------------------------------------
 
   test:

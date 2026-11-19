@@ -17,7 +17,27 @@ vars:
   # fails when they differ.
   FRAMEWORK_VERSION: [[.Version]]
 
-dotenv: ['.env']
+# The settings task dev, task run and task db:migrate give the app. None is a secret: the
+# secret key is a new one each time a task starts, which development doesn't mind,
+# since sessions live in the database. Variables already set in your shell win, and
+# with INFISICAL_PROJECT set, `infisical run` adds that environment's secrets. Never
+# keep settings in a .env file.
+env:
+  [[.EnvPrefix]]_PUBLIC_URL: http://localhost:8080
+  [[.EnvPrefix]]_DATABASE_URL: postgres://[[.Name]]:[[.Name]]@localhost:5432/[[.Name]]?sslmode=disable
+  [[- if .Hanko]]
+  # Your Hanko Cloud tenant's API URL, with http://localhost:8080 as its app URL.
+  [[.EnvPrefix]]_HANKO_API_URL: https://your-tenant.hanko.io
+  [[- else]]
+  # Mailpit, from docker-compose.yml (task mail:up), catches the emails: sign-in codes
+  # and notices show up at http://localhost:8025.
+  [[.EnvPrefix]]_SMTP_URL: smtp://localhost:1025
+  [[.EnvPrefix]]_EMAIL_FROM: noreply@localhost
+  [[- end]]
+  [[.EnvPrefix]]_LOG_FORMAT: text
+  [[.EnvPrefix]]_LOG_LEVEL: debug
+  [[.EnvPrefix]]_SECRET_KEY:
+    sh: openssl rand -hex 32
 
 includes:
   shared:

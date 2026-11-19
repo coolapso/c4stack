@@ -5,17 +5,33 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	[[- if not .Hanko]]
+
+	"github.com/coolapso/c4stack/email"
+	"github.com/coolapso/c4stack/email/scaleway"
+	"github.com/coolapso/c4stack/email/smtp"
+	[[- end]]
 )
 
 // config holds the settings [[.Title]] reads from [[.EnvPrefix]]_* environment variables.
 // [[.EnvPrefix]]_DATABASE_URL is read in main.go, because migrate needs only that.
 type config struct {
-	PublicURL   string
-	Addr        string
-	SecretKey   string
+	PublicURL string
+	Addr      string
+	SecretKey string
+	[[- if .Hanko]]
 	HankoAPIURL string
-	LogLevel    slog.Level
-	LogFormat   string
+	[[- else]]
+	// The emails sign-in sends come from EmailFrom, through an SMTP server, such as
+	// Mailpit in development, or through Scaleway's API.
+	EmailFrom         string
+	EmailReplyTo      string
+	SMTPURL           string
+	ScalewaySecretKey string
+	ScalewayProjectID string
+	[[- end]]
+	LogLevel  slog.Level
+	LogFormat string
 }
 
 // env returns the value of [[.EnvPrefix]]_<name>.
@@ -25,11 +41,19 @@ func env(name string) string {
 
 func loadConfig() (config, error) {
 	cfg := config{
-		PublicURL:   env("PUBLIC_URL"),
-		Addr:        env("ADDR"),
-		SecretKey:   env("SECRET_KEY"),
+		PublicURL: env("PUBLIC_URL"),
+		Addr:      env("ADDR"),
+		SecretKey: env("SECRET_KEY"),
+		[[- if .Hanko]]
 		HankoAPIURL: env("HANKO_API_URL"),
-		LogFormat:   env("LOG_FORMAT"),
+		[[- else]]
+		EmailFrom:         env("EMAIL_FROM"),
+		EmailReplyTo:      env("EMAIL_REPLY_TO"),
+		SMTPURL:           env("SMTP_URL"),
+		ScalewaySecretKey: env("SCALEWAY_SECRET_KEY"),
+		ScalewayProjectID: env("SCALEWAY_PROJECT_ID"),
+		[[- end]]
+		LogFormat: env("LOG_FORMAT"),
 	}
 	if cfg.Addr == "" {
 		cfg.Addr = ":8080"
@@ -44,7 +68,11 @@ func loadConfig() (config, error) {
 	for _, setting := range []struct{ name, value string }{
 		{"PUBLIC_URL", cfg.PublicURL},
 		{"SECRET_KEY", cfg.SecretKey},
+		[[- if .Hanko]]
 		{"HANKO_API_URL", cfg.HankoAPIURL},
+		[[- else]]
+		{"EMAIL_FROM", cfg.EmailFrom},
+		[[- end]]
 	} {
 		if setting.value == "" {
 			missing = append(missing, "[[.EnvPrefix]]_"+setting.name)
@@ -53,8 +81,30 @@ func loadConfig() (config, error) {
 	if len(missing) > 0 {
 		return config{}, errors.New("set " + strings.Join(missing, ", "))
 	}
+	[[- if not .Hanko]]
+	if (cfg.SMTPURL == "") == (cfg.ScalewaySecretKey == "") {
+		return config{}, errors.New("set either [[.EnvPrefix]]_SMTP_URL or [[.EnvPrefix]]_SCALEWAY_SECRET_KEY and [[.EnvPrefix]]_SCALEWAY_PROJECT_ID")
+	}
+	[[- end]]
 	return cfg, nil
 }
+[[- if not .Hanko]]
+
+// mailer returns the email sender: SMTP when [[.EnvPrefix]]_SMTP_URL is set, else
+// Scaleway's API.
+func (c config) mailer() (email.Sender, error) {
+	if c.SMTPURL != "" {
+		return smtp.New(smtp.Config{URL: c.SMTPURL, From: c.EmailFrom, FromName: "[[.Title]]", ReplyTo: c.EmailReplyTo})
+	}
+	return scaleway.New(scaleway.Config{
+		SecretKey: c.ScalewaySecretKey,
+		ProjectID: c.ScalewayProjectID,
+		From:      c.EmailFrom,
+		FromName:  "[[.Title]]",
+		ReplyTo:   c.EmailReplyTo,
+	})
+}
+[[- end]]
 
 func (c config) logger() *slog.Logger {
 	opts := &slog.HandlerOptions{Level: c.LogLevel}

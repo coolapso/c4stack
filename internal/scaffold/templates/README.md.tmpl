@@ -1,14 +1,18 @@
 # [[.Title]]
 
 [[.Title]] is a Go web app built on [C4Stack](https://github.com/coolapso/c4stack):
-Gin, Templ, HTMX and PostgreSQL, with Hanko for sign-in.
+Gin, Templ, HTMX and PostgreSQL, with [[if .Hanko]]Hanko for sign-in[[else]]sign-in by email code or passkey[[end]].
 
 ## Run it locally
 
-You need Go, [Task](https://taskfile.dev) 3.53.1 or later, and Docker.
+You need Go, [Task](https://taskfile.dev) 3.53.1 or later, Docker and OpenSSL.
+`Taskfile.yml` holds the development settings, and makes a new secret key each time a
+task starts; there is no settings file to fill in.
 
+[[if .Hanko -]]
 1. Create a [Hanko Cloud](https://cloud.hanko.io) project with `http://localhost:8080`
-   as its app URL, and put its API URL in `.env` as `[[.EnvPrefix]]_HANKO_API_URL`.
+   as its app URL, and put its API URL in `Taskfile.yml` as
+   `[[.EnvPrefix]]_HANKO_API_URL`.
 2. Start the database and apply migrations:
 
    ```sh
@@ -19,6 +23,19 @@ You need Go, [Task](https://taskfile.dev) 3.53.1 or later, and Docker.
    ```sh
    task dev
    ```
+[[- else -]]
+1. Start the database and Mailpit, and apply migrations:
+
+   ```sh
+   task db:up mail:up db:migrate
+   ```
+2. Start the app with live reload, then open http://localhost:8080:
+
+   ```sh
+   task dev
+   ```
+3. Sign in with any address. The code arrives in Mailpit, at http://localhost:8025.
+[[- end]]
 
 `task --list` shows every task. `go run . help` shows the app's commands.
 
@@ -42,14 +59,23 @@ To add pages, tables, API keys, credits and more, follow the
 |---|---|---|
 | `[[.EnvPrefix]]_PUBLIC_URL` | yes | The origin users reach the app on |
 | `[[.EnvPrefix]]_DATABASE_URL` | yes | PostgreSQL URL; the only setting `migrate` reads |
-| `[[.EnvPrefix]]_SECRET_KEY` | yes | At least 32 bytes; signs CSRF tokens and seals cookies |
+| `[[.EnvPrefix]]_SECRET_KEY` | yes | At least 32 bytes, the same on every replica; signs CSRF tokens, seals cookies and keys sign-in's codes |
+[[- if .Hanko]]
 | `[[.EnvPrefix]]_HANKO_API_URL` | yes | The Hanko tenant's API URL |
+[[- else]]
+| `[[.EnvPrefix]]_EMAIL_FROM` | yes | The address sign-in codes and notices come from, on a domain with SPF, DKIM and DMARC |
+| `[[.EnvPrefix]]_EMAIL_REPLY_TO` | no | Where replies go; notices ask people to reply, so a person must read them |
+| `[[.EnvPrefix]]_SMTP_URL` | one of these | An SMTP server, `smtp://user:password@host:port`; it must offer STARTTLS off loopback |
+| `[[.EnvPrefix]]_SCALEWAY_SECRET_KEY`, `[[.EnvPrefix]]_SCALEWAY_PROJECT_ID` | one of these | Scaleway Transactional Email, instead of SMTP |
+[[- end]]
 | `[[.EnvPrefix]]_ADDR` | no | Listen address, `:8080` by default |
 | `[[.EnvPrefix]]_LOG_LEVEL`, `[[.EnvPrefix]]_LOG_FORMAT` | no | `debug`…`error`; `json` (default) or `text` |
 
 ## Deploy
 
-Build and push the image with `task container:push REGISTRY=…`. On each release:
+Give the app its settings as environment variables, with its secrets from a secret
+store such as Infisical, never from a file in the image or the repository. Build and
+push the image with `task container:push REGISTRY=…`. On each release:
 
 1. Run the image with the `migrate` command as a one-off job. It needs only
    `[[.EnvPrefix]]_DATABASE_URL`.

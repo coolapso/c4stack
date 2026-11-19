@@ -1,6 +1,6 @@
 // Command c4stack generates new C4Stack apps.
 //
-//	c4stack new <directory> [--name NAME] [--module PATH] [--version vX.Y.Z | --local PATH]
+//	c4stack new <directory> [--name NAME] [--module PATH] [--identity local|hanko] [--version vX.Y.Z | --local PATH]
 //
 // It creates the directory, which must not exist, writes the app's starting files, and
 // runs go mod tidy and templ generate in it.
@@ -53,6 +53,8 @@ func usage(w io.Writer) {
 Flags for new:
   --name NAME       App name (default: the directory's name)
   --module PATH     Go module path (default: the app name)
+  --identity NAME   Sign-in: local, C4Stack's own by email code or passkey (default),
+                    or hanko
   --version vX.Y.Z  C4Stack release to pin (default: this generator's release)
   --local PATH      Build against a local C4Stack checkout (development only)
   --skip-setup      Do not run go mod tidy and templ generate
@@ -73,6 +75,7 @@ func newApp(args []string, stdout, stderr io.Writer) int {
 	mod := fs.String("module", "", "")
 	version := fs.String("version", "", "")
 	local := fs.String("local", "", "")
+	idp := fs.String("identity", "local", "")
 	skipSetup := fs.Bool("skip-setup", false, "")
 	// Accept flags before or after the directory.
 	var dir string
@@ -100,7 +103,7 @@ func newApp(args []string, stdout, stderr io.Writer) int {
 		*version = buildVersion()
 	}
 
-	if err := scaffold.Generate(scaffold.Options{Dir: dir, Name: *name, Module: *mod, Version: *version, Local: *local}); err != nil {
+	if err := scaffold.Generate(scaffold.Options{Dir: dir, Name: *name, Module: *mod, Version: *version, Local: *local, Identity: *idp}); err != nil {
 		fmt.Fprintf(stderr, "c4stack: %v\n", err)
 		return 1
 	}
@@ -117,12 +120,21 @@ func newApp(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	if *idp == "hanko" {
+		fmt.Fprintf(stdout, `
+Next steps:
+  cd %s
+  # Put your Hanko tenant's API URL in Taskfile.yml, then:
+  task db:up db:migrate
+  task dev
+`, dir)
+		return 0
+	}
 	fmt.Fprintf(stdout, `
 Next steps:
   cd %s
-  # Put your Hanko tenant's API URL in .env, then:
-  task db:up db:migrate
-  task dev
+  task db:up mail:up db:migrate
+  task dev    # http://localhost:8080; sign-in codes arrive at http://localhost:8025
 `, dir)
 	return 0
 }

@@ -8,7 +8,11 @@ import (
 
 	"github.com/coolapso/c4stack/accounts"
 	"github.com/coolapso/c4stack/app"
+	[[- if .Hanko]]
 	"github.com/coolapso/c4stack/identity/hanko"
+	[[- else]]
+	"github.com/coolapso/c4stack/identity/local"
+	[[- end]]
 	"github.com/coolapso/c4stack/web"
 
 	"[[.Module]]/migrations"
@@ -21,6 +25,9 @@ func main() {
 		DatabaseURL: os.Getenv("[[.EnvPrefix]]_DATABASE_URL"),
 		Migrations: []app.Migrations{
 			accounts.Migrations,
+			[[- if not .Hanko]]
+			local.Migrations,
+			[[- end]]
 			{Namespace: "app", Files: migrations.Files},
 		},
 		Setup: setup,
@@ -35,10 +42,31 @@ func setup(ctx context.Context, a *app.App) error {
 	}
 	a.SetLogger(cfg.logger())
 
+	[[- if .Hanko]]
+
 	idp, err := hanko.New(hanko.Config{APIURL: cfg.HankoAPIURL, SignedInPath: "/account"})
 	if err != nil {
 		return err
 	}
+	[[- else]]
+
+	// Sign-in: a code by email, or a passkey. Users, sessions and passkeys live in the
+	// app's database.
+	mailer, err := cfg.mailer()
+	if err != nil {
+		return err
+	}
+	idp, err := local.New(a, local.Config{
+		AppName:      "[[.Title]]",
+		PublicURL:    cfg.PublicURL,
+		SecretKey:    cfg.SecretKey,
+		Sender:       mailer,
+		SignedInPath: "/account",
+	})
+	if err != nil {
+		return err
+	}
+	[[- end]]
 	accts, err := accounts.New(a, idp, accounts.Config{})
 	if err != nil {
 		return err

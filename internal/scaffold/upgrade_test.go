@@ -129,7 +129,8 @@ func TestUpgrade(t *testing.T) {
 		t.Fatalf("app data after the upgrade: %d %v", notes, err)
 	}
 
-	appEnv := []string{"ACME_PUBLIC_URL=http://localhost:8080", "ACME_SECRET_KEY=" + strings.Repeat("k", 32), "ACME_HANKO_API_URL=https://tenant.hanko.io"}
+	appEnv := []string{"ACME_PUBLIC_URL=http://localhost:8080", "ACME_SECRET_KEY=" + strings.Repeat("k", 32),
+		"ACME_EMAIL_FROM=noreply@acme.example", "ACME_SMTP_URL=smtp://localhost:1025"}
 	binary := filepath.Join(dir, "bin", "acme")
 	if out := run(append(dbEnv, appEnv...), binary, "accounts", "probe"); !strings.Contains(out, "probe from the new release") {
 		t.Fatalf("the new operator command: %s", out)
