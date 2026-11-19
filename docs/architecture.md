@@ -748,9 +748,48 @@ type Provider interface {
 }
 ```
 
+`payments.Subscriber` is the optional interface of a provider that also sells
+subscriptions, which the `subscriptions` module needs:
+
+```go
+type Subscriber interface {
+	Provider
+	CreateSubscriptionCheckout(ctx context.Context, c SubscriptionCheckout) (Session, error)
+	ParseSubscriptionWebhook(header http.Header, body []byte) (SubscriptionEvent, error)
+	Subscription(ctx context.Context, id string) (SubscriptionState, error)
+	CancelSubscription(ctx context.Context, id string, atPeriodEnd bool) error
+	ChangeSubscription(ctx context.Context, id string, c SubscriptionChange) error // product, units, proration
+	CustomerPortal(ctx context.Context, customerID string) (string, error)
+}
+type SubscriptionState struct {
+	ID, CustomerID, ProductID string
+	Units                     int // 0 when the event doesn't say
+	Status                    SubscriptionStatus
+	PeriodEnd                 time.Time
+}
+type SubscriptionEvent struct {
+	ID        string
+	Kind      SubscriptionEventKind // Started, Changed, Refunded, Disputed
+	Reference string
+	State     SubscriptionState
+	CreatedAt time.Time // which of two events is newer
+	Review    string
+}
+```
+
 **How the Creem adapter works.**
-- Checkout uses one configured product with `custom_price`. The purchase ID travels as
-  `request_id` and as `intent_id` metadata.
+- Credit checkouts use one configured product with `custom_price`. The purchase ID
+  travels as `request_id` and as `intent_id` metadata. `ProductID` is needed only for
+  them.
+- Subscription checkouts use the app's recurring product with `units`. The reference
+  travels as `request_id` and as `reference` metadata, which Creem copies to the
+  subscription, so every subscription event carries it. Creem's `scheduled_cancel` is
+  `canceling`; a subscription with more than one item goes to review, since the module
+  keeps one product and one number of units. The one item's product is the
+  subscription's: after a change, the subscription's own product field may still name
+  the old one. A change upgrades the product, then sets
+  the units on the one item. A refund or dispute that names a subscription is the
+  subscriptions module's, and credits ignores it.
 - An API key starting with `creem_test_` selects Creem's test API.
 - Webhooks are verified with HMAC-SHA256 from the `creem-signature` header.
 - The `checkout_url` Creem returns must match `CheckoutOrigin`. That is the configured

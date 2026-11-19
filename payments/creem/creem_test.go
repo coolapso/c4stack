@@ -35,8 +35,16 @@ func signed(body string) http.Header {
 }
 
 func TestNew(t *testing.T) {
-	if _, err := New(Config{APIKey: "k", WebhookSecret: "s"}); err == nil {
-		t.Error("accepted a config without a product")
+	if _, err := New(Config{APIKey: "k"}); err == nil {
+		t.Error("accepted a config without a webhook secret")
+	}
+	// Only credit checkouts need the product.
+	noProduct, err := New(Config{APIKey: "k", WebhookSecret: "s"})
+	if err != nil {
+		t.Fatalf("a config without a credits product: %v", err)
+	}
+	if _, err := noProduct.CreateCheckout(context.Background(), payments.Checkout{Reference: "r", AmountCents: 500}); err == nil {
+		t.Error("a credit checkout without a product")
 	}
 	if _, err := New(Config{APIKey: "k", WebhookSecret: "s", ProductID: "p", CheckoutOrigin: "http://pay.example"}); err == nil {
 		t.Error("accepted a plain-HTTP checkout origin")

@@ -1,6 +1,7 @@
-// Package creem is the Creem payment provider adapter. Every checkout uses one Creem
-// product with a custom price that the server computes. Webhooks are verified with the
-// HMAC-SHA256 signature Creem sends in the creem-signature header.
+// Package creem is the Creem payment provider adapter. Credit checkouts use one Creem
+// product with a custom price that the server computes; subscriptions use the app's
+// recurring products at their own prices. Webhooks are verified with the HMAC-SHA256
+// signature Creem sends in the creem-signature header.
 package creem
 
 import (
@@ -35,7 +36,8 @@ type Config struct {
 	APIKey string
 	// WebhookSecret verifies webhook signatures.
 	WebhookSecret string
-	// ProductID is the one-time product every checkout uses, with a custom price.
+	// ProductID is the one-time product every credit checkout uses, with a custom price.
+	// Only the credits module needs it; subscriptions name their own products.
 	ProductID string
 	// CheckoutOrigin is where live checkout pages are hosted. Zero means
 	// DefaultCheckoutOrigin; set it when the store uses a custom domain. A test key's
@@ -46,7 +48,7 @@ type Config struct {
 	APIURL string
 }
 
-// Creem implements payments.Provider for Creem.
+// Creem implements payments.Provider and payments.Subscriber for Creem.
 type Creem struct {
 	cfg      Config
 	api      string
@@ -58,8 +60,8 @@ var _ payments.Provider = (*Creem)(nil)
 
 // New validates cfg and returns the adapter. It does not contact Creem.
 func New(cfg Config) (*Creem, error) {
-	if cfg.APIKey == "" || cfg.WebhookSecret == "" || cfg.ProductID == "" {
-		return nil, errors.New("creem: the API key, webhook secret and product ID are required")
+	if cfg.APIKey == "" || cfg.WebhookSecret == "" {
+		return nil, errors.New("creem: the API key and webhook secret are required")
 	}
 	test := strings.HasPrefix(cfg.APIKey, "creem_test_")
 	api := cfg.APIURL
@@ -110,6 +112,9 @@ func (c *Creem) CheckoutOrigin() string {
 // The reference travels as the request ID and as the intent_id metadata, and comes back
 // in webhooks.
 func (c *Creem) CreateCheckout(ctx context.Context, co payments.Checkout) (payments.Session, error) {
+	if c.cfg.ProductID == "" {
+		return payments.Session{}, errors.New("creem: credit checkouts need Config.ProductID")
+	}
 	body := map[string]any{
 		"product_id":   c.cfg.ProductID,
 		"request_id":   co.Reference,
@@ -154,25 +159,11 @@ func (c *Creem) CreateCheckout(ctx context.Context, co payments.Checkout) (payme
 	return payments.Session{ID: result.ID, URL: result.URL}, nil
 }
 
-// ParseWebhook verifies and decodes a Creem webhook.
+// ParseWebhook verifies and decodes a Creem webhook about a credit purchase.
 func (c *Creem) ParseWebhook(header http.Header, body []byte) (payments.Event, error) {
-	signature, err := hex.DecodeString(header.Get("creem-signature"))
-	if err != nil || len(signature) != sha256.Size {
-		return payments.Event{}, payments.ErrInvalid
-	}
-	mac := hmac.New(sha256.New, []byte(c.cfg.WebhookSecret))
-	mac.Write(body)
-	if !hmac.Equal(signature, mac.Sum(nil)) {
-		return payments.Event{}, payments.ErrInvalid
-	}
-	var envelope struct {
-		ID        string          `json:"id"`
-		Type      string          `json:"eventType"`
-		CreatedAt int64           `json:"created_at"`
-		Object    json.RawMessage `json:"object"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.ID == "" || len(envelope.Object) == 0 {
-		return payments.Event{}, payments.ErrInvalid
+	envelope, err := c.verify(header, body)
+	if err != nil {
+		return payments.Event{}, err
 	}
 	var e payments.Event
 	switch envelope.Type {
@@ -187,6 +178,24 @@ func (c *Creem) ParseWebhook(header http.Header, body []byte) (payments.Event, e
 		e.CreatedAt = time.UnixMilli(envelope.CreatedAt).UTC()
 	}
 	return e, err
+}
+
+// verify checks a webhook's signature and returns its envelope.
+func (c *Creem) verify(header http.Header, body []byte) (envelope, error) {
+	signature, err := hex.DecodeString(header.Get("creem-signature"))
+	if err != nil || len(signature) != sha256.Size {
+		return envelope{}, payments.ErrInvalid
+	}
+	mac := hmac.New(sha256.New, []byte(c.cfg.WebhookSecret))
+	mac.Write(body)
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return envelope{}, payments.ErrInvalid
+	}
+	var env envelope
+	if json.Unmarshal(body, &env) != nil || env.ID == "" || len(env.Object) == 0 {
+		return envelope{}, payments.ErrInvalid
+	}
+	return env, nil
 }
 
 // checkout is the part of Creem's checkout object the adapter reads.
@@ -278,11 +287,13 @@ func (c *Creem) reversal(id, eventType string, raw json.RawMessage) (payments.Ev
 		Status         string   `json:"status"`
 		Checkout       checkout `json:"checkout"`
 		Order          order    `json:"order"`
+		Subscription   ref      `json:"subscription"`
 	}
 	if json.Unmarshal(raw, &r) != nil {
 		return payments.Event{}, payments.ErrInvalid
 	}
-	if r.Checkout.Product != "" && string(r.Checkout.Product) != c.cfg.ProductID {
+	// A subscription's refund or dispute is the subscriptions module's.
+	if r.Subscription != "" || r.Checkout.Product != "" && string(r.Checkout.Product) != c.cfg.ProductID {
 		return payments.Event{ID: id}, payments.ErrIgnored
 	}
 	e := payments.Event{
