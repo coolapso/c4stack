@@ -70,6 +70,7 @@ const (
 	deviceLifetime    = 365 * 24 * time.Hour
 	ceremonyLifetime  = 5 * time.Minute
 	maxPasskeys       = 20
+	maxSessions       = 50
 	maxPasskeyName    = 60
 	noticeRetention   = 3 * 24 * time.Hour
 	maxAddressLength  = 254

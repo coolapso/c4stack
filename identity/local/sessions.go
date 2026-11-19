@@ -73,7 +73,8 @@ func (l *Local) signIn(ctx context.Context, tx *sql.Tx, r *http.Request, userID,
 }
 
 // startSession ends the session the browser had, if any, so a planted cookie never
-// becomes a signed-in session, and creates a new one.
+// becomes a signed-in session, and creates a new one. A user keeps at most maxSessions:
+// the least recently used go, so sign-ins that drop their cookies can't pile up rows.
 func (l *Local) startSession(ctx context.Context, tx *sql.Tx, r *http.Request, userID, method string) (session, error) {
 	if old := l.sessionToken(r); old != nil {
 		if _, err := tx.ExecContext(ctx, `
@@ -89,6 +90,19 @@ func (l *Local) startSession(ctx context.Context, tx *sql.Tx, r *http.Request, u
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at`, userID, hashToken(s.token), method, deviceLabel(r.UserAgent()),
 	).Scan(&s.id, &s.created)
+	if err != nil {
+		return session{}, err
+	}
+	_, err = tx.ExecContext(ctx, `
+		DELETE FROM local_sessions
+		WHERE id IN (
+		    SELECT id
+		    FROM local_sessions
+		    WHERE user_id = $1 AND id <> $2
+		    ORDER BY last_seen_at DESC, created_at DESC
+		    OFFSET $3
+		)`, userID, s.id, maxSessions-1,
+	)
 	return s, err
 }
 

@@ -394,6 +394,29 @@ func TestDevices(t *testing.T) {
 	}
 }
 
+func TestSessionsPerUserAreBounded(t *testing.T) {
+	f := newFixture(t)
+	b := f.browser("192.0.2.1")
+	userID := b.signIn("ann@example.com")
+	// Sign-ins that dropped their cookies, each a little older than the last.
+	f.exec(`INSERT INTO local_sessions (user_id, token_hash, method, device, last_seen_at)
+		SELECT $1, sha256(i::text::bytea), 'passkey', 'Old', now() - make_interval(mins => i)
+		FROM generate_series(1, 60) i`, userID)
+	f.clock = f.clock.Add(time.Minute)
+	c := f.browser("192.0.2.2")
+	c.signIn("ann@example.com")
+	if n := f.count(`SELECT count(*) FROM local_sessions WHERE user_id = $1`, userID); n != maxSessions {
+		t.Fatalf("%d sessions", n)
+	}
+	// The new session and the most recently used stay; the oldest went.
+	if b.account() == "" || c.account() == "" {
+		t.Fatal("a recent session was signed out")
+	}
+	if n := f.count(`SELECT count(*) FROM local_sessions WHERE device = 'Old' AND last_seen_at < now() - interval '48 minutes 30 seconds'`); n != 0 {
+		t.Fatalf("%d of the oldest sessions stayed", n)
+	}
+}
+
 func TestLogout(t *testing.T) {
 	f := newFixture(t)
 	b := f.browser("192.0.2.1")

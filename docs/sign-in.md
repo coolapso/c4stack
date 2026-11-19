@@ -399,6 +399,7 @@ ingress cannot apply them, because it doesn't see addresses.
 | Recent sign-in | 5 minutes (`identity.RecentSignIn`) | A stolen or unattended session changing passkeys, the address, or deleting the account |
 | Passkey challenge | 5 minutes, single use | Replaying a captured assertion |
 | Passkeys per user | 20 | Unbounded rows |
+| Sessions per user | 50; a new sign-in signs out the least recently used | Rows piling up from sign-ins that drop their cookies, such as a script signing in with a passkey again and again |
 
 **How counters are kept.**
 - Counters use fixed windows: a window starts at its first event. Each counter's key is
