@@ -196,3 +196,23 @@ func TestParseSubscriptionWebhook(t *testing.T) {
 		t.Errorf("a changed body: %v", err)
 	}
 }
+
+func TestCompletedCheckout(t *testing.T) {
+	api := &fakeAPI{answers: map[string]string{"GET /v1/checkouts": `{"id": "ch_1", "status": "completed",
+		"request_id": "ref-1", "units": 1, "metadata": {"reference": "ref-1"},
+		"order": {"id": "ord_1", "type": "recurring", "status": "paid"},
+		"subscription": {"id": "sub_1", "status": "active", "product": "prod_plus", "customer": "cust_1"}}`}}
+	c := adapter(t, api.server(t).URL)
+	e, err := c.CompletedCheckout(context.Background(), "ch_1")
+	if err != nil || e.ID != "checkout:ch_1" || e.Kind != payments.SubscriptionStarted || e.Reference != "ref-1" ||
+		e.State.ID != "sub_1" || e.State.Status != payments.SubscriptionActive || e.Review != "" {
+		t.Fatalf("completed: %+v, %v", e, err)
+	}
+	if !strings.HasPrefix(api.requests[0], "GET /v1/checkouts?checkout_id=ch_1") {
+		t.Fatalf("request %v", api.requests)
+	}
+	api.answers["GET /v1/checkouts"] = `{"id": "ch_2", "status": "pending", "request_id": "ref-2"}`
+	if _, err := c.CompletedCheckout(context.Background(), "ch_2"); !errors.Is(err, payments.ErrIgnored) {
+		t.Fatalf("an open checkout: %v", err)
+	}
+}

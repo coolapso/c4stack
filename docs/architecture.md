@@ -757,6 +757,7 @@ subscriptions, which the `subscriptions` module needs:
 type Subscriber interface {
 	Provider
 	CreateSubscriptionCheckout(ctx context.Context, c SubscriptionCheckout) (Session, error)
+	CompletedCheckout(ctx context.Context, id string) (SubscriptionEvent, error) // ErrIgnored until completed
 	ParseSubscriptionWebhook(header http.Header, body []byte) (SubscriptionEvent, error)
 	Subscription(ctx context.Context, id string) (SubscriptionState, error)
 	CancelSubscription(ctx context.Context, id string, atPeriodEnd bool) error
@@ -942,7 +943,8 @@ on its products; what a subscription gives an account is the app's.
 
 ```sql
 subscriptions(id uuid, account_id → accounts ON DELETE SET NULL, provider,
-              provider_subscription_id, provider_customer_id, product, target, units,
+              provider_subscription_id, provider_customer_id, provider_checkout_id,
+              product, target, units,
               status, period_end, state_at, created_at, updated_at,
               UNIQUE (provider, provider_subscription_id))
 subscription_events(provider, event_id, received_at, PRIMARY KEY (provider, event_id))
@@ -978,9 +980,11 @@ func (s *Subscriptions) Get(ctx context.Context, accountID, id string) (Subscrip
 func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error // at the period's end
 func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r ChangeRequest) error
 func (s *Subscriptions) PortalURL(ctx context.Context, accountID string) (string, error)
+func (s *Subscriptions) Confirm(ctx context.Context, accountID string) error // read completed checkouts
 func (s *Subscriptions) Webhook(c *gin.Context)
 func (s *Subscriptions) Mount(r gin.IRouter, layout ui.Layout) // r: e.g. /account/subscriptions
-// POST "", POST "/:id/cancel", POST "/:id/change", GET "/billing"; and the settings panel
+// POST "", POST "/:id/cancel", POST "/:id/change", GET "/billing", GET "/started";
+// and the settings panel
 func (s *Subscriptions) CheckoutCSP() web.CSP // for a page with a checkout form
 ```
 
@@ -994,7 +998,10 @@ its group with `Change`, and between numbers of units up to `MaxUnits`.
 provider's checkout with the subscription's ID as the reference. From then on, every
 change arrives as a signed webhook: the checkout's completion links the provider's
 subscription and customer, and each event after it carries the subscription's state.
-The success URL only brings the buyer back; it starts nothing. `Cancel` and `Change`
+The success URL brings the buyer back through `/started`, which reads the account's
+open checkouts from the provider by the IDs the module kept (`Confirm`), so the
+subscription shows at once, without trusting anything the browser brings; the webhook
+then changes nothing. `Cancel` and `Change`
 lock the subscription while they call the provider, so changes go one at a time (another
 meanwhile gets `ErrBusy`): two at once could each charge a proration. `Change` reads the
 provider's state first and sends only what isn't so already, so a retry after a change
@@ -1038,8 +1045,8 @@ account's subscription that comes back to life, is canceled at the provider at o
 goes to review.
 
 **The settings panel** lists the subscriptions that haven't ended, with their renewal
-or end date, a Cancel dialog for each live one, and "Manage billing", which opens the
-provider's billing page. An account that never subscribed has no panel.
+or end date, a Cancel dialog for each live one, and, once the account has subscribed,
+"Manage billing", which opens the provider's billing page.
 
 **Cleanup and commands.** An hourly job deletes checkouts nobody completed within 30
 days, since a checkout's page may stay open long, and the record of events older than

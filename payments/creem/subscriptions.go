@@ -53,6 +53,59 @@ func (c *Creem) CreateSubscriptionCheckout(ctx context.Context, co payments.Subs
 	return payments.Session{ID: result.ID, URL: result.URL}, nil
 }
 
+// CompletedCheckout reads a checkout, and returns the subscription it started.
+func (c *Creem) CompletedCheckout(ctx context.Context, id string) (payments.SubscriptionEvent, error) {
+	var raw json.RawMessage
+	if err := c.call(ctx, http.MethodGet, "/v1/checkouts?"+url.Values{"checkout_id": {id}}.Encode(), nil, &raw); err != nil {
+		return payments.SubscriptionEvent{}, err
+	}
+	e, err := checkoutEvent(raw)
+	if err != nil {
+		return e, err
+	}
+	if e.Review == "checkout_not_completed" {
+		return payments.SubscriptionEvent{}, payments.ErrIgnored
+	}
+	e.ID = "checkout:" + id
+	return e, nil
+}
+
+// checkoutEvent reads a checkout object, from a webhook or the API, as the start of a
+// subscription. A checkout that bought no subscription is ErrIgnored.
+func checkoutEvent(raw json.RawMessage) (payments.SubscriptionEvent, error) {
+	var co struct {
+		RequestID    string            `json:"request_id"`
+		Status       string            `json:"status"`
+		Units        int               `json:"units"`
+		Metadata     map[string]string `json:"metadata"`
+		Order        order             `json:"order"`
+		Subscription *subscription     `json:"subscription"`
+	}
+	if json.Unmarshal(raw, &co) != nil {
+		return payments.SubscriptionEvent{}, payments.ErrInvalid
+	}
+	if co.Order.Type != "recurring" || co.Subscription == nil || co.Subscription.ID == "" {
+		if co.Status != "completed" && co.Order.Type == "" {
+			// An open checkout has no order yet: whether it buys a subscription shows
+			// once it completes.
+			return payments.SubscriptionEvent{Review: "checkout_not_completed"}, nil
+		}
+		return payments.SubscriptionEvent{}, payments.ErrIgnored
+	}
+	e := payments.SubscriptionEvent{Kind: payments.SubscriptionStarted, Reference: co.RequestID}
+	e.State, e.Review = co.Subscription.state()
+	if e.State.Units == 0 {
+		e.State.Units = co.Units
+	}
+	switch {
+	case co.Status != "completed":
+		e.Review = "checkout_not_completed"
+	case co.RequestID == "" || co.Metadata[referenceKey] != co.RequestID:
+		e.Review = "missing_reference"
+	}
+	return e, nil
+}
+
 // Subscription fetches a subscription.
 func (c *Creem) Subscription(ctx context.Context, id string) (payments.SubscriptionState, error) {
 	var s subscription
@@ -138,32 +191,15 @@ func (c *Creem) ParseSubscriptionWebhook(header http.Header, body []byte) (payme
 	}
 	switch {
 	case env.Type == "checkout.completed":
-		var co struct {
-			RequestID    string            `json:"request_id"`
-			Status       string            `json:"status"`
-			Units        int               `json:"units"`
-			Metadata     map[string]string `json:"metadata"`
-			Order        order             `json:"order"`
-			Subscription *subscription     `json:"subscription"`
+		started, err := checkoutEvent(env.Object)
+		if err != nil {
+			return e, err
 		}
-		if json.Unmarshal(env.Object, &co) != nil {
-			return payments.SubscriptionEvent{}, payments.ErrInvalid
-		}
-		if co.Order.Type != "recurring" || co.Subscription == nil || co.Subscription.ID == "" {
+		if started.Kind == 0 {
 			return e, payments.ErrIgnored
 		}
-		e.Kind = payments.SubscriptionStarted
-		e.Reference = co.RequestID
-		e.State, e.Review = co.Subscription.state()
-		if e.State.Units == 0 {
-			e.State.Units = co.Units
-		}
-		switch {
-		case co.Status != "completed":
-			e.Review = "checkout_not_completed"
-		case co.RequestID == "" || co.Metadata[referenceKey] != co.RequestID:
-			e.Review = "missing_reference"
-		}
+		started.ID, started.CreatedAt = e.ID, e.CreatedAt
+		e = started
 	case len(env.Type) > len("subscription.") && env.Type[:len("subscription.")] == "subscription.":
 		var s subscription
 		if json.Unmarshal(env.Object, &s) != nil || s.ID == "" {

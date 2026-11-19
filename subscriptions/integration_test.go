@@ -56,6 +56,8 @@ type fakeProvider struct {
 	fail      error
 	// failUnits fails a change's units step, after its product step went through.
 	failUnits bool
+	// completed are the checkouts that completed, by their session ID.
+	completed map[string]payments.SubscriptionEvent
 }
 
 func (p *fakeProvider) Name() string           { return "test" }
@@ -86,6 +88,16 @@ func (p *fakeProvider) ParseSubscriptionWebhook(h http.Header, body []byte) (pay
 	if e.Kind == 0 {
 		return e, payments.ErrIgnored
 	}
+	return e, nil
+}
+func (p *fakeProvider) CompletedCheckout(_ context.Context, id string) (payments.SubscriptionEvent, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.completed[id]
+	if !ok {
+		return payments.SubscriptionEvent{}, payments.ErrIgnored
+	}
+	e.ID = "checkout:" + id
 	return e, nil
 }
 func (p *fakeProvider) Subscription(_ context.Context, id string) (payments.SubscriptionState, error) {
@@ -154,7 +166,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{
 		a:     apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{accounts.Migrations, Migrations}}),
-		pay:   &fakeProvider{states: map[string]payments.SubscriptionState{}},
+		pay:   &fakeProvider{states: map[string]payments.SubscriptionState{}, completed: map[string]payments.SubscriptionEvent{}},
 		clock: time.Now().Add(-time.Hour),
 	}
 	var err error
@@ -285,15 +297,16 @@ func TestSubscribe(t *testing.T) {
 	account := f.account(t, "ann")
 	ref := f.checkout(t, "ann", "plus-monthly", 0, "")
 	c := f.pay.checkouts[0]
-	if c.Reference != ref || c.ProductID != "prov_plus_m" || c.Units != 1 || c.Email != "ann@example.com" || c.SuccessURL != "http://localhost:8080/account/settings" {
+	if c.Reference != ref || c.ProductID != "prov_plus_m" || c.Units != 1 || c.Email != "ann@example.com" ||
+		c.SuccessURL != "http://localhost:8080/account/subscriptions/started?next=%2Faccount%2Fsettings" {
 		t.Fatalf("checkout %+v", c)
 	}
 	// Pending until the provider confirms it; the settings page shows nothing yet.
 	if subs, _ := f.subs.List(context.Background(), account); len(subs) != 0 {
 		t.Fatalf("listed a pending subscription: %+v", subs)
 	}
-	if page := f.do(http.MethodGet, "/account/settings", "ann", nil).Body.String(); strings.Contains(page, "subscriptions-title") {
-		t.Fatal("a panel before any subscription")
+	if page := f.do(http.MethodGet, "/account/settings", "ann", nil).Body.String(); !strings.Contains(page, "You have no subscriptions.") || strings.Contains(page, "Manage billing") {
+		t.Fatal("the panel before any subscription isn't empty, or offers billing")
 	}
 
 	f.start(t, ref, "sub_1", "prov_plus_m", 1)
@@ -763,5 +776,49 @@ func TestProviderChangesWithinRules(t *testing.T) {
 	}
 	if r := f.reviews(t); strings.Join(r, ",") != "product_mismatch,product_change,too_many_units" {
 		t.Fatalf("reviews %v", r)
+	}
+}
+
+// TestReturnFromCheckout: coming back from the checkout reads it from the provider, so
+// the subscription starts before its webhook; the webhook then changes nothing.
+func TestReturnFromCheckout(t *testing.T) {
+	f := newFixture(t)
+	f.account(t, "ann")
+	f.account(t, "bob")
+	ref := f.checkout(t, "ann", "plus-monthly", 0, "")
+	back := func(session string) {
+		t.Helper()
+		rec := f.do(http.MethodGet, "/account/subscriptions/started?next=%2Faccount%2Fsettings", session, nil)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account/settings" {
+			t.Fatalf("back from the checkout: %d %q", rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	// Not paid yet: still pending.
+	back("ann")
+	if status, _, _ := f.row(t, ref); status != "pending" {
+		t.Fatalf("an open checkout: %s", status)
+	}
+	started := payments.SubscriptionEvent{Kind: payments.SubscriptionStarted, Reference: ref,
+		State: payments.SubscriptionState{ID: "sub_1", CustomerID: "cust_1", ProductID: "prov_plus_m", Units: 1, Status: payments.SubscriptionActive}}
+	f.pay.mu.Lock()
+	f.pay.completed["co_"+ref] = started
+	f.pay.mu.Unlock()
+	// Another account coming back reads only its own checkouts.
+	back("bob")
+	if status, _, _ := f.row(t, ref); status != "pending" {
+		t.Fatalf("another account's return started it: %s", status)
+	}
+	back("ann")
+	if status, _, _ := f.row(t, ref); status != "active" {
+		t.Fatalf("after coming back: %s", status)
+	}
+	back("ann")
+	started.ID = "evt_checkout_completed"
+	f.send(t, started)
+	if r := f.reviews(t); len(r) != 0 {
+		t.Fatalf("reviews %v", r)
+	}
+	if page := f.do(http.MethodGet, "/account/settings", "ann", nil).Body.String(); !strings.Contains(page, "Plus, monthly") || !strings.Contains(page, "Manage billing") {
+		t.Fatal("the panel doesn't show the subscription")
 	}
 }

@@ -230,7 +230,73 @@ func (s *Subscriptions) Checkout(ctx context.Context, accountID string, r Checko
 	if err != nil {
 		return "", err
 	}
+	if _, err := s.app.DB().ExecContext(ctx, `
+		UPDATE subscriptions
+		SET provider_checkout_id = $2, updated_at = now()
+		WHERE id = $1`, id, session.ID,
+	); err != nil {
+		return "", err
+	}
 	return session.URL, nil
+}
+
+// Confirm reads an account's checkouts that haven't started a subscription yet from
+// the provider, and starts those that completed, as their webhooks would. Call it when
+// the buyer comes back from a checkout, so the subscription shows at once rather than
+// when the webhook arrives; the routes Mount adds do. It reads only the provider, never
+// what the browser brings.
+func (s *Subscriptions) Confirm(ctx context.Context, accountID string) error {
+	checkouts, err := s.openCheckouts(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	for _, id := range checkouts {
+		e, err := s.payments.CompletedCheckout(ctx, id)
+		if errors.Is(err, payments.ErrIgnored) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		res, err := s.take(ctx, e)
+		if err != nil {
+			return err
+		}
+		if res.review != "" {
+			s.app.Log().Error("subscription event needs review", "event_id", e.ID, "subscription_id", res.subscriptionID, "reason", res.review)
+		}
+	}
+	return nil
+}
+
+// openCheckouts returns the provider's IDs of an account's recent checkouts that
+// haven't started a subscription yet.
+func (s *Subscriptions) openCheckouts(ctx context.Context, accountID string) (_ []string, err error) {
+	rows, err := s.app.DB().QueryContext(ctx, `
+		SELECT provider_checkout_id
+		FROM subscriptions
+		WHERE account_id::text = $1 AND provider = $2 AND status = 'pending'
+		    AND provider_checkout_id IS NOT NULL AND created_at > now() - interval '1 day'
+		ORDER BY created_at DESC
+		LIMIT 5`, accountID, s.payments.Name(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := rows.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	var checkouts []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		checkouts = append(checkouts, id)
+	}
+	return checkouts, rows.Err()
 }
 
 // querier is a database or a transaction.

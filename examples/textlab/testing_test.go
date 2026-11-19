@@ -96,6 +96,10 @@ func (p *testPayments) ParseSubscriptionWebhook(h http.Header, body []byte) (pay
 	return e, nil
 }
 
+func (p *testPayments) CompletedCheckout(context.Context, string) (payments.SubscriptionEvent, error) {
+	return payments.SubscriptionEvent{}, payments.ErrIgnored
+}
+
 func (p *testPayments) Subscription(_ context.Context, id string) (payments.SubscriptionState, error) {
 	return payments.SubscriptionState{ID: id, Status: payments.SubscriptionCanceling}, nil
 }

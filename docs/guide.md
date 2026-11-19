@@ -213,7 +213,8 @@ pricing := account.Group("/plans", web.AllowCSP(subs.CheckoutCSP()))
 
 A page sells with a form that posts `product`, and `units` or `target` when they
 apply, to the subscriptions group, which sends the browser to the provider's
-checkout. A plan's page changes it with a form to `/<id>/change` (`product`, `units`).
+checkout; it comes back through `/started`, which starts the subscription at once. An
+app that calls `subs.Checkout` itself calls `subs.Confirm` on its own success page. A plan's page changes it with a form to `/<id>/change` (`product`, `units`).
 What a subscription gives an account is the app's: read `subs.List`, and decide from
 each one's product, units and status, such as `active` and `canceling` until the
 period ends, and `past_due` while the provider retries.

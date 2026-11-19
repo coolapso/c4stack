@@ -13,6 +13,10 @@ type Subscriber interface {
 	Provider
 	// CreateSubscriptionCheckout creates a hosted checkout that starts a subscription.
 	CreateSubscriptionCheckout(ctx context.Context, c SubscriptionCheckout) (Session, error)
+	// CompletedCheckout reads a checkout the app created, by its Session.ID, and returns
+	// the subscription it started as a SubscriptionStarted event, as its webhook would.
+	// It returns ErrIgnored while the checkout isn't completed.
+	CompletedCheckout(ctx context.Context, id string) (SubscriptionEvent, error)
 	// ParseSubscriptionWebhook verifies a webhook and decodes it. It returns ErrInvalid
 	// for a bad signature or body, and ErrIgnored for events about anything but
 	// subscriptions.

@@ -3,15 +3,17 @@
 -- A subscription an account started. It is 'pending' from the checkout until the
 -- provider confirms it, then follows the provider's state. product is the app's
 -- product ID; target is what the subscription is for, in the app's words, such as a
--- vault. state_at is the provider's time of the state shown, so an older event that
--- arrives late never overwrites it. account_id becomes NULL when the account is
--- deleted: the record stays, without its link.
+-- vault. provider_checkout_id is the checkout that started it, which the module reads
+-- when the buyer comes back, before the webhook. state_at is the provider's time of the
+-- state shown, so an older event that arrives late never overwrites it. account_id
+-- becomes NULL when the account is deleted: the record stays, without its link.
 CREATE TABLE IF NOT EXISTS subscriptions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id uuid REFERENCES accounts (id) ON DELETE SET NULL,
     provider text NOT NULL,
     provider_subscription_id text,
     provider_customer_id text,
+    provider_checkout_id text,
     product text NOT NULL,
     target text NOT NULL DEFAULT '' CHECK (char_length(target) <= 128),
     units integer NOT NULL CHECK (units > 0),

@@ -268,7 +268,7 @@ func TestPro(t *testing.T) {
 		t.Fatalf("checkout: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 	c := pay.subscriptionCheckouts[0]
-	if c.ProductID != "prod_pro" || c.Email != "ada@example.com" || c.SuccessURL != origin+"/account" {
+	if c.ProductID != "prod_pro" || c.Email != "ada@example.com" || c.SuccessURL != origin+"/account/subscriptions/started?next=%2Faccount" {
 		t.Fatalf("checkout %+v", c)
 	}
 	body, _ := json.Marshal(payments.SubscriptionEvent{ID: "evt_pro", Kind: payments.SubscriptionStarted, Reference: c.Reference,

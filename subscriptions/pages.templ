@@ -9,10 +9,12 @@ templ panel(v panelView) {
 				<h2 id="subscriptions-title">Subscriptions</h2>
 				<p>What you pay for, and when it renews.</p>
 			</div>
-			<a class="btn small" href={ templ.SafeURL(v.base + "/billing") }>Manage billing</a>
+			if v.billing {
+				<a class="btn small" href={ templ.SafeURL(v.base + "/billing") }>Manage billing</a>
+			}
 		</div>
 		if len(v.running) == 0 {
-			<p class="muted">None running.</p>
+			<p class="muted">You have no subscriptions.</p>
 		}
 		for _, s := range v.running {
 			<div class="cluster" data-subscription={ s.ID }>
