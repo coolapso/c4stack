@@ -107,6 +107,28 @@ tasks:
       - task db:migrate
       - task dev DEV_PORT=8082
 
+  # The example's development database, the one task serve uses. db:connect starts it
+  # when it isn't running and stops it again when psql exits; db:wipe deletes it, and
+  # the next task serve migrates a new, empty one.
+  db:connect:
+    desc: Open psql on the example app's development database
+    dir: examples/textlab
+    interactive: true
+    vars:
+      STOPPED:
+        sh: docker compose ps -q --status running postgres | grep -q . || echo yes
+    cmds:
+      - '{{if .STOPPED}}task db:up{{end}}'
+      - defer: '{{if .STOPPED}}docker compose stop postgres{{end}}'
+      - task db:connect
+
+  db:wipe:
+    desc: Delete the example app's development database and all its data
+    dir: examples/textlab
+    prompt: This deletes the example app's development database and all its data. Continue?
+    cmds:
+      - task --yes db:wipe
+
   cli:build:
     desc: Build the generator into bin/c4stack
     cmds:
