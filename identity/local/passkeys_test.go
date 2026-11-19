@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,37 @@ func TestAddingFinishesOnlyFromTheSessionThatStarted(t *testing.T) {
 	}
 	if n := f.count(`SELECT count(*) FROM local_passkeys`); n != 0 {
 		t.Fatal("a passkey was added")
+	}
+}
+
+func TestPasskeyAdditionsPerDay(t *testing.T) {
+	f := newFixture(t)
+	b := f.browser("192.0.2.1")
+	userID := b.signIn("ann@example.com")
+	for i := range passkeyAddsDay.max {
+		a := newAuthenticator(t)
+		if status, out := b.addPasskey(a, "Key "+strconv.Itoa(i)); status != http.StatusOK {
+			t.Fatalf("passkey %d: %d %v", i, status, out)
+		}
+		var id string
+		f.db().QueryRow(`SELECT id FROM local_passkeys WHERE user_id = $1`, userID).Scan(&id)
+		b.post("/account/settings/passkeys/"+id+"/remove", nil)
+	}
+	notices := len(f.mail.to("ann@example.com"))
+	status, out := b.addPasskey(newAuthenticator(t), "One more")
+	if status != http.StatusTooManyRequests || !strings.Contains(out["error"].(string), "Try again after") {
+		t.Fatalf("%d %v", status, out)
+	}
+	if len(f.mail.to("ann@example.com")) != notices {
+		t.Fatal("a refused addition sent a notice")
+	}
+	// Removing still works.
+	f.exec(`INSERT INTO local_passkeys (user_id, credential_id, public_key, sign_count, backup_eligible, backed_up, name)
+		VALUES ($1, 'x', 'y', 0, false, false, 'Unwanted')`, userID)
+	var id string
+	f.db().QueryRow(`SELECT id FROM local_passkeys WHERE name = 'Unwanted'`).Scan(&id)
+	if r := b.post("/account/settings/passkeys/"+id+"/remove", nil); r.status != http.StatusSeeOther {
+		t.Fatalf("removing: %d %s", r.status, r.body)
 	}
 }
 

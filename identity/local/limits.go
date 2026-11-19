@@ -41,6 +41,11 @@ var (
 	// stranger's mailbox.
 	newAddressUserHour = limit{"new-address-user-hour", 5, time.Hour}
 	newAddressUserDay  = limit{"new-address-user-day", 10, 24 * time.Hour}
+	// Passkeys a user adds: each one emails a notice, so adding and removing again and
+	// again would flood the sending domain. Removals aren't limited, so someone who
+	// added passkeys can't stop the owner removing them; they are bounded by what can
+	// be added.
+	passkeyAddsDay = limit{"passkey-adds-user-day", 10, 24 * time.Hour}
 )
 
 // sendAppHour is the app's optional ceiling on the codes it sends.

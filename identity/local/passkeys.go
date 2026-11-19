@@ -424,6 +424,13 @@ func (l *Local) passkeyAddOptions(c *gin.Context) {
 		passkeyJSONError(c, tooManyPasskeys)
 		return
 	}
+	// Refuse before the device makes a passkey the finish would refuse.
+	if err := l.inTx(c.Request.Context(), func(tx *sql.Tx) error {
+		return l.check(c.Request.Context(), tx, counter{passkeyAddsDay, user.id})
+	}); err != nil {
+		passkeyJSONError(c, l.passkeyLimit(c, err))
+		return
+	}
 	options, data, err := l.webauthn.BeginRegistration(user, webauthn.WithExclusions(webauthn.Credentials(user.creds).CredentialDescriptors()))
 	if err != nil {
 		web.Log(c).Error("starting a passkey registration failed", "error", err)
@@ -432,6 +439,21 @@ func (l *Local) passkeyAddOptions(c *gin.Context) {
 	}
 	saveCeremony(c, ceremony{Purpose: purposeAdd, UserID: user.id, SessionID: sessionID, Data: *data})
 	c.JSON(http.StatusOK, options)
+}
+
+// passkeyLimit turns a limit on adding passkeys into its message, and logs any other
+// failure that isn't the person's doing.
+func (l *Local) passkeyLimit(c *gin.Context, err error) error {
+	var limited *limitedError
+	var pe *passkeyError
+	switch {
+	case errors.As(err, &limited):
+		return &passkeyError{status: http.StatusTooManyRequests,
+			message: "You added many passkeys today. Try again after " + formatTime(limited.until) + "."}
+	case !errors.As(err, &pe):
+		web.Log(c).Error("adding a passkey failed", "error", err)
+	}
+	return err
 }
 
 var tooManyPasskeys = &passkeyError{status: http.StatusConflict, message: "You have the most passkeys an account can have. Remove one to add another."}
@@ -508,6 +530,9 @@ func (l *Local) passkeyAdd(c *gin.Context) {
 		if err := useChallenge(ctx, tx, cer.Data); err != nil {
 			return err
 		}
+		if err := l.count(ctx, tx, counter{passkeyAddsDay, id.Subject}); err != nil {
+			return err
+		}
 		var aaguid any
 		if len(cred.Authenticator.AAGUID) == 16 {
 			aaguid = uuidString(cred.Authenticator.AAGUID)
@@ -543,11 +568,7 @@ func (l *Local) passkeyAdd(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		var pe *passkeyError
-		if !errors.As(err, &pe) {
-			web.Log(c).Error("adding a passkey failed", "error", err)
-		}
-		passkeyJSONError(c, err)
+		passkeyJSONError(c, l.passkeyLimit(c, err))
 		return
 	}
 	l.deliver(ctx, notices...)
