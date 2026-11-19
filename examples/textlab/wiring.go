@@ -80,7 +80,7 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	}
 
 	gin.SetMode(gin.ReleaseMode)
-	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey})
+	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey, TrustedProxies: cfg.TrustedProxies})
 	if err != nil {
 		return nil, err
 	}

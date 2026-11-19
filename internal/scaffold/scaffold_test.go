@@ -114,6 +114,10 @@ func TestGeneratedApp(t *testing.T) {
 	if !strings.Contains(read(t, dir, "config.go"), `os.Getenv("ORDER_DESK_" + name)`) {
 		t.Error("the environment prefix is not derived from the app name")
 	}
+	if !strings.Contains(read(t, dir, "config.go"), `list(env("TRUSTED_PROXIES"))`) ||
+		!strings.Contains(read(t, dir, "routes.go"), "TrustedProxies: cfg.TrustedProxies") {
+		t.Error("the app can't be told its trusted proxies")
+	}
 	// No settings file: development settings are in the Taskfile, and its secret key is
 	// made each time a task starts.
 	for _, name := range []string{".env", ".env.example"} {

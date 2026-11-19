@@ -103,6 +103,7 @@ func TestStarterApp(t *testing.T) {
 		"ACME_SECRET_KEY=" + strings.Repeat("k", 32),
 		"ACME_EMAIL_FROM=noreply@acme.example",
 		"ACME_SMTP_URL=smtp://" + mail.addr,
+		"ACME_TRUSTED_PROXIES=127.0.0.1, ::1",
 	}, public)
 
 	jar, _ := cookiejar.New(nil)
@@ -166,6 +167,25 @@ func TestStarterApp(t *testing.T) {
 	}
 	if resp, _ := b.get("/account"); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("deleted session: %d", resp.StatusCode)
+	}
+
+	// Through the trusted proxy, each client is its own network: more clients than one
+	// network's limit on codes all get theirs.
+	b.get("/login")
+	for i := range 31 {
+		form := url.Values{"email": {fmt.Sprintf("user%d@example.com", i)}, "csrf_token": {b.csrf}}
+		req, _ := http.NewRequest(http.MethodPost, public+"/login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", public)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
+		resp, err := b.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("client %d through the proxy: %d", i, resp.StatusCode)
+		}
 	}
 	stop()
 }

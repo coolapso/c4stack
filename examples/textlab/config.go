@@ -9,9 +9,12 @@ import (
 
 // config holds the settings Textlab reads from TEXTLAB_* environment variables.
 type config struct {
-	PublicURL           string
-	Addr                string
-	SecretKey           string
+	PublicURL string
+	Addr      string
+	SecretKey string
+	// TrustedProxies are the proxies in front of Textlab, whose forwarding headers give
+	// the client's address.
+	TrustedProxies      []string
 	CreemAPIKey         string
 	CreemWebhookSecret  string
 	CreemProductID      string
@@ -35,6 +38,7 @@ func loadConfig() (config, error) {
 		PublicURL:           env("PUBLIC_URL"),
 		Addr:                env("ADDR"),
 		SecretKey:           env("SECRET_KEY"),
+		TrustedProxies:      list(env("TRUSTED_PROXIES")),
 		CreemAPIKey:         env("CREEM_API_KEY"),
 		CreemWebhookSecret:  env("CREEM_WEBHOOK_SECRET"),
 		CreemProductID:      env("CREEM_PRODUCT_ID"),
@@ -73,6 +77,17 @@ func loadConfig() (config, error) {
 		return config{}, errors.New("set either TEXTLAB_SMTP_URL or TEXTLAB_SCALEWAY_SECRET_KEY and TEXTLAB_SCALEWAY_PROJECT_ID")
 	}
 	return cfg, nil
+}
+
+// list splits a comma-separated setting, dropping empty items.
+func list(s string) []string {
+	var out []string
+	for item := range strings.SplitSeq(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (c config) logger() *slog.Logger {

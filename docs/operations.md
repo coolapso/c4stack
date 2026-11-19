@@ -27,6 +27,7 @@ Every app needs these, plus what its modules need:
 | `ACME_SECRET_KEY` | At least 32 bytes, the same on every replica. Signs CSRF tokens and seals cookies. |
 | `ACME_HANKO_API_URL` | On Hanko: the tenant's API URL. |
 | `ACME_ADDR` | Listen address, `:8080` by default. |
+| `ACME_TRUSTED_PROXIES` | Behind a proxy: its addresses or CIDRs, comma-separated. See below. |
 
 A generated app on C4Stack's own sign-in also needs its email settings:
 
@@ -50,8 +51,9 @@ During a rolling rotation, replicas hold different keys: a code made on one may 
 another, and the limits are briefly doubled. Rotate on every replica together.
 
 **Trusted proxies.** The app's own sign-in limits codes per network, from the client IP
-that `web.Config.TrustedProxies` makes. Set it to exactly the proxies in front of the
-app:
+that `web.Config.TrustedProxies` makes; a generated app reads it from
+`ACME_TRUSTED_PROXIES`, comma-separated addresses or CIDRs, and trusts none without it.
+Behind an ingress or load balancer, set it to exactly the proxies in front of the app:
 - trusting too few makes every request seem to come from the proxy, so one person's
   limit stops everyone;
 - trusting forwarding headers from anyone lets an attacker choose the network they seem

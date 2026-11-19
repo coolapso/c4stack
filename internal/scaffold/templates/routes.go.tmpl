@@ -22,7 +22,7 @@ type signIn interface {
 // routes decides what [[.Title]] serves and where.
 func routes(cfg config, idp signIn, accts *accounts.Accounts) (http.Handler, error) {
 	gin.SetMode(gin.ReleaseMode)
-	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey})
+	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey, TrustedProxies: cfg.TrustedProxies})
 	if err != nil {
 		return nil, err
 	}

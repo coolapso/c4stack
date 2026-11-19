@@ -19,6 +19,10 @@ type config struct {
 	PublicURL string
 	Addr      string
 	SecretKey string
+	// TrustedProxies are the proxies in front of the app, whose forwarding headers
+	// give the client's address. Behind an ingress, set exactly its addresses, or every
+	// client seems to come from the ingress and shares one limit on sign-in codes.
+	TrustedProxies []string
 	[[- if .Hanko]]
 	HankoAPIURL string
 	[[- else]]
@@ -44,6 +48,7 @@ func loadConfig() (config, error) {
 		PublicURL: env("PUBLIC_URL"),
 		Addr:      env("ADDR"),
 		SecretKey: env("SECRET_KEY"),
+		TrustedProxies: list(env("TRUSTED_PROXIES")),
 		[[- if .Hanko]]
 		HankoAPIURL: env("HANKO_API_URL"),
 		[[- else]]
@@ -105,6 +110,17 @@ func (c config) mailer() (email.Sender, error) {
 	})
 }
 [[- end]]
+
+// list splits a comma-separated setting, dropping empty items.
+func list(s string) []string {
+	var out []string
+	for item := range strings.SplitSeq(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
 
 func (c config) logger() *slog.Logger {
 	opts := &slog.HandlerOptions{Level: c.LogLevel}

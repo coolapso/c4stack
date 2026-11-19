@@ -69,6 +69,7 @@ To add pages, tables, API keys, credits and more, follow the
 | `[[.EnvPrefix]]_SCALEWAY_SECRET_KEY`, `[[.EnvPrefix]]_SCALEWAY_PROJECT_ID` | one of these | Scaleway Transactional Email, instead of SMTP |
 [[- end]]
 | `[[.EnvPrefix]]_ADDR` | no | Listen address, `:8080` by default |
+| `[[.EnvPrefix]]_TRUSTED_PROXIES` | behind a proxy | The proxies in front of the app, comma-separated addresses or CIDRs, whose forwarding headers give the client's address. Set exactly these: too few, and every client seems to come from the proxy and shares one limit on sign-in codes; too many, and clients choose the address they seem to come from. |
 | `[[.EnvPrefix]]_LOG_LEVEL`, `[[.EnvPrefix]]_LOG_FORMAT` | no | `debug`…`error`; `json` (default) or `text` |
 
 ## Deploy
