@@ -50,6 +50,14 @@ app's own sign-in, sessions stay too, but:
 During a rolling rotation, replicas hold different keys: a code made on one may fail on
 another, and the limits are briefly doubled. Rotate on every replica together.
 
+With the OpenID Connect provider (`oidc`), sign-ins in progress at a client fail once
+and work when started again, and a new signing key starts at once. Clients that cached
+the key set fetch it again when they meet the new key.
+
+**The issuer.** The OpenID Connect provider's issuer is the app's public URL, and clients
+key their users by it. Changing the public URL once clients sign people in makes every
+account new to them: keep it.
+
 **Trusted proxies.** The app's own sign-in limits codes per network, from the client IP
 that `web.Config.TrustedProxies` makes; a generated app reads it from
 `ACME_TRUSTED_PROXIES`, comma-separated addresses or CIDRs, and trusts none without it.
@@ -155,6 +163,10 @@ the `X-Request-ID` response header. Incoming request IDs are ignored.
 Logs never contain query strings, request or webhook bodies, headers, cookies, API keys,
 secrets, panic values, or buyer names and addresses. Errors from providers carry status
 codes only.
+
+The OpenID Connect provider's library logs the token and userinfo requests it refuses
+at warning level, through slog's default logger and without a request ID: the error
+and its description, never codes, tokens or secrets.
 
 ## Runbooks
 

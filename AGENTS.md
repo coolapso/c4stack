@@ -7,7 +7,7 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 ## Boundaries
 
 - Public packages are the apps' API: `web`, `app`, `app/apptest`, `ui`, `identity`,
-  `identity/hanko`, `identity/local`, `accounts`, `apikeys`, `payments`,
+  `identity/hanko`, `identity/local`, `accounts`, `apikeys`, `oidc`, `payments`,
   `payments/creem`, `credits`, `credits/expiry`, `email`, `email/scaleway` and
   `email/smtp`. Start new names unexported and export
   them when an app needs them. Keep changes additive after v0.1.0.

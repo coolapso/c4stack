@@ -450,6 +450,44 @@ fixed. The one setting is `MaxCodesPerHour`, an optional ceiling on the codes th
 app sends in an hour, to protect the sending domain. `docs/sign-in.md` explains every
 flow and limit, and `docs/operations.md` the runbooks.
 
+## Sign other services in with OpenID Connect
+
+`oidc` makes the app an OpenID Connect provider: another service, such as an app of
+yours on another domain, signs people in with the app's accounts. Every client is a
+server with a secret, using the authorization code flow with PKCE.
+
+```go
+// main.go: after accounts'.
+Migrations: []app.Migrations{accounts.Migrations, local.Migrations, oidc.Migrations, {Namespace: "app", Files: migrations.Files}},
+
+// setup
+provider, err := oidc.New(a, accts, oidc.Config{
+	Issuer:         cfg.PublicURL,  // never changes once clients sign people in
+	SecretKey:      cfg.SecretKey,
+	Client:         clients.Get,    // your lookup: an oidc.Client, or oidc.ErrUnknownClient
+	Allow:          mayUse,         // optional: an error refuses that account for that client
+	Reauthenticate: idp.ConfirmURL, // optional: for clients that ask for a fresh sign-in
+})
+
+// routes.go: at the root, where discovery lives.
+provider.Mount(r, layout)
+```
+
+Keep clients in configuration or in a table of your own. Make each secret with
+`oidc.NewSecret()`, give the secret to the client once, and store only the hash; a
+secret that arrives from a secret store goes through `oidc.HashSecret` when the app
+starts. Register each redirect URI exactly as the client sends it. The client is then
+configured with:
+
+- the issuer, the app's public URL, from which it discovers the endpoints at
+  `/.well-known/openid-configuration`;
+- its client ID and secret, sent as `client_secret_basic` or `client_secret_post`;
+- the scopes `openid email`.
+
+It keys its users by the issuer and the `sub` claim, the account's ID, never by email:
+the address can change, and the subject never does. `docs/architecture.md` lists what
+the provider checks and what it doesn't offer.
+
 ## Replace a provider
 
 Providers are small interfaces. Implement one and pass it where the default goes:

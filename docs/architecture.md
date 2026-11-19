@@ -27,6 +27,7 @@ registers.
 | `identity/local` | C4Stack's own passwordless sign-in, with codes by email and passkeys, its pages, its profile UI and its operator commands |
 | `accounts` | Accounts mapped from identities, sign-in middleware, the settings page and account deletion |
 | `apikeys` | Opt-in. API keys, bearer middleware and the keys page |
+| `oidc` | Opt-in. An OpenID Connect provider, so other services sign people in with the app's accounts |
 | `payments` | The payment provider interface |
 | `payments/creem` | The Creem adapter |
 | `credits` | Opt-in. Ledger, holds, purchases, webhooks, history and the credits page |
@@ -47,7 +48,7 @@ through `app`.
   Each adapter depends on its interface, and on `web` and `ui` where it renders pages.
   `identity/local` keeps tables, commands and jobs, so it depends on `app` too, and on
   `email` to send codes. Nothing depends on it.
-- `accounts` depends on `identity`. `apikeys` and `credits` depend on `accounts`.
+- `accounts` depends on `identity`. `apikeys`, `oidc` and `credits` depend on `accounts`.
   `credits/expiry` depends on `credits` and `email`. Nothing points back: `accounts` learns
   about other modules only through the deletion hooks they register.
 - The app depends on everything it uses.
@@ -590,6 +591,110 @@ spend.
 a revoked one after typing its name. Changes close the dialog and reload the list from
 the page's `/list`.
 
+### oidc (opt-in)
+
+An OpenID Connect provider, so other services sign people in with the app's accounts:
+the authorization code flow with PKCE, for confidential clients. Its first user is
+notekpr's hosted service, whose servers each sign in with it.
+
+```sql
+oidc_keys(id, public_key, private_key sealed, sealed_with, signs_from, signs_until, created_at)
+oidc_codes(code_hash bytea PK, account_id → accounts ON DELETE CASCADE, client_id,
+           redirect_uri, scopes, nonce, code_challenge, auth_time, email, email_verified,
+           created_at, expires_at, used_at, reused_at)
+oidc_access_tokens(token_hash bytea PK, code_hash, account_id → accounts ON DELETE CASCADE,
+                   client_id, scopes, email, email_verified, created_at, expires_at)
+```
+
+```go
+type Client struct {
+	ID           string
+	SecretHash   []byte   // HashSecret(secret)
+	RedirectURIs []string // exact; https, or http on loopback
+}
+
+type Config struct {
+	Issuer         string // the app's public URL, without a path; never changes
+	SecretKey      string // the app's secret key
+	Client         func(ctx context.Context, id string) (Client, error) // or ErrUnknownClient
+	Allow          func(ctx context.Context, clientID string, account accounts.Account) error // optional
+	Reauthenticate func(next string) string // optional, e.g. identity/local's ConfirmURL
+}
+
+func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Provider, error)
+func (p *Provider) Mount(r gin.IRouter, layout ui.Layout) // at the root
+// GET /.well-known/openid-configuration, GET /oidc/authorize, GET /oidc/continue,
+// POST /oidc/token, GET and POST /oidc/userinfo, GET /oidc/keys
+func NewSecret() (secret string, hash []byte)
+func HashSecret(secret string) []byte
+```
+
+It runs on `zitadel/oidc`'s `op` package, which serves discovery, the token endpoint,
+userinfo and the keys; the authorization endpoint and the continue page are the
+module's own. Only the endpoints above are served and advertised: no refresh tokens,
+introspection, revocation, logout, device flow, dynamic registration or CORS.
+
+**The subject** is the account's ID, whichever identity signed in, so a client keys its
+users by the issuer and the subject and never by email. The clients, and who may sign
+in to which, are the app's: `Client` looks them up, from configuration or the app's own
+table, and `Allow` refuses an account with `access_denied`. `Client` is called on every
+request, so a removed client or redirect URI stops at once.
+
+**Authorization.** The endpoint checks the client and the redirect URI first, exactly as
+registered, and answers anything wrong with them on a page of its own; every later
+error goes to the client. Then the rest, all required: one of each parameter, the
+`openid` scope, the code response type, the query response mode, PKCE with S256, and no
+request objects. An `id_token_hint` must be one the provider issued to the same client,
+expired or not. A valid request is sealed with
+AES-GCM under a key derived from the app's secret key and becomes the ID in the
+continue page's URL: nothing is stored before someone signs in, and a request lasts 30
+minutes. A random value in the sealed `oidc` cookie ties it to the browser that started
+it, so a signed-in victim who opens someone else's URL gets a page, not a code.
+`prompt=none` gets `login_required`: the provider never signs in without its pages.
+Granted scopes are `openid` and `email`; others are dropped.
+
+**Continuing.** `/oidc/continue` sits behind `RequireSignIn`, so the sign-in pages come
+first when needed, with the continue URL as `next`. It checks the request again: its
+seal and age, the browser, the client and the redirect URI. An `id_token_hint` for
+another account gives `login_required`. A sign-in older than `max_age` seconds, or for
+`prompt=login` one made before the request began, sends the person to sign in again
+through `Reauthenticate`, or without it gives `login_required`; once they are back, 30
+seconds allow for the clocks that date requests and sign-ins differing. Then it asks
+`Allow`, stores a code and redirects to the client.
+
+**Codes and tokens.** A code is 32 random bytes, stored as its SHA-256 with the account,
+client, redirect URI, scopes, nonce, PKCE challenge, sign-in time and the address with
+whether it is verified (the identity's verified address, when it is the account's). It
+lasts two minutes and is taken once: the exchange marks it used in the same statement
+that reads it. A second use revokes the access tokens the first one gave (RFC 6749,
+4.1.2); used codes stay until those tokens have expired, so a late reuse is still
+caught. The exchange needs the client's secret, by `client_secret_basic` or
+`client_secret_post`, the same redirect URI, still registered, and the PKCE verifier,
+which the library would skip for confidential clients without the module's check. The ID token (RS256, 10
+minutes) carries `iss`, `sub`, `aud`, `azp`, `exp`, `iat`, `auth_time`, `nonce`,
+`at_hash`, `c_hash`, and `email` and `email_verified` with the email scope. The access
+token is a random ID, stored as its SHA-256 and encrypted with the subject; it only
+reads userinfo, for 10 minutes, sent in the `Authorization` header or a POST body,
+never in the URL. Codes and access tokens cascade with their account.
+
+**Signing keys.** RSA 2048, generated by the provider. A key signs for 30 days, is
+published from when it is made, at least a day before its turn, until a day after it
+stops. The private key is sealed with a key derived from the app's secret key, so a
+copy of the database cannot sign tokens; `sealed_with` records which secret key sealed
+it, so after a replacement the old keys are only published and a new one signs at
+once. The first sign-in makes the first key. An hourly job, under an advisory lock,
+makes the next key two days ahead and deletes expired codes, tokens and keys.
+
+**Fixed values.** Like sign-in's, these are security values, not settings: requests 30
+minutes, codes 2 minutes, access and ID tokens 10 minutes, keys 30 days with a day's
+overlap, `state` at most 512 bytes and `nonce` 256, which bound the continue URL.
+
+**Logs.** The library logs the token and userinfo requests it refuses at warning level,
+through slog's default logger, with the error and its description. The library's own
+authorization endpoint would log the client's `state` and the whole callback URL, which
+is why the module has its own. Codes, tokens, secrets, `state` and addresses are never
+logged; a test checks it.
+
 ### payments and payments/creem
 
 ```go
@@ -930,6 +1035,10 @@ These features were considered and decided as follows.
 | A recent sign-in before deletion and passkey changes | Yes, 5 minutes | It proves the owner is present rather than an unattended browser. Five minutes is Searchbase's window for passkey changes; one window keeps one rule and one message. |
 | A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
 | Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
+| Storing OpenID Connect requests before sign-in | No, sealed in the URL | Nothing is written for a visitor who never signs in, so a flood of requests costs no storage. The browser cookie gives what a stored request would: it continues only where it began. |
+| Refresh tokens, logout and introspection in the provider | No | Its clients sign people in and keep their own sessions; access tokens only read userinfo, right after the exchange. |
+| Public OpenID Connect clients | No | Every client is a server with a secret. A public client could be added as a new kind of client. |
+| A consent screen in the provider | No | The clients are the app's own, configured by its operator. `Allow` decides who may sign in to which. |
 
 ## Not in scope
 
