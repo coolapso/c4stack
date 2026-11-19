@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"github.com/coolapso/c4stack/accounts"
 	"github.com/coolapso/c4stack/apikeys"
 	"github.com/coolapso/c4stack/credits"
+	"github.com/coolapso/c4stack/payments"
 	"github.com/coolapso/c4stack/web"
 	"github.com/gin-gonic/gin"
 )
@@ -77,7 +79,12 @@ func (t *textlab) overview(c *gin.Context) {
 			active++
 		}
 	}
-	t.layout.Render(c, http.StatusOK, "Overview", overviewPage(summary, active, jobs))
+	pro, err := t.pro(c.Request.Context(), accounts.Current(c).ID)
+	if err != nil {
+		t.fail(c, err)
+		return
+	}
+	t.layout.Render(c, http.StatusOK, "Overview", overviewPage(c, summary, active, jobs, t.subs != nil, pro))
 }
 
 func (t *textlab) jobs(c *gin.Context) {
@@ -131,8 +138,43 @@ func readText(c *gin.Context) (string, bool) {
 	return req.Text, true
 }
 
-// analyseCost is what one analysis costs, in credits (EUR cents).
-const analyseCost = 2
+// analyseCost is what one analysis costs, in credits (EUR cents); proAnalyseCost is
+// its price with Textlab Pro.
+const (
+	analyseCost    = 2
+	proAnalyseCost = 1
+)
+
+// proProduct is Textlab Pro's product ID.
+const proProduct = "pro"
+
+// pro reports whether an account's Textlab Pro is in effect: paid for, whether it
+// renews or ends at the period's end, and while the provider retries a failed payment.
+// One that ends counts only until its period does, in case the webhook that ends it
+// never arrives.
+func (t *textlab) pro(ctx context.Context, accountID string) (bool, error) {
+	if t.subs == nil {
+		return false, nil
+	}
+	subs, err := t.subs.List(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	for _, s := range subs {
+		if s.Product.ID != proProduct {
+			continue
+		}
+		switch s.Status {
+		case payments.SubscriptionActive, payments.SubscriptionTrialing, payments.SubscriptionPastDue:
+			return true, nil
+		case payments.SubscriptionCanceling:
+			if s.PeriodEnd.After(time.Now()) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
 
 // analysis is an analysis's result.
 type analysis struct {
@@ -160,14 +202,24 @@ func (t *textlab) analyse(c *gin.Context) {
 	ctx := c.Request.Context()
 	accountID := apikeys.Current(c).AccountID
 	hash := sha256.Sum256([]byte(text))
+	cost := int64(analyseCost)
+	pro, err := t.pro(ctx, accountID)
+	if err != nil {
+		web.Log(c).Error("reading the subscription failed", "error", err)
+		apiError(c, http.StatusServiceUnavailable, "unavailable", "Try again in a moment.")
+		return
+	}
+	if pro {
+		cost = proAnalyseCost
+	}
 	result := analysis{
 		Words:        len(strings.Fields(text)),
 		Characters:   utf8.RuneCountInString(text),
 		Lines:        strings.Count(text, "\n") + 1,
-		ChargedCents: analyseCost,
+		ChargedCents: cost,
 	}
 	// The account lock serialises requests with the same key.
-	err := t.credits.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
+	err = t.credits.WithAccount(ctx, accountID, func(tx *credits.Tx) error {
 		var storedHash, stored []byte
 		err := tx.SQL().QueryRowContext(ctx, `
 			SELECT request_hash, result
@@ -182,7 +234,7 @@ func (t *textlab) analyse(c *gin.Context) {
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		if err := tx.Debit(analyseCost, "analyse:"+key, "Text analysis"); err != nil {
+		if err := tx.Debit(cost, "analyse:"+key, "Text analysis"); err != nil {
 			return err
 		}
 		data, _ := json.Marshal(result)

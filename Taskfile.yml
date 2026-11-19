@@ -97,6 +97,8 @@ tasks:
     env:
       TEXTLAB_PUBLIC_URL: http://localhost:8082
       TEXTLAB_CREEM_PRODUCT_ID: prod_3XE2xgtVlwJ64ehEItnBo3
+      # Textlab Pro, a test-mode recurring product: €5 a month.
+      TEXTLAB_CREEM_PRO_PRODUCT_ID: prod_2E9COUD6qRZ8fJz5unI4Ff
       TEXTLAB_CREEM_API_KEY: '{{.CREEM_API_KEY}}'
       TEXTLAB_CREEM_WEBHOOK_SECRET: '{{.CREEM_WEBHOOK_SECRET}}'
     cmds:

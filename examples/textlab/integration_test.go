@@ -13,7 +13,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/coolapso/c4stack/payments"
 	"github.com/gin-gonic/gin"
 )
 
@@ -247,5 +249,71 @@ func TestOIDC(t *testing.T) {
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil || claims["email"] != "ada@example.com" || claims["name"] != "Ada Lovelace" || claims["nonce"] != "n1" {
 		t.Fatalf("claims %s", payload)
+	}
+}
+
+// TestPro buys Textlab Pro: the overview offers it, the checkout goes to the provider,
+// and once the provider's webhook starts the subscription, an analysis costs half.
+func TestPro(t *testing.T) {
+	_, h, pay := newTextlab(t, origin)
+	b := newBrowser(t, h)
+	keyRec := b.do(http.MethodPost, "/account/api-keys", url.Values{"name": {"Pro"}}, http.Header{"Hx-Request": {"true"}})
+	key := regexp.MustCompile(`tl_[A-Za-z0-9_-]{43}`).FindString(keyRec.Body.String())
+	page := b.do(http.MethodGet, "/account", nil, nil)
+	if !strings.Contains(page.Body.String(), "Go Pro") || !strings.Contains(page.Header().Get("Content-Security-Policy"), "https://pay.example") {
+		t.Fatalf("overview without Pro: %s", page.Header().Get("Content-Security-Policy"))
+	}
+	rec := b.do(http.MethodPost, "/account/subscriptions", url.Values{"product": {"pro"}, "next": {"/account"}}, nil)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://pay.example/co_") {
+		t.Fatalf("checkout: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	c := pay.subscriptionCheckouts[0]
+	if c.ProductID != "prod_pro" || c.Email != "ada@example.com" || c.SuccessURL != origin+"/account" {
+		t.Fatalf("checkout %+v", c)
+	}
+	body, _ := json.Marshal(payments.SubscriptionEvent{ID: "evt_pro", Kind: payments.SubscriptionStarted, Reference: c.Reference,
+		State: payments.SubscriptionState{ID: "sub_pro", CustomerID: "cust_ada", ProductID: "prod_pro", Units: 1, Status: payments.SubscriptionActive}})
+	req := httptest.NewRequest(http.MethodPost, origin+"/webhooks/subscriptions", bytes.NewReader(body))
+	req.Header.Set("X-Signature", "valid")
+	webhook := httptest.NewRecorder()
+	h.ServeHTTP(webhook, req)
+	if webhook.Code != http.StatusOK {
+		t.Fatalf("webhook: %d", webhook.Code)
+	}
+	if page := b.do(http.MethodGet, "/account", nil, nil).Body.String(); !strings.Contains(page, "Pro is on") {
+		t.Fatal("the overview doesn't show Pro")
+	}
+	if page := b.do(http.MethodGet, "/account/settings", nil, nil).Body.String(); !strings.Contains(page, "Textlab Pro") {
+		t.Fatal("the settings page doesn't list the subscription")
+	}
+	// Buy credit, then analyse at Pro's price.
+	b.do(http.MethodPost, "/account/credits", url.Values{"amount": {"10"}}, nil)
+	paid := httptest.NewRequest(http.MethodPost, origin+"/webhooks/payments", bytes.NewReader(paidEvent(pay.last())))
+	paid.Header.Set("X-Signature", "valid")
+	h.ServeHTTP(httptest.NewRecorder(), paid)
+	got := decode(t, api(h, http.MethodPost, "/api/v1/analyse", key, map[string]string{"text": "one two"}, http.Header{"Idempotency-Key": {"pro-1"}}))
+	if got["charged_cents"] != float64(1) {
+		t.Fatalf("analysis with Pro: %v", got)
+	}
+	// While it renews, the account can't be deleted.
+	if rec := b.do(http.MethodPost, "/account/delete", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("deletion with Pro: %d", rec.Code)
+	}
+	// Canceled, it counts until its period ends, and not after, even if the webhook that
+	// ends it never comes.
+	for _, tc := range []struct {
+		end  time.Time
+		cost float64
+	}{{time.Now().Add(time.Hour), 1}, {time.Now().Add(-time.Hour), 2}} {
+		body, _ := json.Marshal(payments.SubscriptionEvent{ID: "evt_cancel_" + tc.end.Format(time.RFC3339Nano), Kind: payments.SubscriptionChanged,
+			Reference: c.Reference, CreatedAt: time.Now(),
+			State: payments.SubscriptionState{ID: "sub_pro", Status: payments.SubscriptionCanceling, PeriodEnd: tc.end}})
+		req := httptest.NewRequest(http.MethodPost, origin+"/webhooks/subscriptions", bytes.NewReader(body))
+		req.Header.Set("X-Signature", "valid")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		got := decode(t, api(h, http.MethodPost, "/api/v1/analyse", key, map[string]string{"text": "one two"}, http.Header{"Idempotency-Key": {"after-" + tc.end.Format(time.RFC3339Nano)}}))
+		if got["charged_cents"] != tc.cost {
+			t.Fatalf("canceling, ending %s: %v", tc.end, got)
+		}
 	}
 }

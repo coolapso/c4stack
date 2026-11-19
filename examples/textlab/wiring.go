@@ -16,6 +16,7 @@ import (
 	"github.com/coolapso/c4stack/identity"
 	"github.com/coolapso/c4stack/oidc"
 	"github.com/coolapso/c4stack/payments"
+	"github.com/coolapso/c4stack/subscriptions"
 	"github.com/coolapso/c4stack/ui"
 	"github.com/coolapso/c4stack/web"
 	"github.com/gin-gonic/gin"
@@ -41,8 +42,10 @@ type textlab struct {
 	accounts *accounts.Accounts
 	keys     *apikeys.Keys
 	credits  *credits.Credits
-	layout   ui.Layout
-	db       *sql.DB
+	// subs sells Textlab Pro; nil when Textlab sells no subscription.
+	subs   *subscriptions.Subscriptions
+	layout ui.Layout
+	db     *sql.DB
 }
 
 // build wires the modules and routes. It is separate from setup so tests can pass
@@ -86,6 +89,16 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Textlab Pro halves the price of an analysis, while its subscription is in effect.
+	var subs *subscriptions.Subscriptions
+	if seller, ok := p.payments.(payments.Subscriber); ok && cfg.CreemProProductID != "" {
+		if subs, err = subscriptions.New(a, accts, subscriptions.Config{
+			Payments: seller,
+			Products: []subscriptions.Product{{ID: proProduct, ProviderID: cfg.CreemProProductID, Name: "Textlab Pro", Group: "plan"}},
+		}); err != nil {
+			return nil, err
+		}
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey, TrustedProxies: cfg.TrustedProxies})
@@ -100,7 +113,7 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	if err := assets.Add("app", static); err != nil {
 		return nil, err
 	}
-	t := &textlab{accounts: accts, keys: keys, credits: cr, layout: consoleLayout(assets), db: a.DB()}
+	t := &textlab{accounts: accts, keys: keys, credits: cr, subs: subs, layout: consoleLayout(assets), db: a.DB()}
 
 	r.GET("/assets/*path", assets.Serve)
 	r.NoRoute(t.layout.NotFound)
@@ -113,7 +126,14 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	// The account pages, and the console's own signed-in pages beside them.
 	accts.Mount(r, t.layout)
 	console := r.Group("/account", accts.RequireSignIn)
-	console.GET("", t.overview)
+	if subs != nil {
+		// The overview's "Go Pro" form goes on to the provider's checkout.
+		console.GET("", web.AllowCSP(subs.CheckoutCSP()), t.overview)
+		subs.Mount(console.Group("/subscriptions"), t.layout)
+		r.POST("/webhooks/subscriptions", subs.Webhook)
+	} else {
+		console.GET("", t.overview)
+	}
 	console.GET("/jobs", t.jobs)
 	keys.Mount(console.Group("/api-keys"), t.layout)
 	cr.Mount(console.Group("/credits"), t.layout)

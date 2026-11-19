@@ -43,8 +43,9 @@ func (testIdentity) Delete(context.Context, *http.Request) error { return nil }
 // testPayments records checkouts. Webhook bodies are JSON payments.Events, accepted
 // when the X-Signature header says "valid".
 type testPayments struct {
-	mu        sync.Mutex
-	checkouts []payments.Checkout
+	mu                    sync.Mutex
+	checkouts             []payments.Checkout
+	subscriptionCheckouts []payments.SubscriptionCheckout
 }
 
 func (p *testPayments) Name() string           { return "test" }
@@ -74,6 +75,41 @@ func (p *testPayments) ParseWebhook(h http.Header, body []byte) (payments.Event,
 	return e, nil
 }
 
+// The subscription side of testPayments: checkouts are recorded, webhook bodies are
+// JSON payments.SubscriptionEvents with the same signature, and the provider's state is
+// whatever was last started.
+func (p *testPayments) CreateSubscriptionCheckout(_ context.Context, c payments.SubscriptionCheckout) (payments.Session, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.subscriptionCheckouts = append(p.subscriptionCheckouts, c)
+	return payments.Session{ID: "co_" + c.Reference, URL: "https://pay.example/co_" + c.Reference}, nil
+}
+
+func (p *testPayments) ParseSubscriptionWebhook(h http.Header, body []byte) (payments.SubscriptionEvent, error) {
+	if h.Get("X-Signature") != "valid" {
+		return payments.SubscriptionEvent{}, payments.ErrInvalid
+	}
+	var e payments.SubscriptionEvent
+	if err := json.Unmarshal(body, &e); err != nil || e.ID == "" {
+		return payments.SubscriptionEvent{}, payments.ErrInvalid
+	}
+	return e, nil
+}
+
+func (p *testPayments) Subscription(_ context.Context, id string) (payments.SubscriptionState, error) {
+	return payments.SubscriptionState{ID: id, Status: payments.SubscriptionCanceling}, nil
+}
+
+func (p *testPayments) CancelSubscription(context.Context, string, bool) error { return nil }
+
+func (p *testPayments) ChangeSubscription(context.Context, string, payments.SubscriptionChange) error {
+	return nil
+}
+
+func (p *testPayments) CustomerPortal(_ context.Context, customer string) (string, error) {
+	return "https://pay.example/portal/" + customer, nil
+}
+
 // paidEvent is what the payment provider sends once a checkout is paid.
 func paidEvent(c payments.Checkout) []byte {
 	body, _ := json.Marshal(payments.Event{
@@ -89,11 +125,12 @@ func newTextlab(t *testing.T, publicURL string) (*app.App, http.Handler, *testPa
 	a := apptest.New(t, app.Config{Name: "textlab", Migrations: appMigrations})
 	pay := &testPayments{}
 	handler, err := build(a, config{
-		PublicURL:        publicURL,
-		SecretKey:        strings.Repeat("s", 32),
-		OIDCClientID:     "notes",
-		OIDCClientSecret: testClientSecret,
-		OIDCRedirectURIs: []string{"https://notes.example.com/callback"},
+		PublicURL:         publicURL,
+		SecretKey:         strings.Repeat("s", 32),
+		OIDCClientID:      "notes",
+		OIDCClientSecret:  testClientSecret,
+		OIDCRedirectURIs:  []string{"https://notes.example.com/callback"},
+		CreemProProductID: "prod_pro",
 	}, providers{
 		identity: testIdentity{},
 		payments: pay,

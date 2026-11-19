@@ -19,6 +19,9 @@ type config struct {
 	CreemWebhookSecret  string
 	CreemProductID      string
 	CreemCheckoutOrigin string
+	// CreemProProductID is the recurring product Textlab Pro sells. Without it, Textlab
+	// sells no subscription.
+	CreemProProductID string
 	// Email goes through SMTP, such as Mailpit in development, or Scaleway. Without
 	// Scaleway, credit never expires.
 	EmailFrom         string
@@ -48,6 +51,7 @@ func loadConfig() (config, error) {
 		CreemWebhookSecret:  env("CREEM_WEBHOOK_SECRET"),
 		CreemProductID:      env("CREEM_PRODUCT_ID"),
 		CreemCheckoutOrigin: env("CREEM_CHECKOUT_ORIGIN"),
+		CreemProProductID:   env("CREEM_PRO_PRODUCT_ID"),
 		ScalewaySecretKey:   env("SCALEWAY_SECRET_KEY"),
 		ScalewayProjectID:   env("SCALEWAY_PROJECT_ID"),
 		EmailFrom:           env("EMAIL_FROM"),

@@ -1,6 +1,10 @@
 package main
 
-import "github.com/coolapso/c4stack/credits"
+import (
+	"github.com/coolapso/c4stack/credits"
+	"github.com/coolapso/c4stack/ui"
+	"github.com/gin-gonic/gin"
+)
 
 templ homePage() {
 	<section class="hero stack">
@@ -12,7 +16,7 @@ templ homePage() {
 	</section>
 }
 
-templ overviewPage(s credits.Summary, activeKeys int, jobs []job) {
+templ overviewPage(c *gin.Context, s credits.Summary, activeKeys int, jobs []job, sellsPro, pro bool) {
 	<div class="page-header">
 		<h1>Overview</h1>
 	</div>
@@ -32,6 +36,31 @@ templ overviewPage(s credits.Summary, activeKeys int, jobs []job) {
 			</div>
 		</div>
 	</section>
+	if sellsPro {
+		<section class="panel" aria-labelledby="pro-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="pro-title">Textlab Pro</h2>
+					if pro {
+						<p>Pro is on: every analysis costs half. Manage it in your account settings.</p>
+					} else {
+						<p>€5 a month: every analysis costs half.</p>
+					}
+				</div>
+				if !pro {
+					<form method="post" action="/account/subscriptions" data-busy-form>
+						@ui.CSRFField(c)
+						<input type="hidden" name="product" value="pro"/>
+						<input type="hidden" name="next" value="/account"/>
+						<button type="submit" class="btn primary small">
+							Go Pro
+							@ui.Spinner()
+						</button>
+					</form>
+				}
+			</div>
+		</section>
+	}
 	<section class="panel">
 		<div class="panel-header">
 			<div>
