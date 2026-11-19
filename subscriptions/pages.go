@@ -177,7 +177,9 @@ type panelView struct {
 	base    string
 	next    string
 	billing bool
-	running []Subscription
+	// billingNote says that billing opens on the provider's site.
+	billingNote string
+	running     []Subscription
 }
 
 // section is the settings page's panel: the account's subscriptions that haven't ended,
@@ -189,7 +191,11 @@ func (p *pages) section(c *gin.Context) templ.Component {
 		web.Log(c).Error("listing subscriptions failed", "error", err)
 		return nil
 	}
-	v := panelView{c: c, base: p.base, next: c.Request.URL.Path, billing: len(subs) > 0}
+	v := panelView{c: c, base: p.base, next: c.Request.URL.Path, billing: len(subs) > 0,
+		billingNote: "Opens " + p.s.provider + ", our payment provider, in a new tab: your card and receipts are on its site."}
+	if p.s.provider == "our payment provider" {
+		v.billingNote = "Opens our payment provider's site in a new tab: your card and receipts are there."
+	}
 	for _, s := range subs {
 		if s.Status != "canceled" {
 			v.running = append(v.running, s)

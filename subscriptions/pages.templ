@@ -10,7 +10,15 @@ templ panel(v panelView) {
 				<p>What you pay for, and when it renews.</p>
 			</div>
 			if v.billing {
-				<a class="btn small" href={ templ.SafeURL(v.base + "/billing") }>Manage billing</a>
+				<a
+					class="btn small"
+					href={ templ.SafeURL(v.base + "/billing") }
+					target="_blank"
+					rel="noopener noreferrer"
+					title={ v.billingNote }
+					aria-describedby="billing-note"
+				>Manage billing <span aria-hidden="true">↗</span></a>
+				<span id="billing-note" class="sr-only">{ v.billingNote }</span>
 			}
 		</div>
 		if len(v.running) == 0 {

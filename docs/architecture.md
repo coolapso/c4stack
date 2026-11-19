@@ -964,7 +964,8 @@ type Product struct {
 type Config struct {
 	Payments  payments.Subscriber
 	Products  []Product
-	Proration payments.Proration // how a change's difference is charged; zero: at once
+	Proration    payments.Proration // how a change's difference is charged; zero: at once
+	ProviderName string             // such as "Creem", for the billing link; zero: "our payment provider"
 }
 type Subscription struct {
 	ID, AccountID string
@@ -1049,7 +1050,9 @@ goes to review.
 
 **The settings panel** lists the subscriptions that haven't ended, with their renewal
 or end date, a Cancel dialog for each live one, and, once the account has subscribed,
-"Manage billing", which opens the provider's billing page.
+"Manage billing", which opens the provider's billing page in a new tab: the provider
+has no API for changing a card. The link says, on hover and to screen readers, that it
+opens the provider's site.
 
 **Cleanup and commands.** An hourly job deletes checkouts nobody completed within 30
 days, since a checkout's page may stay open long, and the record of events older than

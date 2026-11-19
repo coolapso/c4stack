@@ -93,8 +93,9 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	var subs *subscriptions.Subscriptions
 	if seller, ok := p.payments.(payments.Subscriber); ok && cfg.CreemProProductID != "" {
 		if subs, err = subscriptions.New(a, accts, subscriptions.Config{
-			Payments: seller,
-			Products: []subscriptions.Product{{ID: proProduct, ProviderID: cfg.CreemProProductID, Name: "Textlab Pro", Group: "plan"}},
+			Payments:     seller,
+			ProviderName: "Creem",
+			Products:     []subscriptions.Product{{ID: proProduct, ProviderID: cfg.CreemProProductID, Name: "Textlab Pro", Group: "plan"}},
 		}); err != nil {
 			return nil, err
 		}

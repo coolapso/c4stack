@@ -90,6 +90,10 @@ type Config struct {
 	// Proration says how a change's price difference is charged. Zero is
 	// payments.ProrateNow.
 	Proration payments.Proration
+	// ProviderName is the payment provider as people know it, such as "Creem". The
+	// settings panel says that billing opens on its site. Empty means "our payment
+	// provider".
+	ProviderName string
 }
 
 // Subscription is an account's subscription.
@@ -119,6 +123,7 @@ type Subscriptions struct {
 	byProvider map[string]Product
 	order      []Product
 	proration  payments.Proration
+	provider   string
 }
 
 var productID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -146,6 +151,10 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, erro
 		products:   map[string]Product{},
 		byProvider: map[string]Product{},
 		proration:  cfg.Proration,
+		provider:   cfg.ProviderName,
+	}
+	if s.provider == "" {
+		s.provider = "our payment provider"
 	}
 	for _, p := range cfg.Products {
 		if p.MaxUnits == 0 {

@@ -818,7 +818,12 @@ func TestReturnFromCheckout(t *testing.T) {
 	if r := f.reviews(t); len(r) != 0 {
 		t.Fatalf("reviews %v", r)
 	}
-	if page := f.do(http.MethodGet, "/account/settings", "ann", nil).Body.String(); !strings.Contains(page, "Plus, monthly") || !strings.Contains(page, "Manage billing") {
+	page := f.do(http.MethodGet, "/account/settings", "ann", nil).Body.String()
+	if !strings.Contains(page, "Plus, monthly") || !strings.Contains(page, "Manage billing") {
 		t.Fatal("the panel doesn't show the subscription")
+	}
+	// Billing opens the provider's site: the link says so, and opens a new tab.
+	if !strings.Contains(page, `target="_blank"`) || !strings.Contains(page, "Opens our payment provider&#39;s site in a new tab") {
+		t.Fatalf("the billing link doesn't say where it goes:\n%s", page)
 	}
 }

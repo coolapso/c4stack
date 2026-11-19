@@ -197,7 +197,8 @@ subscriptions.Migrations,
 
 // setup: creem.New(...) without a ProductID is enough when the app sells no credit.
 subs, err := subscriptions.New(a, accts, subscriptions.Config{
-	Payments: pay,
+	Payments:     pay,
+	ProviderName: "Creem", // the billing link says it opens Creem's site
 	Products: []subscriptions.Product{
 		{ID: "plus-monthly", ProviderID: cfg.PlusMonthlyProduct, Name: "Plus, monthly", Group: "plan"},
 		{ID: "plus-yearly", ProviderID: cfg.PlusYearlyProduct, Name: "Plus, yearly", Group: "plan"},
