@@ -1,0 +1,415 @@
+package local
+
+import (
+	"strconv"
+	"time"
+
+	"github.com/coolapso/c4stack/ui"
+	"github.com/gin-gonic/gin"
+)
+
+type loginData struct {
+	c         *gin.Context
+	action    string
+	next      string
+	email     string
+	err       string
+	scriptURL string
+	options   string
+	finish    string
+}
+
+// loginPage asks for an address. Its script offers the browser's passkeys in the
+// address field's autofill, and behind the passkey button.
+templ loginPage(d loginData) {
+	<div class="narrow stack" data-local-passkey="login" data-options={ d.options } data-finish={ d.finish } data-next={ d.next }>
+		<div class="page-header">
+			<h1>Sign in</h1>
+			<p class="lead">Enter your email address. We'll send you a code, whether you have an account or are new here.</p>
+		</div>
+		<section class="panel stack">
+			if d.err != "" {
+				<p class="notice danger" role="alert">{ d.err }</p>
+			}
+			<form class="stack" method="post" action={ templ.SafeURL(d.action) } data-busy-form>
+				@ui.CSRFField(d.c)
+				<input type="hidden" name="next" value={ d.next }/>
+				<div class="field">
+					<label for="login-email">Email address</label>
+					<input
+						id="login-email"
+						name="email"
+						type="email"
+						value={ d.email }
+						autocomplete="username webauthn"
+						autocapitalize="none"
+						spellcheck="false"
+						required
+						autofocus
+					/>
+				</div>
+				<button type="submit" class="btn primary">
+					Continue
+					@ui.Spinner()
+				</button>
+			</form>
+			<div class="stack" data-passkey-only hidden>
+				<p class="hint">Or use a passkey saved on this device or your phone.</p>
+				<button type="button" class="btn" data-passkey-start>
+					Sign in with a passkey
+					@ui.Spinner()
+				</button>
+				<p class="notice danger" role="alert" data-passkey-error hidden></p>
+			</div>
+		</section>
+		<script src={ d.scriptURL } defer></script>
+	</div>
+}
+
+type codeData struct {
+	c       *gin.Context
+	email   string
+	minutes int
+	action  string
+	resend  string
+	restart string
+	err     string
+	info    string
+	// confirm is a code sent to confirm a signed-in user; change is one sent to an
+	// address the user is changing to.
+	confirm bool
+	change  bool
+}
+
+// codePage asks for the code that was sent.
+templ codePage(d codeData) {
+	<div class="narrow stack">
+		<div class="page-header">
+			if d.change {
+				<h1>Confirm your new address</h1>
+			} else if d.confirm {
+				<h1>Confirm it's you</h1>
+			} else {
+				<h1>Enter your code</h1>
+			}
+			<p class="lead">We sent a code to <strong>{ d.email }</strong>. It works for { strconv.Itoa(d.minutes) } minutes.</p>
+		</div>
+		<section class="panel stack">
+			if d.err != "" {
+				<p class="notice danger" role="alert">{ d.err }</p>
+			}
+			if d.info != "" {
+				<p class="notice success" role="status">{ d.info }</p>
+			}
+			<form class="stack" method="post" action={ templ.SafeURL(d.action) } data-busy-form>
+				@ui.CSRFField(d.c)
+				<div class="field">
+					<label for="code">Code</label>
+					<input
+						id="code"
+						name="code"
+						type="text"
+						inputmode="numeric"
+						autocomplete="one-time-code"
+						pattern="[0-9 \-]*"
+						maxlength="12"
+						spellcheck="false"
+						required
+						autofocus
+					/>
+				</div>
+				<button type="submit" class="btn primary">
+					if d.change {
+						Change address
+					} else {
+						Continue
+					}
+					@ui.Spinner()
+				</button>
+			</form>
+			<div class="cluster">
+				<form method="post" action={ templ.SafeURL(d.resend) } data-busy-form>
+					@ui.CSRFField(d.c)
+					<button type="submit" class="btn ghost small">
+						Send a new code
+						@ui.Spinner()
+					</button>
+				</form>
+				if d.change {
+					<a class="btn ghost small" href={ templ.SafeURL(d.restart) }>Use another address</a>
+				} else if !d.confirm {
+					<a class="btn ghost small" href={ templ.SafeURL(d.restart) }>Use another address</a>
+				}
+			</div>
+			<p class="hint">Can't find it? Check your spam folder. Codes come from us, never from a person: never give yours to anyone.</p>
+		</section>
+	</div>
+}
+
+type confirmData struct {
+	c         *gin.Context
+	email     string
+	next      string
+	action    string
+	passkeys  bool
+	err       string
+	scriptURL string
+	options   string
+	finish    string
+}
+
+// confirmPage asks a signed-in user to confirm it's them, before a change that needs a
+// recent sign-in.
+templ confirmPage(d confirmData) {
+	<div class="narrow stack" data-local-passkey="confirm" data-options={ d.options } data-finish={ d.finish + "?purpose=confirm" } data-next={ d.next }>
+		<div class="page-header">
+			<h1>Confirm it's you</h1>
+			<p class="lead">For your security, this change needs a recent sign-in.</p>
+		</div>
+		<section class="panel stack">
+			if d.err != "" {
+				<p class="notice danger" role="alert">{ d.err }</p>
+			}
+			if d.passkeys {
+				<div class="stack" data-passkey-only hidden>
+					<button type="button" class="btn primary" data-passkey-start>
+						Use your passkey
+						@ui.Spinner()
+					</button>
+					<p class="notice danger" role="alert" data-passkey-error hidden></p>
+				</div>
+			}
+			<form class="stack" method="post" action={ templ.SafeURL(d.action) } data-busy-form>
+				@ui.CSRFField(d.c)
+				<input type="hidden" name="next" value={ d.next }/>
+				<p>We'll send a code to <strong>{ d.email }</strong>.</p>
+				<button type="submit" class={ "btn", templ.KV("primary", !d.passkeys) }>
+					Send a code
+					@ui.Spinner()
+				</button>
+			</form>
+		</section>
+		if d.passkeys {
+			<script src={ d.scriptURL } defer></script>
+		}
+	</div>
+}
+
+type passkeyView struct {
+	id     string
+	name   string
+	added  time.Time
+	used   time.Time
+	synced bool
+}
+
+type deviceView struct {
+	id       string
+	label    string
+	signedIn time.Time
+	seen     time.Time
+	current  bool
+}
+
+type profileData struct {
+	c         *gin.Context
+	email     string
+	recent    bool
+	settings  string
+	confirm   string
+	notice    string
+	err       string
+	scriptURL string
+	passkeys  []passkeyView
+	devices   []deviceView
+	canAdd    bool
+}
+
+func day(t time.Time) string {
+	return t.UTC().Format("2 January 2006")
+}
+
+// profileSection is the profile UI on the account settings page.
+templ profileSection(d profileData) {
+	<div class="stack" data-local-passkey="add" data-options={ d.settings + "/passkeys/options" } data-finish={ d.settings + "/passkeys" }>
+		if d.notice != "" {
+			<p class="notice success" role="status">{ d.notice }</p>
+		}
+		if d.err != "" {
+			<p class="notice danger" role="alert">{ d.err }</p>
+		}
+		<section class="panel" id="email" aria-labelledby="email-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="email-title">Email address</h2>
+					<p>The address you sign in with. Sign-in codes go there.</p>
+				</div>
+				<a class="btn small" href={ templ.SafeURL(d.settings + "/email") }>Change address</a>
+			</div>
+			<p><strong>{ d.email }</strong></p>
+		</section>
+		<section class="panel stack" id="passkeys" aria-labelledby="passkeys-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="passkeys-title">Passkeys</h2>
+					<p>Sign in with your fingerprint, face or device lock, without a code. A passkey can't be used on a fake site.</p>
+				</div>
+			</div>
+			if len(d.passkeys) == 0 {
+				<p class="muted">No passkeys yet. Add one for a quicker, safer sign-in.</p>
+			} else {
+				<ul class="item-list">
+					for _, p := range d.passkeys {
+						<li class="item">
+							<div class="item-main">
+								<span>{ p.name }</span>
+								<span class="item-detail">
+									Added { day(p.added) }
+									if !p.used.IsZero() {
+										· last used { day(p.used) }
+									}
+									if p.synced {
+										· synced
+									}
+								</span>
+							</div>
+							if d.recent {
+								<form method="post" action={ templ.SafeURL(d.settings + "/passkeys/" + p.id + "/remove") } data-busy-form>
+									@ui.CSRFField(d.c)
+									<button type="submit" class="btn small ghost" aria-label={ "Remove " + p.name }>
+										Remove
+										@ui.Spinner()
+									</button>
+								</form>
+							}
+						</li>
+					}
+				</ul>
+			}
+			if !d.recent {
+				<p class="hint">Adding or removing a passkey needs a recent sign-in. <a href={ templ.SafeURL(d.confirm) }>Confirm it's you</a> first.</p>
+			} else if d.canAdd {
+				<form class="stack" data-passkey-add hidden>
+					<div class="field">
+						<label for="passkey-name">Name your new passkey</label>
+						<input id="passkey-name" name="name" type="text" placeholder="Work laptop" maxlength="60" autocomplete="off" required/>
+						<p class="hint">So you can tell your passkeys apart, such as the device it's on.</p>
+					</div>
+					<button type="submit" class="btn">
+						Add a passkey
+						@ui.Spinner()
+					</button>
+					<p class="notice danger" role="alert" data-passkey-error hidden></p>
+				</form>
+				<p class="hint" data-passkey-unsupported>Adding a passkey needs a browser that supports them, with JavaScript on.</p>
+			}
+		</section>
+		<section class="panel stack" id="devices" aria-labelledby="devices-title">
+			<div class="panel-header">
+				<div>
+					<h2 id="devices-title">Signed-in devices</h2>
+					<p>Sign out any device you don't recognise.</p>
+				</div>
+				if len(d.devices) > 1 {
+					<form method="post" action={ templ.SafeURL(d.settings + "/devices/sign-out-others") } data-busy-form>
+						@ui.CSRFField(d.c)
+						<button type="submit" class="btn small">
+							Sign out all others
+							@ui.Spinner()
+						</button>
+					</form>
+				}
+			</div>
+			<ul class="item-list">
+				for _, s := range d.devices {
+					<li class="item">
+						<div class="item-main">
+							<span>{ s.label }</span>
+							<span class="item-detail">
+								if s.current {
+									This device ·
+								}
+								Signed in { day(s.signedIn) } · last active { day(s.seen) }
+							</span>
+						</div>
+						if s.current {
+							<span class="tag success">Current</span>
+						} else {
+							<form method="post" action={ templ.SafeURL(d.settings + "/devices/" + s.id + "/sign-out") } data-busy-form>
+								@ui.CSRFField(d.c)
+								<button type="submit" class="btn small ghost" aria-label={ "Sign out " + s.label }>
+									Sign out
+									@ui.Spinner()
+								</button>
+							</form>
+						}
+					</li>
+				}
+			</ul>
+		</section>
+		if d.recent && d.canAdd {
+			<script src={ d.scriptURL } defer></script>
+		}
+	</div>
+}
+
+type emailData struct {
+	c        *gin.Context
+	current  string
+	email    string
+	recent   bool
+	action   string
+	settings string
+	confirm  string
+	err      string
+}
+
+// emailPage asks for the new address.
+templ emailPage(d emailData) {
+	<div class="narrow stack">
+		<div class="page-header">
+			<h1>Change your address</h1>
+			<p class="lead">You sign in with <strong>{ d.current }</strong>. We'll send a code to the new address to confirm it. Your other devices are then signed out.</p>
+		</div>
+		<section class="panel stack">
+			if !d.recent {
+				<p>For your security, changing your address needs a recent sign-in.</p>
+				<div class="cluster">
+					<a class="btn primary" href={ templ.SafeURL(d.confirm) }>Confirm it's you</a>
+					<a class="btn ghost" href={ templ.SafeURL(d.settings) }>Back to settings</a>
+				</div>
+			} else {
+				if d.err != "" {
+					<p class="notice danger" role="alert">{ d.err }</p>
+				}
+				<form class="stack" method="post" action={ templ.SafeURL(d.action) } data-busy-form>
+					@ui.CSRFField(d.c)
+					<div class="field">
+						<label for="new-email">New email address</label>
+						<input id="new-email" name="email" type="email" value={ d.email } autocomplete="email" autocapitalize="none" spellcheck="false" required autofocus/>
+					</div>
+					<div class="cluster">
+						<button type="submit" class="btn primary">
+							Send a code
+							@ui.Spinner()
+						</button>
+						<a class="btn ghost" href={ templ.SafeURL(d.settings) }>Cancel</a>
+					</div>
+				</form>
+			}
+		</section>
+	</div>
+}
+
+// messagePage says what went wrong, with a link onwards.
+templ messagePage(title, text, link string) {
+	<div class="narrow stack">
+		<div class="page-header">
+			<h1>{ title }</h1>
+			<p class="lead">{ text }</p>
+		</div>
+		<div class="cluster">
+			<a class="btn primary" href={ templ.SafeURL(link) }>Continue</a>
+		</div>
+	</div>
+}

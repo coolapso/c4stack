@@ -1,9 +1,9 @@
 # Sign-in
 
-**Status: a design under review. Nothing here is built yet.** The module is written
-only after this design is reviewed.
+**Status: built, in `identity/local` and `email/smtp`.** `c4stack new` generates apps on
+it, and the example app, Textlab, uses it.
 
-This is the design for C4Stack's own sign-in. It is a passwordless identity provider:
+This is the design of C4Stack's own sign-in. It is a passwordless identity provider:
 people sign in with a code sent to their email address, or with a passkey. Each app
 keeps its users, sessions and passkeys in its own database. Development therefore works
 offline, staging is just another database, and integration tests run the real flows.
@@ -63,6 +63,9 @@ type TxProvider interface {
 	Provider
 	// UseAccounts receives the hooks. accounts.New calls it.
 	UseAccounts(h AccountHooks)
+	// SessionTx locks the user of the request's session inside tx, and returns the
+	// session as it is then: ErrNoSession if it ended meanwhile.
+	SessionTx(ctx context.Context, tx *sql.Tx, r *http.Request) (Identity, error)
 	// DeleteTx deletes the user with this subject inside tx.
 	DeleteTx(ctx context.Context, tx *sql.Tx, subject string) error
 }
@@ -87,9 +90,11 @@ When the provider is a `TxProvider`:
   change only through `AddressChanged`. Otherwise a request that authenticated just
   before an address change could write the old address back after it. Someone holding
   the old mailbox could then sign up again with it and join the account.
-- **Deletion** is one transaction. `accounts.Delete` deletes the provider's users first,
-  then locks the account, records the tombstones, runs the `OnDelete` hooks and deletes
-  the account. Sessions, passkeys and codes go with the user. It all commits or nothing
+- **Deletion** is one transaction. `accounts.Delete` locks the user through the
+  request's session with `SessionTx`, and rechecks that the session still exists and is
+  recent, so a deletion that waited behind a recovery deletes nothing. It deletes the
+  provider's users, then locks the account, records the tombstones, runs the `OnDelete`
+  hooks and deletes the account. Sessions, passkeys and codes go with the user. It all commits or nothing
   does, so the deletion marks aren't needed. Afterwards `Logout` clears the cookie.
   `deleteTx` makes the same call, so `accounts delete-local` and the other paths that
   finish a deletion remove the local user too.
@@ -101,9 +106,12 @@ session.
 
 Every transaction that issues a session, adds or removes a passkey, changes an address,
 ends sessions or deletes a user takes its locks in one order:
-1. the local user's row (`FOR UPDATE`);
+1. the local user's row: `FOR NO KEY UPDATE`, which serialises every change to the user
+   but lets other requests insert the user's codes and sessions, or deleting it, which
+   takes `FOR UPDATE`;
 2. the code or passkey row it uses;
-3. what `accounts` locks through its hooks.
+3. the limits' counters it touches;
+4. what `accounts` locks through its hooks.
 
 Inside the transaction, it rechecks what authorised it:
 - the code still exists, is unexpired, and was sent to this user at this address;
@@ -141,10 +149,12 @@ One flow does both. It answers the same way whether or not the address has an ac
       browser's own counters if its device cookie names the address's user, the
       address's shared counters if not, and the network's and the app's;
    2. makes a code: 8 random digits, valid for 10 minutes, stored as a keyed hash. If the
-      address has a user, the code records that user;
+      address has a user, the code records that user, and which counters it was sent
+      under: this browser's own or the address's;
    3. emails it: the sign-in code if the address has a user, the sign-up code if not;
-   4. sets the attempt cookie (`__Host-signin`, sealed: the code's ID, the address and
-      `next`), which lives as long as the code;
+   4. sets the attempt cookie (`__Host-signin`, sealed: the attempt's ID, the code's ID,
+      the address and `next`). It lives 30 minutes, longer than the code, so the page can still say that
+      the code expired and offer a new one;
    5. redirects to `/login/code`.
 
    Only the mailbox's owner sees which email went out. The page is the same either way.
@@ -167,13 +177,16 @@ One flow does both. It answers the same way whether or not the address has an ac
       creates one. A concurrent sign-up of the same address finds the other's user,
       because the address is unique. It runs `SignedIn`, which finds, joins or creates
       the account. If `accounts` turns the identity away, such as for an account being
-      deleted, everything rolls back and the page says why. Finally it ends the session
+      deleted, everything rolls back, the page says that this account can't be signed in
+      to right now, and the log says why. Finally it ends the session
       this browser had, if any, and creates a session.
    5. It commits, sets `__Host-session` and `__Host-device`, clears the attempt cookie
       and redirects to `next`.
 5. **`POST /login/code/resend`** replaces the attempt's code with a new one: no sooner
    than 30 seconds after the last, and within the limits. Only the newest code of an
-   attempt works. Other attempts for the same address, from other browsers, keep their
+   attempt works: codes carry their attempt's ID, and a new one deletes the attempt's
+   others under a lock on the attempt, so a replayed copy of an older cookie can't keep
+   two working. Other attempts for the same address, from other browsers, keep their
    own codes, so someone who asks for codes for your address doesn't cancel yours.
 
 When a limit stops a request, the page says when to try again. It also says that a
@@ -293,8 +306,9 @@ of this needs a recent sign-in, because it only takes access away.
 
 ### Changing the address
 
-1. The person enters a new address. This needs a recent sign-in.
-2. The module makes an attempt either way, within the new-address limits:
+1. The person enters a new address, on a page of its own. This needs a recent sign-in.
+2. The module makes an attempt either way, within the limits: the app's, the network's,
+   the new address's own, and the user's new-address counters:
    - If no local user has the address, the code goes to it.
    - If another local user has it, the attempt is a decoy. Its code is never sent and
      never matches, and the address gets the "address taken" email instead.
@@ -302,7 +316,7 @@ of this needs a recent sign-in, because it only takes access away.
    The page, wrong entries and their messages, resending and the limits are the same for
    both. The form therefore cannot tell anyone which addresses have accounts.
 3. The person enters the code: 10 minutes, 5 wrong entries, one attempt per user at a
-   time.
+   time. Wrong entries count against the code and the network.
 4. On the right code, one transaction:
    1. locks the user's row, and rechecks the code, and that the session asking still
       exists and is still recent;
@@ -476,6 +490,10 @@ CREATE TABLE IF NOT EXISTS local_codes (
     user_id uuid REFERENCES local_users (id) ON DELETE CASCADE,
     code_hash bytea NOT NULL, -- HMAC of the code's ID and the code
     decoy boolean NOT NULL DEFAULT false, -- a change to a taken address: never matches
+    -- Which counters wrong entries count against: the address's when empty, else the
+    -- known browser's own.
+    device text NOT NULL DEFAULT '',
+    attempt text NOT NULL DEFAULT '', -- sign_in: the browser's attempt
     wrong_entries integer NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL
@@ -841,9 +859,13 @@ Mailpit beside PostgreSQL, and codes show up in Mailpit's web page.
 Production sends through Scaleway's API with `email/scaleway`, as now, without SMTP. That
 adapter also reports delivery, which `credits/expiry` needs. The generated `config.go`
 builds one sender or the other:
-- an SMTP URL (`ACME_SMTP_URL`, which the Taskfile sets for `task dev`) means SMTP;
-- Scaleway's key, project and sender address mean Scaleway's API;
+- an SMTP URL (`ACME_SMTP_URL`, which the generated `Taskfile.yml` sets for development,
+  to Mailpit) means SMTP;
+- Scaleway's key and project (`ACME_SCALEWAY_SECRET_KEY`, `ACME_SCALEWAY_PROJECT_ID`)
+  mean Scaleway's API;
 - both, or neither, is a configuration error, reported at startup.
+
+Either way, `ACME_EMAIL_FROM` is the sender's address.
 
 **Tests.**
 - **Integration tests** (`internal/testdb`) run the real flows against a fresh database:
@@ -853,7 +875,7 @@ builds one sender or the other:
 - **Interleavings**, each with two transactions held open on purpose:
   - two submissions of one code;
   - a code sign-in or a passkey sign-in against a recovery, and against a deletion;
-  - a passkey registration against a recovery;
+  - a passkey registration, a deletion and a device sign-out against a recovery;
   - a request that authenticated before an address change, finishing after it;
   - a code sent before an address change or a deletion, entered after it;
   - counters at the edge of a window.
@@ -895,10 +917,13 @@ An app that does move goes like this:
   - For a `TxProvider`, `RequireSignIn` never updates addresses.
   - `Delete` and `deleteTx` delete a `TxProvider`'s users first, in the same
     transaction, and skip the deletion marks.
-  - The delete page can link to the provider's confirm page when it has one, instead of
-    signing out first.
-- **`web`**: a helper for plain (unsealed) `HttpOnly` cookies that names them by the same
-  rule as the others (`__Host-` on HTTPS), for the session cookie.
+  - The delete page links to the provider's confirm page when it has one (a
+    `ConfirmURL(next string) string` method), instead of signing out first.
+  - The hooks' refusals wrap `identity.ErrRefused`, and an address another account has
+    is `identity.ErrAddressTaken`.
+- **`web`**: nothing. The provider names its session cookie by `web`'s rule itself
+  (`__Host-` on HTTPS), from its own public URL, because `Authenticate` and `Logout` get
+  only the request and the response writer.
 - **`email/smtp`**: the new adapter.
 - **The generator**: new apps use `identity/local`. `c4stack new --identity hanko`
   generates an app on Hanko instead, as today. With `local`, `config.go` drops the Hanko
