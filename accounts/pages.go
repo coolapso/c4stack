@@ -22,6 +22,12 @@ type profileUI interface {
 	ProfileSection(c *gin.Context) templ.Component
 }
 
+// confirmer is a provider with its own page where a signed-in user confirms it's them.
+// The delete page links there instead of signing out first.
+type confirmer interface {
+	ConfirmURL(next string) string
+}
+
 // Mount adds every account page to r, usually the app's engine, at Config.Paths:
 //   - POST Logout signs out and continues to a local "next" path, or "/".
 //   - GET Unverified asks an identity without a verified email to confirm it.
@@ -111,6 +117,9 @@ type settingsView struct {
 	recent  bool
 	// signInAgain is the sign-out form's next path when deletion needs a fresh sign-in.
 	signInAgain string
+	// confirmURL is the provider's page to confirm it's the user, which replaces the
+	// sign-out form when the provider has one.
+	confirmURL string
 	// deleteError reopens the delete form with a message.
 	deleteError string
 	// notice is shown at the top, for example after a failed deletion.
@@ -120,13 +129,17 @@ type settingsView struct {
 func (p *Pages) view(c *gin.Context) settingsView {
 	id, _ := identity.FromContext(c.Request.Context())
 	paths := p.s.cfg.Paths
-	return settingsView{
+	v := settingsView{
 		c:           c,
 		account:     Current(c),
 		paths:       paths,
 		recent:      id.Recent(time.Now()),
 		signInAgain: paths.Login + "?next=" + url.QueryEscape(paths.Delete),
 	}
+	if cf, ok := p.s.idp.(confirmer); ok {
+		v.confirmURL = cf.ConfirmURL(paths.Delete)
+	}
+	return v
 }
 
 // Settings is the settings page.

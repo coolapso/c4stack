@@ -6,7 +6,10 @@
 // provider it comes from, or gets a new account. Unverified identities cannot sign in.
 //
 // Deleting an account deletes the identity at the provider first, then removes local
-// data in one transaction that modules and the app join through OnDelete.
+// data in one transaction that modules and the app join through OnDelete. A provider that
+// keeps its users in the app's database (an identity.TxProvider) joins that transaction
+// instead, and runs sign-ups and address changes inside its own transactions through
+// the hooks accounts lends it.
 package accounts
 
 import (
@@ -96,8 +99,10 @@ type Config struct {
 
 // Accounts is the accounts module.
 type Accounts struct {
-	app   *app.App
-	idp   identity.Provider
+	app *app.App
+	idp identity.Provider
+	// txp is idp when it keeps its users in the app's database.
+	txp   identity.TxProvider
 	cfg   Config
 	hooks []func(ctx context.Context, tx *sql.Tx, accountID string) error
 }
@@ -108,6 +113,10 @@ type Accounts struct {
 // A process that only needs account IDs, such as an API gateway that authenticates with
 // API keys, passes a nil idp: it holds no sign-in configuration, and RequireSignIn,
 // Mount and Delete are unavailable.
+//
+// When idp is an identity.TxProvider, New lends it the hooks that find or create an
+// account at sign-in and change the account's address, inside the provider's
+// transactions.
 func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) {
 	if err := a.Require(Migrations); err != nil {
 		return nil, err
@@ -116,6 +125,10 @@ func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) {
 		return nil, err
 	}
 	s := &Accounts{app: a, idp: idp, cfg: cfg}
+	if txp, ok := idp.(identity.TxProvider); ok {
+		s.txp = txp
+		txp.UseAccounts(identity.AccountHooks{SignedIn: s.signedIn, AddressChanged: s.addressChanged})
+	}
 	a.Command(app.Command{
 		Name:  "accounts delete-local",
 		Usage: "<account-id>",
@@ -149,21 +162,25 @@ func (s *Accounts) Get(ctx context.Context, id string) (Account, error) {
 	return a, err
 }
 
+// Each of these wraps identity.ErrRefused, so a provider that signs people in can tell
+// them it cannot sign them in to this account.
 var (
 	// errDeleted means the identity's account was deleted and must not be recreated.
-	errDeleted = errors.New("accounts: the identity was deleted")
+	errDeleted = fmt.Errorf("accounts: the identity was deleted: %w", identity.ErrRefused)
 	// errDeletionPending means the address belongs to an account whose deletion the
 	// identity provider has not confirmed yet.
-	errDeletionPending = errors.New("accounts: the address's account is being deleted")
+	errDeletionPending = fmt.Errorf("accounts: the address's account is being deleted: %w", identity.ErrRefused)
 	// errStaleAddress means the address is an account's primary address, but none of
 	// the account's identities verifies it any more, and none has another verified
 	// address to take its place.
-	errStaleAddress = errors.New("accounts: the address belongs to an account that no longer uses it")
+	errStaleAddress = fmt.Errorf("accounts: the address belongs to an account that no longer uses it: %w", identity.ErrRefused)
 )
 
 // resolve returns the account of a verified identity, joining or creating one on its
 // first sign-in. It keeps the identity's address current, and the account's primary
-// address with it.
+// address with it, except for a TxProvider: its addresses change only through
+// addressChanged, because a request that authenticated just before an address change
+// would otherwise write the old address back after it.
 func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, error) {
 	provider := s.idp.Name()
 	var a Account
@@ -192,7 +209,7 @@ func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, 
 	}
 	// An account whose primary address no identity verifies tries again on every
 	// sign-in, until one of its verified addresses is free to take its place.
-	if email != id.Email || verified != id.EmailVerified || !current {
+	if s.txp == nil && (email != id.Email || verified != id.EmailVerified || !current) {
 		if err := s.updateAddress(ctx, provider, id, &a); err != nil {
 			return Account{}, err
 		}
@@ -322,6 +339,15 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 		return Account{}, err
 	}
 	defer tx.Rollback()
+	a, err := s.joinTx(ctx, tx, provider, id)
+	if err != nil {
+		return Account{}, err
+	}
+	return a, tx.Commit()
+}
+
+// joinTx is join inside tx.
+func (s *Accounts) joinTx(ctx context.Context, tx *sql.Tx, provider string, id identity.Identity) (Account, error) {
 	// The identity lock pairs with deletion; the email lock stops two new identities
 	// with one address from creating two accounts.
 	if err := lock(ctx, tx, "identity:"+provider+":"+id.Subject); err != nil {
@@ -345,14 +371,14 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 	}
 	var a Account
 	// A concurrent first sign-in of the same identity may have joined it already.
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT a.id, a.primary_email, a.created_at
 		FROM account_identities i
 		JOIN accounts a ON a.id = i.account_id
 		WHERE i.provider = $1 AND i.subject = $2`, provider, id.Subject,
 	).Scan(&a.ID, &a.Email, &a.CreatedAt)
 	if err == nil {
-		return a, tx.Commit()
+		return a, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Account{}, err
@@ -411,7 +437,7 @@ func (s *Accounts) join(ctx context.Context, provider string, id identity.Identi
 	); err != nil {
 		return Account{}, err
 	}
-	return a, tx.Commit()
+	return a, nil
 }
 
 func isUniqueViolation(err error) bool {
@@ -448,30 +474,8 @@ func (s *Accounts) setEmail(ctx context.Context, accountID, subject, email strin
 		return err
 	}
 	defer tx.Rollback()
-	for _, q := range []struct {
-		sql  string
-		args []any
-	}{
-		{`
-			UPDATE accounts
-			SET primary_email = $2, updated_at = now()
-			WHERE id = $1`, []any{accountID, email}},
-		{`
-			UPDATE account_identities
-			SET email = $4, email_verified = true, updated_at = now()
-			WHERE account_id = $1 AND provider = $2 AND subject = $3`, []any{accountID, s.idp.Name(), subject, email}},
-	} {
-		res, err := tx.ExecContext(ctx, q.sql, q.args...)
-		if err != nil {
-			return fmt.Errorf("accounts: update email: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("accounts: update email: %w", err)
-		}
-		if n != 1 {
-			return fmt.Errorf("accounts: updating the email changed %d rows", n)
-		}
+	if err := setEmailTx(ctx, tx, accountID, s.idp.Name(), subject, email); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

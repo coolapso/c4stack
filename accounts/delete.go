@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/coolapso/c4stack/identity"
 	"github.com/coolapso/c4stack/web"
 	"github.com/gin-gonic/gin"
 )
@@ -27,7 +29,11 @@ var (
 // the provider confirms, the local data in one transaction with every OnDelete hook.
 // It continues if the browser disconnects, and clears the browser session afterwards.
 //
-// The two systems are not atomic. The account is marked before the provider is asked,
+// A provider that keeps its users in the app's database (an identity.TxProvider) deletes
+// them inside that one transaction, so everything is deleted or nothing is, and the
+// deletion marks below aren't used.
+//
+// With any other provider, the two systems are not atomic. The account is marked before the provider is asked,
 // the mark is cleared if the provider refuses, and the provider's confirmation is
 // recorded before the local data is deleted. If the local transaction fails after the
 // provider deleted the identity, Delete logs the account ID and returns
@@ -40,6 +46,13 @@ func (s *Accounts) Delete(c *gin.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), time.Minute)
 	defer cancel()
 
+	if s.txp != nil {
+		if err := s.deleteSignedIn(ctx, c.Request, account.ID); err != nil {
+			return fmt.Errorf("%w: %w", ErrNotDeleted, err)
+		}
+		_ = s.idp.Logout(c.Writer, c.Request)
+		return nil
+	}
 	if _, err := s.app.DB().ExecContext(ctx, `
 		UPDATE accounts
 		SET deletion_started_at = now()
@@ -70,6 +83,34 @@ func (s *Accounts) Delete(c *gin.Context) error {
 	return nil
 }
 
+// errSessionChanged means the session that asked for a deletion ended, or is no longer
+// recent, once its user was locked.
+var errSessionChanged = errors.New("accounts: the session that asked ended or is no longer recent")
+
+// deleteSignedIn deletes the signed-in account of a TxProvider in one transaction. It
+// first locks the user through the request's session and rechecks that the session
+// still exists and is recent, so a request that waited behind a recovery or a sign-out
+// everywhere deletes nothing.
+func (s *Accounts) deleteSignedIn(ctx context.Context, r *http.Request, accountID string) error {
+	asked, _ := identity.FromContext(r.Context())
+	tx, err := s.app.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	id, err := s.txp.SessionTx(ctx, tx, r)
+	if err != nil {
+		return err
+	}
+	if id.Subject != asked.Subject || !id.Recent(time.Now()) {
+		return errSessionChanged
+	}
+	if err := s.deleteTx(ctx, tx, accountID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // deleteLocal deletes an account and its data in one transaction.
 func (s *Accounts) deleteLocal(ctx context.Context, accountID string) error {
 	if !validID(accountID) {
@@ -86,10 +127,18 @@ func (s *Accounts) deleteLocal(ctx context.Context, accountID string) error {
 	return tx.Commit()
 }
 
-// deleteTx deletes an account inside tx: it records the account's identities as
-// deleted, runs the OnDelete hooks, and deletes the account, which removes its
-// identities and anonymises the records that refer to it.
+// deleteTx deletes an account inside tx: it deletes a TxProvider's users, records the
+// account's identities as deleted, runs the OnDelete hooks, and deletes the account,
+// which removes its identities and anonymises the records that refer to it.
+//
+// A TxProvider's users are deleted before the account is locked, because a sign-in locks
+// its user before the account. A user that joined the account in the meantime is
+// deleted after the lock.
 func (s *Accounts) deleteTx(ctx context.Context, tx *sql.Tx, accountID string) error {
+	done := map[string]bool{}
+	if err := s.deleteProviderUsers(ctx, tx, accountID, done); err != nil {
+		return err
+	}
 	var id string
 	err := tx.QueryRowContext(ctx, `
 		SELECT id
@@ -101,6 +150,9 @@ func (s *Accounts) deleteTx(ctx context.Context, tx *sql.Tx, accountID string) e
 		return ErrNotFound
 	}
 	if err != nil {
+		return err
+	}
+	if err := s.deleteProviderUsers(ctx, tx, accountID, done); err != nil {
 		return err
 	}
 	identities, err := identitiesOf(ctx, tx, accountID)

@@ -61,7 +61,11 @@ templ deleteForm(v settingsView, inDialog bool) {
 	if !v.recent {
 		<p>For your security, deleting your account needs a recent sign-in. Sign in again to continue.</p>
 		<div class="dialog-actions">
-			@signOutForm(v, v.signInAgain, "Sign in again", "btn primary")
+			if v.confirmURL != "" {
+				<a class="btn primary" href={ templ.SafeURL(v.confirmURL) }>Confirm it's you</a>
+			} else {
+				@signOutForm(v, v.signInAgain, "Sign in again", "btn primary")
+			}
 		</div>
 	} else {
 		<p>This permanently removes your account and its data, and any remaining credit is lost. Records the law requires us to keep lose their link to you.</p>
