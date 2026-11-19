@@ -401,6 +401,55 @@ Or for one group only:
 r.Group("/maps", web.AllowCSP(web.CSP{Frames: []string{"https://maps.example"}}))
 ```
 
+## Use C4Stack's own sign-in
+
+`identity/local` signs people in with a code sent by email, or a passkey, and keeps its
+users in the app's database. It needs the app's secret key and an email sender:
+Scaleway's adapter in production, or `email/smtp` to a local Mailpit in development.
+
+```go
+// main.go: its migrations go after accounts'.
+Migrations: []app.Migrations{accounts.Migrations, local.Migrations, {Namespace: "app", Files: migrations.Files}},
+
+// setup
+idp, err := local.New(a, local.Config{
+	AppName:      "Acme",
+	PublicURL:    cfg.PublicURL,
+	SecretKey:    cfg.SecretKey,
+	Sender:       mailer, // scaleway.New(...) or smtp.New(smtp.Config{URL: "smtp://localhost:1025", From: ...})
+	SignedInPath: "/account",
+})
+if err != nil {
+	return err
+}
+accts, err := accounts.New(a, idp, accounts.Config{}) // lends idp its hooks
+
+// routes.go
+idp.Mount(r, layout)   // /login and its steps
+accts.Mount(r, layout) // the settings page embeds the profile UI
+```
+
+Give `local.Config.Origins` the same list as `web.Config.Origins`. Passkeys belong to
+`RPID`, the public URL's host by default; it must never change once people have
+passkeys. An app on `app.acme.example` whose passkeys should work across `acme.example`
+sets it to `acme.example`.
+
+The emails are plain text, in the app's name, and never name C4Stack. To use your own
+words or look, set `Config.Message`. It writes every kind of email, from a `Notice`
+that carries what the email says (the code, the addresses, the passkey's name, the
+device, the time and a reference for support):
+
+```go
+Message: func(n local.Notice) email.Message {
+	return email.Message{Subject: subject(n), Text: text(n)} // a case for each local.Kind
+},
+```
+
+The security values (code length and lifetime, attempts, session lifetimes, limits) are
+fixed. The one setting is `MaxCodesPerHour`, an optional ceiling on the codes the whole
+app sends in an hour, to protect the sending domain. `docs/sign-in.md` explains every
+flow and limit, and `docs/operations.md` the runbooks.
+
 ## Replace a provider
 
 Providers are small interfaces. Implement one and pass it where the default goes:
@@ -428,6 +477,11 @@ The contracts that matter:
   that has its verified address, so this is what keeps accounts safe.
 - `Delete` returns nil only after the provider confirmed the deletion.
 - `ParseWebhook` verifies the signature before anything else.
+
+A provider that keeps its users in the app's database implements
+`identity.TxProvider` too. `accounts.New` then lends it the hooks that create accounts
+and change addresses inside the provider's own transactions, and deletes its users in
+the transaction that deletes the account.
 
 Accounts find their identities by provider name and subject. When an app switches
 identity provider, each user's first sign-in with the new provider joins the account

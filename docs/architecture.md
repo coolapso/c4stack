@@ -1,8 +1,8 @@
 # Architecture
 
 C4Stack is a Go module of building blocks for small web applications on one European
-stack: Go, Gin, Templ, HTMX and PostgreSQL, with Hanko, Creem and Scaleway as default
-providers.
+stack: Go, Gin, Templ, HTMX and PostgreSQL, with its own passwordless sign-in (or Hanko),
+Creem and Scaleway as default providers.
 
 The application owns `main`, its Gin engine, its routes, its layout and its configuration.
 C4Stack owns the parts that are hard to get right and should be fixed in one place:
@@ -24,6 +24,7 @@ registers.
 | `ui` | The `Layout` type, the default design (CSS, vendored HTMX, a small script) and content-hashed assets |
 | `identity` | The identity provider interface |
 | `identity/hanko` | The Hanko adapter, its sign-in page and its profile UI |
+| `identity/local` | C4Stack's own passwordless sign-in, with codes by email and passkeys, its pages, its profile UI and its operator commands |
 | `accounts` | Accounts mapped from identities, sign-in middleware, the settings page and account deletion |
 | `apikeys` | Opt-in. API keys, bearer middleware and the keys page |
 | `payments` | The payment provider interface |
@@ -32,6 +33,7 @@ registers.
 | `credits/expiry` | Opt-in. Expires unused credit after a delivered warning |
 | `email` | The email sender interface |
 | `email/scaleway` | The Scaleway Transactional Email adapter |
+| `email/smtp` | An SMTP adapter, for development with a local mail catcher such as Mailpit |
 | `cmd/c4stack` | The app generator |
 
 PostgreSQL connection and migration code lives in `internal/postgres`. Apps reach it
@@ -43,6 +45,8 @@ through `app`.
   `ui` depends on `web`.
 - The interface packages `identity`, `payments` and `email` depend on nothing in C4Stack.
   Each adapter depends on its interface, and on `web` and `ui` where it renders pages.
+  `identity/local` keeps tables, commands and jobs, so it depends on `app` too, and on
+  `email` to send codes. Nothing depends on it.
 - `accounts` depends on `identity`. `apikeys` and `credits` depend on `accounts`.
   `credits/expiry` depends on `credits` and `email`. Nothing points back: `accounts` learns
   about other modules only through the deletion hooks they register.
@@ -362,6 +366,7 @@ type Identity struct {
 	Email         string
 	EmailVerified bool
 	SignedInAt    time.Time // when the session was created
+	Method        string    // how it signed in, such as "code" or "passkey"; empty from Hanko
 }
 func (id Identity) Recent(now time.Time) bool // signed in within RecentSignIn (5 minutes)
 func NewContext(ctx context.Context, id Identity) context.Context
@@ -373,7 +378,38 @@ type Provider interface {
 	Logout(w http.ResponseWriter, r *http.Request) error
 	Delete(ctx context.Context, r *http.Request) error // returns only after the provider confirms
 }
+
+// A provider that keeps its users in the app's database.
+type TxProvider interface {
+	Provider
+	UseAccounts(h AccountHooks) // accounts.New lends it the hooks
+	SessionTx(ctx context.Context, tx *sql.Tx, r *http.Request) (Identity, error) // locks the session's user
+	DeleteTx(ctx context.Context, tx *sql.Tx, subject string) error
+}
+type AccountHooks struct {
+	SignedIn       func(ctx context.Context, tx *sql.Tx, id Identity) error // ErrRefused
+	AddressChanged func(ctx context.Context, tx *sql.Tx, subject, email string) error // ErrAddressTaken
+}
 ```
+
+**How the local provider works.** `identity/local` is C4Stack's own sign-in, and
+`docs/sign-in.md` is its full design: the flows, the limits, the tables, every email,
+and the threats each part answers. In short:
+- People sign up and sign in in one flow, with an 8-digit code sent by email or with a
+  passkey (WebAuthn, through go-webauthn). The answer is the same whether an address has
+  an account or not.
+- Users, sessions, passkeys and codes live in the app's database, in the `local`
+  migrations. Sessions are stored as SHA-256 hashes and checked on every request; codes
+  and the limits' counters as HMACs keyed from the app's secret key.
+- It is a `TxProvider`: a sign-up creates the user, its account and its session in one
+  transaction; an address change moves the user's, the identity's and the account's
+  address together; and deleting the account deletes the user in the same transaction.
+  Every change to a user locks the user's row first and rechecks what authorised it.
+- `Mount` adds `/login` and its steps, including `/login/confirm` for a recent sign-in.
+  The profile UI on the settings page changes the address, adds and removes passkeys,
+  and signs devices out.
+- Security notices are queued with their change and sent by a job that retries them.
+- Its commands are `local sign-out`, `local unblock` and `local set-email`.
 
 **How the Hanko adapter works.**
 - `Authenticate` calls `POST /sessions/validate` on every request. There is no local JWT
@@ -463,6 +499,13 @@ A new identity whose address is the primary address of such an account gets a ne
 account, once one of that account's verified addresses has taken its place. If none
 can, the new identity is turned away and an operator must decide.
 
+**A provider in the app's database.** When the provider is an `identity.TxProvider`,
+`accounts.New` lends it two hooks. `SignedIn` finds, joins or creates the account inside
+the provider's transaction, and `AddressChanged` records a confirmed new address as the
+identity's and the account's, refusing one another account has. `RequireSignIn` then
+never writes addresses from what `Authenticate` returned, because a request that
+authenticated just before an address change would write the old address back after it.
+
 A process that only needs account IDs, such as an API gateway, constructs the module
 with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mount` and
 `Delete` are unavailable.
@@ -482,6 +525,12 @@ with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mo
    3. It runs the `OnDelete` hooks: modules first, then the app.
    4. It deletes the account. Foreign keys cascade or anonymise.
 6. The browser goes to `Paths.Deleted`.
+
+With a `TxProvider`, there are no marks and no provider call: one transaction locks the
+user through the request's session (`SessionTx`) and rechecks that the session still
+exists and is recent, deletes the provider's users, then does step 5, so everything is
+deleted or nothing is.
+`accounts delete-local` deletes the provider's users too.
 
 If the local transaction fails after the provider deleted the identity, the failure is
 logged with the account ID, and an operator runs `accounts delete-local`. The two
@@ -734,6 +783,11 @@ recipient's mail system took it.
 The region defaults to `fr-par`. Errors carry the HTTP status, never the provider's
 response body or the recipient.
 
+`smtp.New(smtp.Config{URL, From, FromName, ReplyTo})` sends to an SMTP server, such as
+Mailpit in development: `smtp://[user:password@]host[:port]`, port 587 by default. It
+requires STARTTLS unless the host is loopback. It reports no delivery, so it is an
+`email.Sender`, not a `TrackingSender`.
+
 ## Configuration and naming
 
 **Environment variables.** C4Stack reads no environment variables. The app's `config.go`
@@ -747,7 +801,9 @@ the values in code. A minimal app needs four, plus an optional `ACME_ADDR`:
 **Other names users can see.**
 - Cookies: `csrf` and `__Host-csrf`, plus sealed cookies during an email change
   (`email-change`) and after starting a purchase (`pending-payment`). The `hanko`
-  cookie is Hanko's own.
+  cookie is Hanko's own. The local provider's are `session`, and the sealed `signin`
+  (a code attempt), `passkey` (a passkey ceremony) and `device` (a browser that signed
+  in before), all with `__Host-` on HTTPS.
 - Public URLs, the asset base and API-key prefixes: chosen by the app.
 - Email subjects: built from the app's name.
 
@@ -763,6 +819,8 @@ config structs. C4Stack has no business-value constants.
 - It pins the C4Stack release it was built from, or `--version`. A `--local <path>`
   option writes a development-only `replace` and includes the shared Taskfile from that
   checkout.
+- It wires C4Stack's own sign-in (`identity/local`), with Mailpit in
+  `docker-compose.yml` for its emails, or Hanko's with `--identity hanko`.
 - It runs `go mod tidy` and `templ generate`.
 - It warns when Task is older than 3.53.1, the first release where remote Taskfiles
   work without opting in to an experiment.
@@ -773,7 +831,7 @@ It writes these files:
 - `static/app.css` and `static/favicon.svg`
 - `migrations/migrations.go`, which embeds the directory. There is no starter
   migration, so there is no empty version 1 to trap the app.
-- `Taskfile.yml`, `.taskrc.yml`, `.env` (with a fresh secret key), `.env.example` and
+- `Taskfile.yml`, with the development settings in its `env`, `.taskrc.yml` and
   `.gitignore`
 - `docker-compose.yml`, `Containerfile` and `.dockerignore`
 - `README.md` and `AGENTS.md`
@@ -792,6 +850,12 @@ includes:
     flatten: true
     excludes: []
 ```
+
+**Settings without a file.** The app's Taskfile sets its development settings in `env`,
+none of them secret: the secret key is `openssl rand -hex 32`, made each time a task
+starts, which development can afford because sessions live in the database. Variables
+in the shell win over the Taskfile's, and `infisical run` adds an Infisical
+environment's secrets. C4Stack never generates, loads or documents a `.env` file.
 
 **One version.** `framework:update` changes the Go dependency and `FRAMEWORK_VERSION`
 together, then tidies, regenerates, tests and builds. `check` fails when the two differ.
@@ -818,6 +882,7 @@ newest commit.
 |---|---|
 | Develop | `dev` (templ watch with live reload), `templ:generate`, `templ:watch` |
 | Local database | `db:up`, `db:down`, `db:logs`, `db:connect`, `db:wipe` (asks first) |
+| Local mail | `mail:up`, `mail:down`: Mailpit, which catches the app's emails |
 | Operations | `db:migrate`, `run -- <command>` (passthrough to the app binary) |
 | Quality | `test`, `test:integration`, `check` (version drift, vet, staticcheck, gofmt, templ fmt, `go mod tidy -diff`, generated-code drift) |
 | Build | `build`, `container:build`, `container:push` (`PLATFORMS` variable, tags from `git describe`) |
@@ -871,7 +936,8 @@ These features were considered and decided as follows.
 These are not built:
 - subscriptions, organisations, roles and entitlements
 - internationalisation
-- rate limiting, which belongs to the ingress
+- rate limiting, which belongs to the ingress, except sign-in's counters, which count
+  addresses the ingress never sees
 - metrics exporters
 - an admin UI
 

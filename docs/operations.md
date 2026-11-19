@@ -7,7 +7,8 @@ environment prefix `ACME_`.
 
 | Provider | Needed for | Setup |
 |---|---|---|
-| Hanko | every app that signs users in | A tenant with the app's URL. Allow account deletion, so deletion can go through the app. Require email verification: accounts are linked by verified address. The `hanko` cookie must reach the app's host. |
+| An email sender | every app on C4Stack's own sign-in (`identity/local`) | Scaleway Transactional Email, or an SMTP server that offers STARTTLS. Sign-in depends on its codes arriving: each sending domain needs SPF, DKIM and DMARC. Security notices ask people to reply, so replies to the sending address (or its `ReplyTo`) must reach a person. |
+| Hanko | every app on Hanko's sign-in | A tenant with the app's URL. Allow account deletion, so deletion can go through the app. Require email verification: accounts are linked by verified address. The `hanko` cookie must reach the app's host. |
 | Creem | buying credit | A one-time product with a custom price, and a webhook to `https://<host>/webhooks/payments` (or wherever the app mounts `Webhook`). Use a `creem_test_` key until you go live. |
 | Scaleway Transactional Email | credit expiry | A project with a verified sending domain and a key allowed to send. |
 | PostgreSQL | every app | PostgreSQL 13 or later; C4Stack is tested with 18. |
@@ -24,11 +25,37 @@ Every app needs these, plus what its modules need:
 | `ACME_PUBLIC_URL` | The origin users reach, such as `https://acme.example`. Requests for other hosts get 421. |
 | `ACME_DATABASE_URL` | PostgreSQL URL. The only setting the migrate command reads. |
 | `ACME_SECRET_KEY` | At least 32 bytes, the same on every replica. Signs CSRF tokens and seals cookies. |
-| `ACME_HANKO_API_URL` | The Hanko tenant's API URL. |
+| `ACME_HANKO_API_URL` | On Hanko: the tenant's API URL. |
 | `ACME_ADDR` | Listen address, `:8080` by default. |
 
+A generated app on C4Stack's own sign-in also needs its email settings:
+
+| Variable | Meaning |
+|---|---|
+| `ACME_EMAIL_FROM` | The address sign-in codes and notices come from, on a domain with SPF, DKIM and DMARC. |
+| `ACME_EMAIL_REPLY_TO` | Optional: where replies go. Notices ask people to reply, so a person must read them. |
+| `ACME_SCALEWAY_SECRET_KEY`, `ACME_SCALEWAY_PROJECT_ID` | Scaleway Transactional Email. |
+| `ACME_SMTP_URL` | Instead of Scaleway: `smtp://user:password@host:port`, with STARTTLS. |
+
 **Rotating the secret key.** Open forms and email changes in progress fail once and work
-after a reload. Sign-in is unaffected, because Hanko owns sessions.
+after a reload. On Hanko, sign-in is unaffected, because Hanko owns sessions. On the
+app's own sign-in, sessions stay too, but:
+- codes then waiting fail, and people ask for a new one;
+- the limits' counters start again from zero;
+- code attempts and passkey ceremonies in progress start again;
+- browsers that signed in before fall back to the shared counters until they sign in
+  again.
+
+During a rolling rotation, replicas hold different keys: a code made on one may fail on
+another, and the limits are briefly doubled. Rotate on every replica together.
+
+**Trusted proxies.** The app's own sign-in limits codes per network, from the client IP
+that `web.Config.TrustedProxies` makes. Set it to exactly the proxies in front of the
+app:
+- trusting too few makes every request seem to come from the proxy, so one person's
+  limit stops everyone;
+- trusting forwarding headers from anyone lets an attacker choose the network they seem
+  to come from.
 
 ## Database
 
@@ -131,8 +158,9 @@ codes only.
 
 ### Account deletion did not finish
 
-A user deletes their account in two steps: the identity at Hanko first, then the local
-data. If the second step fails, the log has:
+On the app's own sign-in, deletion is one transaction: it finishes or nothing changes,
+and the user can try again. On Hanko, a user deletes their account in two steps: the
+identity at Hanko first, then the local data. If the second step fails, the log has:
 
 ```
 the identity was deleted but local cleanup failed; run accounts delete-local  account_id=…
@@ -152,6 +180,56 @@ longer exists. If even the confirmation could not be recorded, a sign-up with th
 address is turned away until you run the command.
 
 Every deletion goes through the app, so its data is removed with it.
+
+### Someone can't sign in
+
+On the app's own sign-in, codes are sent by email. The log never has addresses, so ask
+for the user's ID (every security notice quotes it) or look them up by address in the
+commands below, which take either.
+
+- **Codes don't arrive.** Check the email provider and the sending domain's SPF, DKIM and
+  DMARC. A browser the person signed in on before, or a passkey, still works.
+- **"Too many attempts."** Codes were asked for, or wrong ones entered, too often for
+  the address, and its shared limits stopped codes until the window ends. When it was
+  wrong codes, the user got a notice. Browsers that signed in before and passkeys still work. To let codes work
+  again at once:
+
+  ```sh
+  acme local unblock ann@example.com
+  ```
+
+  This helps once. Against someone who keeps going, the person signs in on a browser
+  they used before, or with a passkey.
+- **A lost or stolen device.** End every session of the user, and make every browser
+  they signed in on before count as unknown again:
+
+  ```sh
+  acme local sign-out <user-id or address>
+  ```
+
+### Support recovery: a lost mailbox or a hijacked address
+
+When someone lost their mailbox and has no passkey, or an attacker changed their
+address, support gives the account a new address:
+
+```sh
+acme local set-email <user-id or old address> <new address>
+```
+
+In one transaction it changes the user's and the account's address, ends every session,
+removes every passkey and waiting code, and queues a notice to both addresses; the
+command says whether the email provider accepted them. The person then signs in with a
+code to the new address and adds their passkeys again.
+
+`set-email` trusts you. Check who is asking before you run it. None of these is enough
+on its own:
+- knowing the account's details;
+- controlling the new address;
+- a request sent from the new address.
+
+The app's support policy says what is enough, such as payment records, or earlier mail
+from the old address. Someone whose address was changed behind their back can quote the
+reference from the notice: the user's ID.
 
 ### Payment reviews
 

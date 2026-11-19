@@ -7,8 +7,9 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 ## Boundaries
 
 - Public packages are the apps' API: `web`, `app`, `app/apptest`, `ui`, `identity`,
-  `identity/hanko`, `accounts`, `apikeys`, `payments`, `payments/creem`, `credits`,
-  `credits/expiry`, `email` and `email/scaleway`. Start new names unexported and export
+  `identity/hanko`, `identity/local`, `accounts`, `apikeys`, `payments`,
+  `payments/creem`, `credits`, `credits/expiry`, `email`, `email/scaleway` and
+  `email/smtp`. Start new names unexported and export
   them when an app needs them. Keep changes additive after v0.1.0.
 - Dependencies point one way: `web` and `internal/postgres` at the bottom; interfaces
   (`identity`, `payments`, `email`) depend on nothing in C4Stack; modules depend on
@@ -35,7 +36,11 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - The identity provider owns credentials and sessions. A sign-in finds its account by
   provider and subject; a new identity joins the account with its verified email, from
   any provider. Unverified identities get no account. Deletion goes to the provider
-  first.
+  first or, for a provider in the app's database (`identity.TxProvider`), into the same
+  transaction.
+- Sign-in's security values (`identity/local`'s code length, attempts, limits and
+  lifetimes, and `identity.RecentSignIn`) are fixed, not business values: `docs/sign-in.md`
+  says what each prevents. Change them only with that document.
 - Browser mutations need the CSRF token and a matching Origin; signed-in routes get both
   from `accounts.RequireSignIn`. API-key routes and webhooks use neither.
 - Never log secrets, session tokens, API keys, request or webhook bodies, buyer details,
@@ -44,6 +49,10 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
   idempotent per account and reference; the ledger is append-only. Webhooks grant what
   the stored purchase says, and send anything ambiguous to review.
 - Business values (prices, limits, fees, durations) are app configuration.
+- Never generate, load or document a `.env` file, or add a dotenv library: not in the
+  generator's templates, the example or the docs. Development settings go in a
+  Taskfile's `env`; secrets come from a secret store such as Infisical when a process
+  starts.
 - Migrations: one namespace per module, files `NNN_name.sql`, every statement idempotent
   (`IF NOT EXISTS`) so modules adopt existing tables. Never change a released file;
   before v0.1.0, each module keeps one initial migration. Runtime only connects;
