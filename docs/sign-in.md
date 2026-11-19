@@ -787,7 +787,7 @@ each one.
 | Replaying a passkey assertion | Single-use challenges that expire after 5 minutes, recorded in the transaction that uses them. |
 | Finishing a ceremony in another context | The sealed ceremony data names its purpose, and for adding or confirming, the user and the session that started it. |
 | Suppressing a security notice | Notices are queued in the change's transaction, sent with a context detached from the request, and retried for 3 days. |
-| Redirecting after sign-in to another site | `next` must be a local path, as for Hanko. |
+| Redirecting after sign-in to another site | `next` must be a local path: one `/`, and no backslash or control character, which a browser would read as a separator after `http.Redirect` cleaned the path (`/../\evil.example` becomes `/\evil.example`). The same check guards Hanko's and `accounts`' paths. |
 | A deleted account coming back | Deletion is one transaction with the user, and the user's codes go with it. Tombstones still stop in-flight requests. A new sign-up gets a new user ID, so a new, empty account. |
 | Talking support into moving an account | `set-email` trusts the operator, and the runbook says what is never enough. It notifies both addresses, ends every session and removes every passkey, so nothing an attacker added survives a recovery. |
 | Someone who controls the mailbox | They can sign in. The address is the root of trust by design: the notices tell the owner, and passkeys don't stop codes, because losing a passkey must not lock anyone out. |

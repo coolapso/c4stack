@@ -161,7 +161,12 @@ func TestDefaultMessages(t *testing.T) {
 }
 
 func TestLocalPath(t *testing.T) {
-	for p, want := range map[string]bool{"/account": true, "/": true, "//evil.example": false, `/\evil.example`: false, "https://evil.example": false, "": false, "/a\r\nb": false} {
+	for p, want := range map[string]bool{
+		"/account": true, "/": true, "/a/../b?c=d": true,
+		"//evil.example": false, `/\evil.example`: false, `/../\evil.example`: false, `/a/../../\evil.example`: false,
+		"/\t/evil.example": false, "/a\r\nb": false, "/a\x00": false, "/a\x7f": false,
+		"https://evil.example": false, "": false,
+	} {
 		if localPath(p) != want {
 			t.Errorf("%q: %v", p, !want)
 		}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -382,12 +383,14 @@ func TestWrongEntriesPerNetwork(t *testing.T) {
 
 func TestNextMustBeLocal(t *testing.T) {
 	f := newFixture(t)
-	b := f.browser("192.0.2.1")
-	b.get("/login")
-	b.post("/login", url.Values{"email": {"ann@example.com"}, "next": {"https://evil.example/"}})
-	r := b.enter(f.mail.code(t, "ann@example.com"))
-	if r.location != "/account" {
-		t.Fatalf("redirected to %q", r.location)
+	for i, next := range []string{"https://evil.example/", "//evil.example", `/../\evil.example`, "/\t/evil.example"} {
+		b := f.browser("192.0.2." + strconv.Itoa(i+1))
+		b.get("/login")
+		b.post("/login", url.Values{"email": {"ann@example.com"}, "next": {next}})
+		r := b.enter(f.mail.code(t, "ann@example.com"))
+		if r.location != "/account" {
+			t.Fatalf("next %q redirected to %q", next, r.location)
+		}
 	}
 }
 

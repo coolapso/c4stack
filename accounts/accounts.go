@@ -464,7 +464,19 @@ func validID(id string) bool {
 
 // localPath reports whether p is a path on this site, not a URL to another one.
 func localPath(p string) bool {
-	return strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "//") && !strings.HasPrefix(p, `/\`)
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
+		return false
+	}
+	// Browsers read a backslash as a slash, and ignore tabs and newlines, while
+	// http.Redirect cleans dot segments: "/../\evil.example" would leave as
+	// "/\evil.example", which is another site. Without them, no cleaned path starts
+	// with two separators.
+	for _, r := range p {
+		if r == '\\' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // setEmail records an identity's confirmed new address as the account's primary one.
