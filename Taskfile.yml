@@ -109,6 +109,17 @@ tasks:
       - task db:migrate
       - task dev DEV_PORT=8082
 
+  # A public address for Creem's webhooks while task serve runs: a Cloudflare quick
+  # tunnel, which needs no account and gets a new address each time it starts (it
+  # prints it). In Creem's test mode, Developers → Webhooks, point a webhook at
+  # <address>/webhooks/subscriptions and one at <address>/webhooks/payments. Everything
+  # the example serves is reachable there while the tunnel runs. The Host header becomes
+  # localhost:8082, the only host the example answers for.
+  tunnel:
+    desc: Give the example app a public https address while task serve runs, for Creem's webhooks
+    cmds:
+      - cloudflared tunnel --no-autoupdate --url http://localhost:8082 --http-host-header localhost:8082
+
   # The example's development database, the one task serve uses. db:connect starts it
   # when it isn't running and stops it again when psql exits; db:wipe deletes it, and
   # the next task serve migrates a new, empty one.

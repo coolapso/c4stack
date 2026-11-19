@@ -92,6 +92,7 @@ task test:app          # generate the starter app and serve it end to end
 task test:upgrade      # move a generated app to the next release
 task test:example      # the example app, with browser tests
 task serve             # run the example app on http://localhost:8082
+task tunnel            # a public address for Creem's webhooks while it runs
 task db:connect        # psql on the example's database
 task db:wipe           # delete the example's database (asks first)
 ```

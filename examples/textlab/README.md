@@ -16,8 +16,9 @@ small paid text API:
 - **A subscription.** Textlab Pro, €5 a month, halves the price of an analysis while
   it's in effect (`subscriptions`): renewing, or canceled until its period ends. It's on sale when `TEXTLAB_CREEM_PRO_PRODUCT_ID`
   names a recurring Creem product; the settings page lists it, cancels it at the
-  period's end, and opens Creem's billing page. Its webhook is
-  `/webhooks/subscriptions`.
+  period's end, and opens Creem's billing page. Coming back from Creem's checkout
+  starts it at once; renewals and cancellations arrive at `/webhooks/subscriptions`,
+  which Creem reaches locally through `task tunnel` at the repository root.
 - **Holds.** `POST /api/v1/jobs` reserves a job's cost; `POST /api/v1/jobs/{id}/complete`
   charges it and releases the hold in one transaction. Pending jobs are the holds that
   `heldByJobs` reports.
