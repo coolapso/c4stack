@@ -3,6 +3,8 @@
 Textlab is an example C4Stack app, kept in this repository as a test fixture. It is a
 small paid text API:
 
+- **Sign-in of its own.** People sign up and sign in with a code by email or a passkey
+  (`identity/local`). In development, the codes arrive in Mailpit.
 - **Custom layout.** `layout.templ` and `static/console.css` replace the default design
   with a sidebar console. The default settings, API keys and credits pages render
   inside it.
@@ -14,19 +16,23 @@ small paid text API:
   `heldByJobs` reports.
 - **An app table.** `jobs` references accounts with `ON DELETE CASCADE`, so deleting an
   account deletes its jobs.
-- **Optional expiry.** With Scaleway email configured, unused credit expires after a
-  warning.
+- **Optional expiry.** With Scaleway email, which reports delivery, unused credit
+  expires after a warning. With SMTP, as in development, it never expires.
 - **Replaceable providers.** `build` takes the identity, payment and email providers,
   so the tests pass their own.
 
+`Taskfile.yml` holds the development settings, with a new secret key each time a task
+starts. Buying credit needs a Creem test-mode key, webhook secret and one-time product
+with a custom price; give them in your shell, or from Infisical with `INFISICAL_PROJECT`:
+
 ```sh
-cp .env.example .env      # and fill it in
-task db:up db:migrate
-task dev                  # http://localhost:8080
+export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=… TEXTLAB_CREEM_PRODUCT_ID=…
+task db:up mail:up db:migrate
+task dev                  # http://localhost:8080; codes arrive at http://localhost:8025
 ```
 
-At the repository root, `task serve` runs the same steps for the maintainer, with
-settings from Infisical instead of `.env`.
+At the repository root, `task serve` runs the same steps for the maintainer, with the
+Creem keys from Infisical.
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/analyse \

@@ -31,7 +31,7 @@ type providers struct {
 		Mount(r gin.IRouter, layout ui.Layout)
 	}
 	payments payments.Provider
-	// email is optional; without it, credit never expires.
+	// email reports delivery; without it, credit never expires.
 	email email.TrackingSender
 }
 

@@ -12,15 +12,16 @@ type config struct {
 	PublicURL           string
 	Addr                string
 	SecretKey           string
-	HankoAPIURL         string
 	CreemAPIKey         string
 	CreemWebhookSecret  string
 	CreemProductID      string
 	CreemCheckoutOrigin string
-	// Scaleway email is optional; without it, credit never expires.
+	// Email goes through SMTP, such as Mailpit in development, or Scaleway. Without
+	// Scaleway, credit never expires.
+	EmailFrom         string
+	SMTPURL           string
 	ScalewaySecretKey string
 	ScalewayProjectID string
-	EmailFrom         string
 	LogLevel          slog.Level
 	LogFormat         string
 }
@@ -34,7 +35,6 @@ func loadConfig() (config, error) {
 		PublicURL:           env("PUBLIC_URL"),
 		Addr:                env("ADDR"),
 		SecretKey:           env("SECRET_KEY"),
-		HankoAPIURL:         env("HANKO_API_URL"),
 		CreemAPIKey:         env("CREEM_API_KEY"),
 		CreemWebhookSecret:  env("CREEM_WEBHOOK_SECRET"),
 		CreemProductID:      env("CREEM_PRODUCT_ID"),
@@ -42,6 +42,7 @@ func loadConfig() (config, error) {
 		ScalewaySecretKey:   env("SCALEWAY_SECRET_KEY"),
 		ScalewayProjectID:   env("SCALEWAY_PROJECT_ID"),
 		EmailFrom:           env("EMAIL_FROM"),
+		SMTPURL:             env("SMTP_URL"),
 		LogFormat:           env("LOG_FORMAT"),
 	}
 	if cfg.Addr == "" {
@@ -56,7 +57,7 @@ func loadConfig() (config, error) {
 	for _, s := range []struct{ name, value string }{
 		{"PUBLIC_URL", cfg.PublicURL},
 		{"SECRET_KEY", cfg.SecretKey},
-		{"HANKO_API_URL", cfg.HankoAPIURL},
+		{"EMAIL_FROM", cfg.EmailFrom},
 		{"CREEM_API_KEY", cfg.CreemAPIKey},
 		{"CREEM_WEBHOOK_SECRET", cfg.CreemWebhookSecret},
 		{"CREEM_PRODUCT_ID", cfg.CreemProductID},
@@ -67,6 +68,9 @@ func loadConfig() (config, error) {
 	}
 	if len(missing) > 0 {
 		return config{}, errors.New("set " + strings.Join(missing, ", "))
+	}
+	if (cfg.SMTPURL == "") == (cfg.ScalewaySecretKey == "") {
+		return config{}, errors.New("set either TEXTLAB_SMTP_URL or TEXTLAB_SCALEWAY_SECRET_KEY and TEXTLAB_SCALEWAY_PROJECT_ID")
 	}
 	return cfg, nil
 }

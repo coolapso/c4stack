@@ -14,7 +14,8 @@ import (
 	"github.com/coolapso/c4stack/credits/expiry"
 	"github.com/coolapso/c4stack/email"
 	"github.com/coolapso/c4stack/email/scaleway"
-	"github.com/coolapso/c4stack/identity/hanko"
+	"github.com/coolapso/c4stack/email/smtp"
+	"github.com/coolapso/c4stack/identity/local"
 	"github.com/coolapso/c4stack/payments/creem"
 	"github.com/coolapso/c4stack/web"
 
@@ -32,6 +33,7 @@ func main() {
 
 var appMigrations = []app.Migrations{
 	accounts.Migrations,
+	local.Migrations,
 	apikeys.Migrations,
 	credits.Migrations,
 	expiry.Migrations,
@@ -46,10 +48,6 @@ func setup(ctx context.Context, a *app.App) error {
 	}
 	a.SetLogger(cfg.logger())
 
-	idp, err := hanko.New(hanko.Config{APIURL: cfg.HankoAPIURL, SignedInPath: "/console"})
-	if err != nil {
-		return err
-	}
 	pay, err := creem.New(creem.Config{
 		APIKey:         cfg.CreemAPIKey,
 		WebhookSecret:  cfg.CreemWebhookSecret,
@@ -59,18 +57,37 @@ func setup(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return err
 	}
-	var mail email.TrackingSender
-	if cfg.ScalewaySecretKey != "" {
-		if mail, err = scaleway.New(scaleway.Config{
+	// Email goes through Scaleway, or through SMTP to Mailpit in development. Only
+	// Scaleway reports delivery, so credit expires only with it.
+	var mailer email.Sender
+	var tracking email.TrackingSender
+	if cfg.SMTPURL != "" {
+		if mailer, err = smtp.New(smtp.Config{URL: cfg.SMTPURL, From: cfg.EmailFrom, FromName: "Textlab"}); err != nil {
+			return err
+		}
+	} else {
+		s, err := scaleway.New(scaleway.Config{
 			SecretKey: cfg.ScalewaySecretKey,
 			ProjectID: cfg.ScalewayProjectID,
 			From:      cfg.EmailFrom,
 			FromName:  "Textlab",
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		mailer, tracking = s, s
 	}
-	handler, err := build(a, cfg, providers{identity: idp, payments: pay, email: mail})
+	idp, err := local.New(a, local.Config{
+		AppName:      "Textlab",
+		PublicURL:    cfg.PublicURL,
+		SecretKey:    cfg.SecretKey,
+		Sender:       mailer,
+		SignedInPath: "/account",
+	})
+	if err != nil {
+		return err
+	}
+	handler, err := build(a, cfg, providers{identity: idp, login: idp, payments: pay, email: tracking})
 	if err != nil {
 		return err
 	}
