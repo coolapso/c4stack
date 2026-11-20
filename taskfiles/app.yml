@@ -2,7 +2,8 @@
 #
 # An app's Taskfile.yml includes this file at the C4Stack release in its go.mod, so
 # fixed and new tasks arrive when the app updates the framework. Every task runs from
-# the app's root directory.
+# the app's root directory: the tasks set no `dir`, so Task runs them where the app's
+# Taskfile is, or where a parent Taskfile's include of the app points (`dir: ./app`).
 #
 # The app's Taskfile sets:
 #   APP           the app's name: binary, Compose project and database name
@@ -61,7 +62,6 @@ tasks:
 
   dev:
     desc: Serve the app with live reload on http://localhost:{{.SHARED_DEV_PORT}}
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - go tool templ generate
       - >-
@@ -74,19 +74,16 @@ tasks:
 
   templ:generate:
     desc: Generate Go code from Templ files
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - go tool templ generate
 
   templ:watch:
     desc: Regenerate Go code whenever a Templ file changes
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - go tool templ generate --watch
 
   run:
     desc: 'Run an app command, for example: task run -- migrate status'
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - '{{.SHARED_SECRETS}} go run . {{.CLI_ARGS}}'
 
@@ -94,7 +91,6 @@ tasks:
 
   db:up:
     desc: Start the local development database
-    dir: '{{.ROOT_DIR}}'
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
@@ -102,7 +98,6 @@ tasks:
 
   db:down:
     desc: Stop the local development database and keep its data
-    dir: '{{.ROOT_DIR}}'
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
@@ -110,7 +105,6 @@ tasks:
 
   db:logs:
     desc: Follow the local database's logs
-    dir: '{{.ROOT_DIR}}'
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
@@ -118,7 +112,6 @@ tasks:
 
   db:connect:
     desc: Open psql on the local database
-    dir: '{{.ROOT_DIR}}'
     interactive: true
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
@@ -127,7 +120,6 @@ tasks:
 
   db:wipe:
     desc: Delete the local database and all its data
-    dir: '{{.ROOT_DIR}}'
     prompt: This deletes the local {{.APP}} database and all its data. Continue?
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
@@ -136,7 +128,6 @@ tasks:
 
   db:migrate:
     desc: Apply pending migrations to the database in {{.ENV_PREFIX}}_DATABASE_URL
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - '{{.SHARED_SECRETS}} go run . migrate'
 
@@ -144,7 +135,6 @@ tasks:
 
   mail:up:
     desc: Start Mailpit, which catches the app's emails; its inbox is http://localhost:8025
-    dir: '{{.ROOT_DIR}}'
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
@@ -152,7 +142,6 @@ tasks:
 
   mail:down:
     desc: Stop Mailpit
-    dir: '{{.ROOT_DIR}}'
     env:
       DB_PORT: '{{.SHARED_DB_PORT}}'
     cmds:
@@ -162,13 +151,11 @@ tasks:
 
   test:
     desc: Run unit tests
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - go test {{.CLI_ARGS | default "./..."}}
 
   test:integration:
     desc: Run unit and integration tests against a disposable PostgreSQL
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - defer: {task: test:db:down}
       - task: test:db:down
@@ -179,7 +166,6 @@ tasks:
 
   test:db:up:
     desc: Start the disposable test database (task test:integration does this)
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - |
         cat <<'EOF' | docker compose -p {{.APP}}-test -f - up -d --wait --wait-timeout 60
@@ -188,7 +174,6 @@ tasks:
 
   test:db:down:
     desc: Remove the disposable test database
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - |
         cat <<'EOF' | docker compose -p {{.APP}}-test -f - down --volumes --remove-orphans
@@ -197,7 +182,6 @@ tasks:
 
   check:
     desc: Vet, lint, and check formatting, module tidiness and generated code
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - |
         required=$(go list -m -f '{{"{{"}}.Version{{"}}"}}' github.com/coolapso/c4stack 2>/dev/null || true)
@@ -226,13 +210,11 @@ tasks:
 
   build:
     desc: Build the app's binary into {{.SHARED_BINARY}}
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o {{.SHARED_BINARY}} .
 
   container:binaries:
     internal: true
-    dir: '{{.ROOT_DIR}}'
     cmds:
       - for: {var: TARGETS, split: ','}
         cmd: >-
@@ -241,7 +223,6 @@ tasks:
 
   container:build:
     desc: Build the container image for this machine, tagged from git describe
-    dir: '{{.ROOT_DIR}}'
     vars:
       LOCAL_PLATFORM: linux/{{ARCH}}
     cmds:
@@ -251,7 +232,6 @@ tasks:
 
   container:push:
     desc: Build the image for PLATFORMS and push it to REGISTRY, tagged from git describe and latest
-    dir: '{{.ROOT_DIR}}'
     requires:
       vars: [REGISTRY]
     cmds:
@@ -265,7 +245,6 @@ tasks:
 
   framework:update:
     desc: 'Move to another C4Stack release, for example: task framework:update VERSION=v0.2.0'
-    dir: '{{.ROOT_DIR}}'
     requires:
       vars: [VERSION]
     cmds:

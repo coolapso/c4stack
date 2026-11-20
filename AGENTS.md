@@ -20,7 +20,9 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 - `internal/scaffold/templates` holds app-owned starter files only. Never put shared
   logic, SQL or assets there.
 - `taskfiles/app.yml` is the shared Taskfile apps include remotely. Its tasks run from
-  the app root (`dir: '{{.ROOT_DIR}}'`), push nothing on their own, and hold no secrets.
+  the app root, push nothing on their own, and hold no secrets. They set no `dir`: Task
+  then runs them where the app's Taskfile is, also when a parent Taskfile includes the
+  app with `dir:`, which `{{.ROOT_DIR}}` would override with the parent's directory.
   Its own variables start with `SHARED_`, because Task merges them over the app's.
 - Searchbase Cloud is the reference app, and the modules' compatibility target. It is
   private; the owner's checkout is `~/Dev/searchbasecloud`.

@@ -1167,8 +1167,10 @@ newest commit.
   the app's, so the shared file's own variables all start with `SHARED_` and never
   share a name with an app variable.
 - An app redefines a shared task by listing it in `excludes`.
-- Shared tasks set `dir: '{{.ROOT_DIR}}'`, so they run from the app root, including
-  under `--local` and from subdirectories.
+- Shared tasks set no `dir`, so they run from the app root: where the app's Taskfile
+  is, including under `--local` and from subdirectories, and where a parent Taskfile's
+  include of the app points (`dir: ./app`), for an app inside a larger repository.
+  `dir: '{{.ROOT_DIR}}'` would run them from the parent's directory instead.
 - `.taskrc.yml` trusts `github.com`, so there is no trust prompt, and caches the shared
   file. `.task/` is gitignored, and `--offline` uses that cache.
 - No checksum is pinned, because the ref is a release tag.
