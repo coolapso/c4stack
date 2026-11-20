@@ -30,6 +30,9 @@ task db:up mail:up db:migrate
 task dev                  # http://localhost:8080; sign-in codes arrive at http://localhost:8025
 ```
 
+Inside tmux, `task dev:tmux` does both in a window of its own, with a pane each for the
+app, the database's logs and Mailpit's.
+
 New apps sign people in with a code by email or a passkey, and keep their users in the
 app's own database. `c4stack new acme --identity hanko` generates an app on Hanko Cloud
 instead. Development settings live in the app's `Taskfile.yml`; there is no settings

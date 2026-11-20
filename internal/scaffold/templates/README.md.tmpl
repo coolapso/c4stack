@@ -37,6 +37,10 @@ task starts; there is no settings file to fill in.
 3. Sign in with any address. The code arrives in Mailpit, at http://localhost:8025.
 [[- end]]
 
+Inside tmux, `task dev:tmux` does it all in a window of its own: it starts the
+containers, then opens a pane each for the app (migrated first) and their logs. Ctrl+C
+in each pane closes it.
+
 `task --list` shows every task. `go run . help` shows the app's commands.
 
 To add pages, tables, API keys, credits and more, follow the

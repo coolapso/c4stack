@@ -1179,7 +1179,7 @@ newest commit.
 
 | Area | Tasks |
 |---|---|
-| Develop | `dev` (templ watch with live reload), `templ:generate`, `templ:watch` |
+| Develop | `dev` (templ watch with live reload), `dev:tmux` (the database and Mailpit, then the migrated app and their logs in a tmux window), `templ:generate`, `templ:watch` |
 | Local database | `db:up`, `db:down`, `db:logs`, `db:connect`, `db:wipe` (asks first) |
 | Local mail | `mail:up`, `mail:down`: Mailpit, which catches the app's emails |
 | Operations | `db:migrate`, `run -- <command>` (passthrough to the app binary) |

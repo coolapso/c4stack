@@ -72,6 +72,30 @@ tasks:
         --watch-pattern='(.+\.go$)|(.+\.templ$)|(.+\.css$)|(.+\.js$)|(.+\.sql$)'
         --cmd='go run . serve'
 
+  # Searchbase Cloud's dev:tmux, on the shared tasks. The containers start first, in the
+  # background, so their panes follow the logs. Ctrl+C in each pane stops it and closes
+  # the window; the containers keep running (task db:down mail:down stops them).
+  # Closing the window instead leaves the app running, as Searchbase's does: tmux hangs
+  # up only each pane's first process, and Task waits for its commands. Apps without
+  # Mailpit (on Hanko) get no Mailpit pane.
+  dev:tmux:
+    desc: Start the database and Mailpit, then open the app (migrated first) and their logs in a new tmux window
+    preconditions:
+      - sh: '[ -n "$TMUX" ]'
+        msg: Run task dev:tmux inside a tmux session.
+    cmds:
+      - task: db:up
+      - |
+        mail=$(docker compose config --services | grep -x mailpit || true)
+        if [ -n "$mail" ]; then task mail:up; fi
+        app_pane=$(tmux new-window -d -P -F '#{pane_id}' -c "$PWD" -n {{.APP}} "task db:migrate dev")
+        tmux split-window -d -t "$app_pane" -c "$PWD" "task db:logs"
+        if [ -n "$mail" ]; then
+          tmux split-window -d -t "$app_pane" -c "$PWD" "docker compose logs -f mailpit"
+        fi
+        tmux select-layout -t "$app_pane" tiled
+        tmux select-pane -t "$app_pane"
+
   templ:generate:
     desc: Generate Go code from Templ files
     cmds:
