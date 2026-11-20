@@ -268,16 +268,20 @@ tasks:
   # Framework -----------------------------------------------------------------
 
   framework:update:
-    desc: 'Move to another C4Stack release, for example: task framework:update VERSION=v0.2.0'
+    desc: 'Move to another C4Stack release, for example: task framework:update VERSION=v0.3.0 (or 0.3.0)'
     requires:
       vars: [VERSION]
+    vars:
+      # Releases are tagged vX.Y.Z; a version without the v gets it, so 0.3.0 pins
+      # v0.3.0 rather than a ref that doesn't exist.
+      SHARED_VERSION: v{{trimPrefix "v" .VERSION}}
     cmds:
-      - go get github.com/coolapso/c4stack@{{.VERSION}}
+      - go get github.com/coolapso/c4stack@{{.SHARED_VERSION}}
       - go mod tidy
       # Pin the shared tasks to the same release.
       - |
         tmp=$(mktemp)
-        awk -v version='{{.VERSION}}' '/^  FRAMEWORK_VERSION: / { print "  FRAMEWORK_VERSION: " version; next } { print }' Taskfile.yml > "$tmp"
+        awk -v version='{{.SHARED_VERSION}}' '/^  FRAMEWORK_VERSION: / { print "  FRAMEWORK_VERSION: " version; next } { print }' Taskfile.yml > "$tmp"
         cat "$tmp" > Taskfile.yml && rm "$tmp"
       # A new task process includes the shared tasks of the new release.
       - task templ:generate

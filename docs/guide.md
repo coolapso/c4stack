@@ -683,7 +683,7 @@ needs with test providers.
 ## Upgrade the framework
 
 ```sh
-task framework:update VERSION=v0.2.0
+task framework:update VERSION=v0.3.0   # or VERSION=0.3.0
 ```
 
 It moves the Go dependency and the shared tasks to the release together, then tidies,
