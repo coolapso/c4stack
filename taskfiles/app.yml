@@ -17,7 +17,19 @@
 #                 on DEV_APP_PORT (default 8081) behind the live-reload proxy
 #   TEST_DB_PORT  the disposable test database's port (default 55432)
 #   INFISICAL_PROJECT and INFISICAL_ENV
-#                 run dev, run and db:migrate under `infisical run`
+#                 give dev, run and db:migrate the secrets of that Infisical project's
+#                 environment (default dev): with `infisical run`, the root folder's,
+#                 named as the app reads them
+#   INFISICAL_SECRETS
+#                 with INFISICAL_PROJECT, the secrets to give them instead, by the
+#                 app's name and their path in the project, as production's secret
+#                 store maps them:
+#                   INFISICAL_SECRETS:
+#                     map:
+#                       ACME_CREEM_API_KEY: /creem/API_KEY
+#                 Each is fetched when the task starts and reaches the app in its
+#                 environment only, never in a command's arguments; one that can't be
+#                 fetched is left out, and Infisical's error says why.
 #
 # To change a shared task, add its name to `excludes` in the app's include and define
 # a task with the same name in the app's Taskfile.
@@ -34,7 +46,10 @@ vars:
   SHARED_TEST_DB_PORT: '{{.TEST_DB_PORT | default "55432"}}'
   SHARED_TEST_DATABASE_URL: postgres://test:test-only@127.0.0.1:{{.SHARED_TEST_DB_PORT}}/test?sslmode=disable
   SHARED_PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
-  SHARED_SECRETS: '{{if .INFISICAL_PROJECT}}infisical run --projectId={{.INFISICAL_PROJECT}} --env={{.INFISICAL_ENV | default "dev"}} --{{end}}'
+  # A prefix for the app's commands: assignments that fetch INFISICAL_SECRETS, or
+  # `infisical run`.
+  SHARED_SECRETS: >-
+    {{if .INFISICAL_PROJECT}}{{if .INFISICAL_SECRETS}}{{range $name, $path := .INFISICAL_SECRETS}}{{$name}}="$(infisical secrets get {{base $path}} --path={{dir $path}} --plain --silent --projectId={{$.INFISICAL_PROJECT}} --env={{$.INFISICAL_ENV | default "dev"}})" {{end}}{{else}}infisical run --projectId={{.INFISICAL_PROJECT}} --env={{.INFISICAL_ENV | default "dev"}} --{{end}}{{end}}
   SHARED_STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.2
   SHARED_TAG:
     sh: (git describe --tags --always --dirty=-dev 2>/dev/null || echo dev) | sed 's/^v//'

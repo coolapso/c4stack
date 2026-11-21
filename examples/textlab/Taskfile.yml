@@ -13,8 +13,8 @@ vars:
 
 # The settings task dev, task run and task db:migrate give Textlab. None is a secret:
 # the secret key is a new one each time a task starts. Give it your Creem test keys in
-# your shell (variables there win), or set INFISICAL_PROJECT to fetch them with
-# `infisical run`. Never keep settings in a .env file.
+# your shell (variables there win), or set INFISICAL_PROJECT (and INFISICAL_SECRETS) to
+# fetch them from Infisical. Never keep settings in a .env file.
 env:
   TEXTLAB_PUBLIC_URL: http://localhost:8080
   TEXTLAB_DATABASE_URL: postgres://textlab:textlab@localhost:5433/textlab?sslmode=disable

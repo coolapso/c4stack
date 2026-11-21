@@ -1151,8 +1151,12 @@ includes:
 **Settings without a file.** The app's Taskfile sets its development settings in `env`,
 none of them secret: the secret key is `openssl rand -hex 32`, made each time a task
 starts, which development can afford because sessions live in the database. Variables
-in the shell win over the Taskfile's, and `infisical run` adds an Infisical
-environment's secrets. C4Stack never generates, loads or documents a `.env` file.
+in the shell win over the Taskfile's, and Infisical adds an environment's secrets:
+with `INFISICAL_PROJECT`, `infisical run` gives the root folder's, named as the app
+reads them; with `INFISICAL_SECRETS` too, a map from the app's names to the secrets'
+paths (`ACME_CREEM_API_KEY: /creem/API_KEY`), each task fetches those when it starts,
+as production's secret store maps them. They reach the app in its environment only,
+never in a command's arguments. C4Stack never generates, loads or documents a `.env` file.
 
 **One version.** `framework:update` changes the Go dependency and `FRAMEWORK_VERSION`
 together, then tidies, regenerates, tests and builds. `check` fails when the two differ.
@@ -1186,7 +1190,7 @@ newest commit.
 | Quality | `test`, `test:integration`, `check` (version drift, vet, staticcheck, gofmt, templ fmt, `go mod tidy -diff`, generated-code drift) |
 | Build | `build`, `container:build`, `container:push` (`PLATFORMS` variable, tags from `git describe`) |
 | Framework | `framework:update VERSION=…` |
-| Secrets | optional `infisical run` wrapping when the app sets a project and environment |
+| Secrets | an Infisical environment's secrets for `dev`, `run` and `db:migrate` when the app sets a project: the root folder's (`infisical run`), or those `INFISICAL_SECRETS` maps by path |
 
 **Integration tests.** `test:integration` starts a disposable PostgreSQL under its own
 Compose project on its own port, with the Compose file inline. It overrides the app's

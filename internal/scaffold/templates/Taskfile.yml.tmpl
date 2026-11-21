@@ -10,9 +10,13 @@ vars:
   ENV_PREFIX: [[.EnvPrefix]]
   IMAGE: [[.Name]]
   # REGISTRY: ghcr.io/you
-  # Run dev, run and db:migrate under `infisical run`:
+  # Give dev, run and db:migrate an Infisical environment's secrets: its root folder's,
+  # with `infisical run`, or the ones INFISICAL_SECRETS names, by their path:
   # INFISICAL_PROJECT: <project-id>
   # INFISICAL_ENV: dev
+  # INFISICAL_SECRETS:
+  #   map:
+  #     [[.EnvPrefix]]_CREEM_API_KEY: /creem/API_KEY
   # The C4Stack release in go.mod. task framework:update changes both, and task check
   # fails when they differ.
   FRAMEWORK_VERSION: [[.Version]]
@@ -20,7 +24,7 @@ vars:
 # The settings task dev, task run and task db:migrate give the app. None is a secret: the
 # secret key is a new one each time a task starts, which development doesn't mind,
 # since sessions live in the database. Variables already set in your shell win, and
-# with INFISICAL_PROJECT set, `infisical run` adds that environment's secrets. Never
+# with INFISICAL_PROJECT set, Infisical adds that environment's secrets. Never
 # keep settings in a .env file.
 env:
   [[.EnvPrefix]]_PUBLIC_URL: http://localhost:8080
