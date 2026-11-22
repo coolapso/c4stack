@@ -814,7 +814,11 @@ type SubscriptionEvent struct {
   (`tax_amount` of `amount_paid`, which includes it). Products are read once every ten
   minutes.
 - An API key starting with `creem_test_` selects Creem's test API.
-- Webhooks are verified with HMAC-SHA256 from the `creem-signature` header.
+- Webhooks are verified with HMAC-SHA256 from the `creem-signature` header, with the
+  secret of the endpoint they arrive at: Creem gives each webhook its own.
+  `WebhookSecret` verifies the credit purchases' webhook, and
+  `SubscriptionWebhookSecret`, when set, the subscriptions' webhook; otherwise
+  `WebhookSecret` verifies both.
 - The `checkout_url` Creem returns must match `CheckoutOrigin`. That is the configured
   custom domain or `DefaultCheckoutOrigin` for a live key, and always
   `https://www.creem.io` for a test key, because Creem serves test-mode checkouts

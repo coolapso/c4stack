@@ -54,10 +54,11 @@ func setup(ctx context.Context, a *app.App) error {
 	a.SetLogger(cfg.logger())
 
 	pay, err := creem.New(creem.Config{
-		APIKey:         cfg.CreemAPIKey,
-		WebhookSecret:  cfg.CreemWebhookSecret,
-		ProductID:      cfg.CreemProductID,
-		CheckoutOrigin: cfg.CreemCheckoutOrigin,
+		APIKey:                    cfg.CreemAPIKey,
+		WebhookSecret:             cfg.CreemWebhookSecret,
+		SubscriptionWebhookSecret: cfg.CreemSubscriptionWebhookSecret,
+		ProductID:                 cfg.CreemProductID,
+		CheckoutOrigin:            cfg.CreemCheckoutOrigin,
 	})
 	if err != nil {
 		return err

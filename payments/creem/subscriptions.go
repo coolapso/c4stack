@@ -181,7 +181,11 @@ func (c *Creem) CustomerPortal(ctx context.Context, customerID string) (string, 
 // ParseSubscriptionWebhook verifies and decodes a Creem webhook about a subscription:
 // a checkout that started one, any subscription event, or a refund or dispute of one.
 func (c *Creem) ParseSubscriptionWebhook(header http.Header, body []byte) (payments.SubscriptionEvent, error) {
-	env, err := c.verify(header, body)
+	secret := c.cfg.SubscriptionWebhookSecret
+	if secret == "" {
+		secret = c.cfg.WebhookSecret
+	}
+	env, err := verify(header, body, secret)
 	if err != nil {
 		return payments.SubscriptionEvent{}, err
 	}

@@ -16,14 +16,18 @@ type config struct {
 	SecretKey string
 	// TrustedProxies are the proxies in front of Textlab, whose forwarding headers give
 	// the client's address.
-	TrustedProxies      []string
-	CreemAPIKey         string
+	TrustedProxies []string
+	CreemAPIKey    string
+	// CreemWebhookSecret is the secret of the webhook at /webhooks/payments.
 	CreemWebhookSecret  string
 	CreemProductID      string
 	CreemCheckoutOrigin string
 	// CreemProProductID is the recurring product Textlab Pro sells. Without it, Textlab
 	// sells no subscription.
 	CreemProProductID string
+	// CreemSubscriptionWebhookSecret is the secret of the webhook at
+	// /webhooks/subscriptions: Creem gives each webhook its own. Textlab Pro needs it.
+	CreemSubscriptionWebhookSecret string
 	// Email goes through SMTP, such as Mailpit in development, or Scaleway. Without
 	// Scaleway, credit never expires.
 	EmailFrom         string
@@ -45,23 +49,24 @@ func env(name string) string {
 
 func loadConfig() (config, error) {
 	cfg := config{
-		PublicURL:           env("PUBLIC_URL"),
-		Addr:                env("ADDR"),
-		SecretKey:           env("SECRET_KEY"),
-		TrustedProxies:      list(env("TRUSTED_PROXIES")),
-		CreemAPIKey:         env("CREEM_API_KEY"),
-		CreemWebhookSecret:  env("CREEM_WEBHOOK_SECRET"),
-		CreemProductID:      env("CREEM_PRODUCT_ID"),
-		CreemCheckoutOrigin: env("CREEM_CHECKOUT_ORIGIN"),
-		CreemProProductID:   env("CREEM_PRO_PRODUCT_ID"),
-		ScalewaySecretKey:   env("SCALEWAY_SECRET_KEY"),
-		ScalewayProjectID:   env("SCALEWAY_PROJECT_ID"),
-		EmailFrom:           env("EMAIL_FROM"),
-		SMTPURL:             env("SMTP_URL"),
-		OIDCClientID:        env("OIDC_CLIENT_ID"),
-		OIDCClientSecret:    env("OIDC_CLIENT_SECRET"),
-		OIDCRedirectURIs:    list(env("OIDC_REDIRECT_URIS")),
-		LogFormat:           env("LOG_FORMAT"),
+		PublicURL:                      env("PUBLIC_URL"),
+		Addr:                           env("ADDR"),
+		SecretKey:                      env("SECRET_KEY"),
+		TrustedProxies:                 list(env("TRUSTED_PROXIES")),
+		CreemAPIKey:                    env("CREEM_API_KEY"),
+		CreemWebhookSecret:             env("CREEM_WEBHOOK_SECRET"),
+		CreemProductID:                 env("CREEM_PRODUCT_ID"),
+		CreemCheckoutOrigin:            env("CREEM_CHECKOUT_ORIGIN"),
+		CreemProProductID:              env("CREEM_PRO_PRODUCT_ID"),
+		CreemSubscriptionWebhookSecret: env("CREEM_SUBSCRIPTION_WEBHOOK_SECRET"),
+		ScalewaySecretKey:              env("SCALEWAY_SECRET_KEY"),
+		ScalewayProjectID:              env("SCALEWAY_PROJECT_ID"),
+		EmailFrom:                      env("EMAIL_FROM"),
+		SMTPURL:                        env("SMTP_URL"),
+		OIDCClientID:                   env("OIDC_CLIENT_ID"),
+		OIDCClientSecret:               env("OIDC_CLIENT_SECRET"),
+		OIDCRedirectURIs:               list(env("OIDC_REDIRECT_URIS")),
+		LogFormat:                      env("LOG_FORMAT"),
 	}
 	if cfg.Addr == "" {
 		cfg.Addr = ":8080"
@@ -86,6 +91,11 @@ func loadConfig() (config, error) {
 	}
 	if len(missing) > 0 {
 		return config{}, errors.New("set " + strings.Join(missing, ", "))
+	}
+	// Without it, the subscriptions' webhook would be checked with the payments' secret
+	// and every event refused.
+	if cfg.CreemProProductID != "" && cfg.CreemSubscriptionWebhookSecret == "" {
+		return config{}, errors.New("with TEXTLAB_CREEM_PRO_PRODUCT_ID, set TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET")
 	}
 	if cfg.OIDCClientID != "" && (cfg.OIDCClientSecret == "" || len(cfg.OIDCRedirectURIs) == 0) {
 		return config{}, errors.New("with TEXTLAB_OIDC_CLIENT_ID, set TEXTLAB_OIDC_CLIENT_SECRET and TEXTLAB_OIDC_REDIRECT_URIS")

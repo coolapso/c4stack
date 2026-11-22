@@ -17,6 +17,7 @@ vars:
     map:
       TEXTLAB_CREEM_API_KEY: /creem/API_KEY
       TEXTLAB_CREEM_WEBHOOK_SECRET: /creem/WEBHOOK_SECRET
+      TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET: /creem/SUBSCRIPTION_WEBHOOK_SECRET
 
 # The settings task dev, task run and task db:migrate give Textlab, besides the Creem
 # keys above. None is a secret: the secret key is a new one each time a task starts.

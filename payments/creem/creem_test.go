@@ -29,9 +29,35 @@ func adapter(t *testing.T, api string) *Creem {
 }
 
 func signed(body string) http.Header {
-	mac := hmac.New(sha256.New, []byte(secret))
+	return signedWith(secret, body)
+}
+
+func signedWith(key, body string) http.Header {
+	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(body))
 	return http.Header{"Creem-Signature": {hex.EncodeToString(mac.Sum(nil))}}
+}
+
+// Creem gives each webhook endpoint its own secret: with SubscriptionWebhookSecret set,
+// each webhook accepts only its own endpoint's signatures.
+func TestWebhookSecrets(t *testing.T) {
+	c, err := New(Config{APIKey: "creem_test_key", WebhookSecret: secret, SubscriptionWebhookSecret: "whsec_subscriptions", ProductID: "prod_credits"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"id": "evt_1", "eventType": "credits.granted", "object": {}}`
+	if _, err := c.ParseWebhook(signed(body), []byte(body)); !errors.Is(err, payments.ErrIgnored) {
+		t.Errorf("credits webhook with its secret: %v", err)
+	}
+	if _, err := c.ParseWebhook(signedWith("whsec_subscriptions", body), []byte(body)); !errors.Is(err, payments.ErrInvalid) {
+		t.Errorf("credits webhook with the subscriptions' secret: %v", err)
+	}
+	if _, err := c.ParseSubscriptionWebhook(signedWith("whsec_subscriptions", body), []byte(body)); !errors.Is(err, payments.ErrIgnored) {
+		t.Errorf("subscriptions webhook with its secret: %v", err)
+	}
+	if _, err := c.ParseSubscriptionWebhook(signed(body), []byte(body)); !errors.Is(err, payments.ErrInvalid) {
+		t.Errorf("subscriptions webhook with the credits' secret: %v", err)
+	}
 }
 
 func TestNew(t *testing.T) {

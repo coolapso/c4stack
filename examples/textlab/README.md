@@ -37,7 +37,7 @@ small paid text API:
 
 `Taskfile.yml` holds the development settings, with a new secret key each time a task
 starts. It names the products of the maintainer's Creem test store, and its tasks fetch
-the store's test key and webhook secret from the maintainer's Infisical project, with
+the store's test key and webhooks' secrets from the maintainer's Infisical project, with
 the `infisical` CLI:
 
 ```sh
@@ -52,21 +52,23 @@ http://localhost:8082 instead, and stop the database and Mailpit when it stops. 
 
 Without access to that Infisical project, use a Creem store of your own in test mode,
 with a one-time product (checkouts set its price) and, for Textlab Pro, a recurring
-one. Give their settings in your shell. With `TEXTLAB_CREEM_API_KEY` there, the tasks
-leave Infisical out:
-
-```sh
-export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=…
-export TEXTLAB_CREEM_PRODUCT_ID=prod_… TEXTLAB_CREEM_PRO_PRODUCT_ID=prod_…
-task dev
-```
-
-For your store's webhooks, give Textlab a public address of your own, such as a
-Cloudflare quick tunnel, which prints a new one each time it starts. In Creem's test
-mode, point webhooks at its `/webhooks/payments` and `/webhooks/subscriptions`:
+one. Its webhooks need a public address, such as a Cloudflare quick tunnel, which prints
+a new one each time it starts:
 
 ```sh
 cloudflared tunnel --no-autoupdate --url http://localhost:8080
+```
+
+In Creem's test mode, add a webhook at `<address>/webhooks/payments` and another at
+`<address>/webhooks/subscriptions`; Creem gives each a secret of its own. Give the
+settings in your shell. With `TEXTLAB_CREEM_API_KEY` there, the tasks leave Infisical
+out:
+
+```sh
+export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=…
+export TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET=…
+export TEXTLAB_CREEM_PRODUCT_ID=prod_… TEXTLAB_CREEM_PRO_PRODUCT_ID=prod_…
+task dev
 ```
 
 ```sh

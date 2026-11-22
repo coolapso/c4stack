@@ -35,8 +35,15 @@ const testCheckoutOrigin = "https://www.creem.io"
 type Config struct {
 	// APIKey is a Creem API key. A key starting with creem_test_ uses Creem's test API.
 	APIKey string
-	// WebhookSecret verifies webhook signatures.
+	// WebhookSecret verifies the signatures of the credit purchases' webhook
+	// (ParseWebhook), and of the subscriptions' webhook unless SubscriptionWebhookSecret
+	// is set.
 	WebhookSecret string
+	// SubscriptionWebhookSecret verifies the signatures of the subscriptions' webhook
+	// (ParseSubscriptionWebhook). Creem gives each webhook endpoint a secret of its own,
+	// so an app that sells credit and subscriptions, with a webhook for each, sets it to
+	// the second webhook's. Zero means WebhookSecret.
+	SubscriptionWebhookSecret string
 	// ProductID is the one-time product every credit checkout uses, with a custom price.
 	// Only the credits module needs it; subscriptions name their own products.
 	ProductID string
@@ -180,7 +187,7 @@ func (c *Creem) checkoutURL(raw string) (string, error) {
 
 // ParseWebhook verifies and decodes a Creem webhook about a credit purchase.
 func (c *Creem) ParseWebhook(header http.Header, body []byte) (payments.Event, error) {
-	envelope, err := c.verify(header, body)
+	envelope, err := verify(header, body, c.cfg.WebhookSecret)
 	if err != nil {
 		return payments.Event{}, err
 	}
@@ -199,13 +206,14 @@ func (c *Creem) ParseWebhook(header http.Header, body []byte) (payments.Event, e
 	return e, err
 }
 
-// verify checks a webhook's signature and returns its envelope.
-func (c *Creem) verify(header http.Header, body []byte) (envelope, error) {
+// verify checks a webhook's signature with its endpoint's secret and returns its
+// envelope.
+func verify(header http.Header, body []byte, secret string) (envelope, error) {
 	signature, err := hex.DecodeString(header.Get("creem-signature"))
 	if err != nil || len(signature) != sha256.Size {
 		return envelope{}, payments.ErrInvalid
 	}
-	mac := hmac.New(sha256.New, []byte(c.cfg.WebhookSecret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	if !hmac.Equal(signature, mac.Sum(nil)) {
 		return envelope{}, payments.ErrInvalid

@@ -212,6 +212,11 @@ r.POST("/webhooks/subscriptions", subs.Webhook)
 pricing := account.Group("/plans", web.AllowCSP(subs.CheckoutCSP()))
 ```
 
+Set a webhook in Creem to `https://<your host>/webhooks/subscriptions`. Creem gives
+each webhook a secret of its own: an app that sells only subscriptions gives this one's
+as `WebhookSecret`, and one that also sells credit, with a webhook for each, gives it as
+`SubscriptionWebhookSecret` (`ACME_CREEM_SUBSCRIPTION_WEBHOOK_SECRET`).
+
 A page sells with a form that posts `product`, and `units` or `target` when they
 apply, to the subscriptions group, which sends the browser to the provider's
 checkout; it comes back through `/started`, which starts the subscription at once. An
