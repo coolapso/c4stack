@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -22,11 +23,11 @@ type config struct {
 	CreemWebhookSecret  string
 	CreemProductID      string
 	CreemCheckoutOrigin string
-	// CreemProProductID is the recurring product Textlab Pro sells. Without it, Textlab
-	// sells no subscription.
-	CreemProProductID string
+	// The plans' recurring products, one per plan and billing period (plans.go).
+	// Without them, Textlab sells no plan.
+	CreemProMonthly, CreemProYearly, CreemMaxMonthly, CreemMaxYearly string
 	// CreemSubscriptionWebhookSecret is the secret of the webhook at
-	// /webhooks/subscriptions: Creem gives each webhook its own. Textlab Pro needs it.
+	// /webhooks/subscriptions: Creem gives each webhook its own. The plans need it.
 	CreemSubscriptionWebhookSecret string
 	// Email goes through SMTP, such as Mailpit in development, or Scaleway. Without
 	// Scaleway, credit never expires.
@@ -57,7 +58,10 @@ func loadConfig() (config, error) {
 		CreemWebhookSecret:             env("CREEM_WEBHOOK_SECRET"),
 		CreemProductID:                 env("CREEM_PRODUCT_ID"),
 		CreemCheckoutOrigin:            env("CREEM_CHECKOUT_ORIGIN"),
-		CreemProProductID:              env("CREEM_PRO_PRODUCT_ID"),
+		CreemProMonthly:                env("CREEM_PRO_MONTHLY"),
+		CreemProYearly:                 env("CREEM_PRO_YEARLY"),
+		CreemMaxMonthly:                env("CREEM_MAX_MONTHLY"),
+		CreemMaxYearly:                 env("CREEM_MAX_YEARLY"),
 		CreemSubscriptionWebhookSecret: env("CREEM_SUBSCRIPTION_WEBHOOK_SECRET"),
 		ScalewaySecretKey:              env("SCALEWAY_SECRET_KEY"),
 		ScalewayProjectID:              env("SCALEWAY_PROJECT_ID"),
@@ -92,10 +96,15 @@ func loadConfig() (config, error) {
 	if len(missing) > 0 {
 		return config{}, errors.New("set " + strings.Join(missing, ", "))
 	}
+	// Some plans without the others would offer changes to products Creem can't sell.
+	plans := []string{cfg.CreemProMonthly, cfg.CreemProYearly, cfg.CreemMaxMonthly, cfg.CreemMaxYearly}
+	if set := len(slices.DeleteFunc(plans, func(id string) bool { return id == "" })); set != 0 && set != 4 {
+		return config{}, errors.New("set all of TEXTLAB_CREEM_PRO_MONTHLY, TEXTLAB_CREEM_PRO_YEARLY, TEXTLAB_CREEM_MAX_MONTHLY and TEXTLAB_CREEM_MAX_YEARLY, or none")
+	}
 	// Without it, the subscriptions' webhook would be checked with the payments' secret
 	// and every event refused.
-	if cfg.CreemProProductID != "" && cfg.CreemSubscriptionWebhookSecret == "" {
-		return config{}, errors.New("with TEXTLAB_CREEM_PRO_PRODUCT_ID, set TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET")
+	if cfg.sellsPlans() && cfg.CreemSubscriptionWebhookSecret == "" {
+		return config{}, errors.New("with the plans' products, set TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET")
 	}
 	if cfg.OIDCClientID != "" && (cfg.OIDCClientSecret == "" || len(cfg.OIDCRedirectURIs) == 0) {
 		return config{}, errors.New("with TEXTLAB_OIDC_CLIENT_ID, set TEXTLAB_OIDC_CLIENT_SECRET and TEXTLAB_OIDC_REDIRECT_URIS")
@@ -105,6 +114,9 @@ func loadConfig() (config, error) {
 	}
 	return cfg, nil
 }
+
+// sellsPlans reports whether Textlab sells its plans: their products are set.
+func (c config) sellsPlans() bool { return c.CreemProMonthly != "" }
 
 // local reports whether Textlab runs on this machine, as in development: its public
 // URL's host is a loopback address.

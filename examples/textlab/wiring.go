@@ -42,7 +42,7 @@ type textlab struct {
 	accounts *accounts.Accounts
 	keys     *apikeys.Keys
 	credits  *credits.Credits
-	// subs sells Textlab Pro; nil when Textlab sells no subscription.
+	// subs sells the plans; nil when Textlab sells none.
 	subs   *subscriptions.Subscriptions
 	layout ui.Layout
 	db     *sql.DB
@@ -89,13 +89,14 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Textlab Pro halves the price of an analysis, while its subscription is in effect.
+	// The plans make analyses cheaper while their subscription is in effect (plans.go).
 	var subs *subscriptions.Subscriptions
-	if seller, ok := p.payments.(payments.Subscriber); ok && cfg.CreemProProductID != "" {
+	if seller, ok := p.payments.(payments.Subscriber); ok && cfg.sellsPlans() {
 		if subs, err = subscriptions.New(a, accts, subscriptions.Config{
-			Payments:     seller,
-			ProviderName: "Creem",
-			Products:     []subscriptions.Product{{ID: proProduct, ProviderID: cfg.CreemProProductID, Name: "Textlab Pro", Group: "plan"}},
+			Payments:          seller,
+			ProviderName:      "Creem",
+			Products:          planProducts(cfg),
+			ChangeAtPeriodEnd: changeAtPeriodEnd,
 		}); err != nil {
 			return nil, err
 		}
@@ -136,8 +137,10 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	accts.Mount(r, t.layout)
 	console := r.Group("/account", accts.RequireSignIn)
 	if subs != nil {
-		// The overview's "Go Pro" form goes on to the provider's checkout.
+		// The overview's plans go on to the provider's checkout. A change asks first, with
+		// what it costs; the module's own routes start, change and cancel plans.
 		console.GET("", web.AllowCSP(subs.CheckoutCSP()), t.overview)
+		console.GET("/plan/change/:product", t.changePlan)
 		subs.Mount(console.Group("/subscriptions"), t.layout)
 		r.POST("/webhooks/subscriptions", subs.Webhook)
 	} else {

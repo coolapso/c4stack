@@ -29,9 +29,12 @@ env:
   TEXTLAB_SMTP_URL: smtp://localhost:1025
   TEXTLAB_EMAIL_FROM: noreply@localhost
   # Products in the maintainer's Creem test store: credit, bought at a custom price,
-  # and Textlab Pro, a recurring product at €5 a month.
+  # and the plans' recurring products (plans.go).
   TEXTLAB_CREEM_PRODUCT_ID: prod_6yflEb2Z5ZU8EucvqBdPjK
-  TEXTLAB_CREEM_PRO_PRODUCT_ID: prod_1lMWPp6vmcA6cpAGAJ8hNB
+  TEXTLAB_CREEM_PRO_MONTHLY: prod_1lMWPp6vmcA6cpAGAJ8hNB  # €5 a month
+  TEXTLAB_CREEM_PRO_YEARLY: prod_3Yk23FRpJFvJaDA5Zwfr9r   # €50 a year
+  TEXTLAB_CREEM_MAX_MONTHLY: prod_1xKdckv2wG1Ixo1SnlPNCB  # €15 a month
+  TEXTLAB_CREEM_MAX_YEARLY: prod_FveDun4Z99BrfsypPuBP1    # €150 a year
   TEXTLAB_LOG_FORMAT: text
   TEXTLAB_LOG_LEVEL: debug
   TEXTLAB_SECRET_KEY:

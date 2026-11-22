@@ -16,7 +16,7 @@ templ homePage() {
 	</section>
 }
 
-templ overviewPage(c *gin.Context, s credits.Summary, activeKeys int, jobs []job, sellsPro, pro bool) {
+templ overviewPage(c *gin.Context, s credits.Summary, activeKeys int, jobs []job, sellsPlans bool, plan planView) {
 	<div class="page-header">
 		<h1>Overview</h1>
 	</div>
@@ -36,30 +36,8 @@ templ overviewPage(c *gin.Context, s credits.Summary, activeKeys int, jobs []job
 			</div>
 		</div>
 	</section>
-	if sellsPro {
-		<section class="panel" aria-labelledby="pro-title">
-			<div class="panel-header">
-				<div>
-					<h2 id="pro-title">Textlab Pro</h2>
-					if pro {
-						<p>Pro is on: every analysis costs half. Manage it in your account settings.</p>
-					} else {
-						<p>€5 a month: every analysis costs half.</p>
-					}
-				</div>
-				if !pro {
-					<form method="post" action="/account/subscriptions" data-busy-form>
-						@ui.CSRFField(c)
-						<input type="hidden" name="product" value="pro"/>
-						<input type="hidden" name="next" value="/account"/>
-						<button type="submit" class="btn primary small">
-							Go Pro
-							@ui.Spinner()
-						</button>
-					</form>
-				}
-			</div>
-		</section>
+	if sellsPlans {
+		@planPanel(c, plan)
 	}
 	<section class="panel">
 		<div class="panel-header">
@@ -69,6 +47,100 @@ templ overviewPage(c *gin.Context, s credits.Summary, activeKeys int, jobs []job
 			<a class="btn small" href="/account/jobs">All jobs</a>
 		</div>
 		@jobTable(jobs)
+	</section>
+}
+
+// planPanel offers the plans to an account without one, and the changes to an account
+// with one. Cancelling and billing are on the settings page, the module's panel.
+templ planPanel(c *gin.Context, v planView) {
+	<section class="panel stack" aria-labelledby="plan-title">
+		<div class="panel-header">
+			<div>
+				if v.Current == nil {
+					<h2 id="plan-title">Plans</h2>
+					<p>Without a plan, an analysis costs 2 credits.</p>
+				} else {
+					<h2 id="plan-title">{ v.Current.Product.Name }</h2>
+					<p>{ gives(v.Current.Product.ID) } { v.status() } Cancel it, or manage billing, in your account settings.</p>
+				}
+			</div>
+			if v.Current != nil && v.Current.Pending != nil && v.Current.Live() {
+				<form method="post" action={ templ.SafeURL("/account/subscriptions/" + v.Current.ID + "/change") } data-busy-form>
+					@ui.CSRFField(c)
+					<input type="hidden" name="product" value={ v.Current.Product.ID }/>
+					<input type="hidden" name="next" value="/account"/>
+					<button type="submit" class="btn small">
+						Keep { v.Current.Product.Name }
+						@ui.Spinner()
+					</button>
+				</form>
+			}
+		</div>
+		if v.Current == nil {
+			<ul class="item-list">
+				for _, p := range plans {
+					<li class="item">
+						<div class="item-main">
+							<span>{ p.Name }</span>
+							<span class="item-detail">{ p.Gives } { p.PerMonth } a month, or { p.PerYear } a year, plus VAT.</span>
+						</div>
+						<div class="cluster">
+							@checkoutButton(c, p.Monthly, "Monthly")
+							@checkoutButton(c, p.Yearly, "Yearly")
+						</div>
+					</li>
+				}
+			</ul>
+		} else if len(v.Changes) > 0 {
+			<ul class="item-list">
+				for _, p := range v.Changes {
+					<li class="item">
+						<div class="item-main">
+							<span>{ p.Name }</span>
+							<span class="item-detail">{ gives(p.ID) } { price(p.ID) }, plus VAT.</span>
+						</div>
+						<a class="btn small" href={ templ.SafeURL("/account/plan/change/" + p.ID) }>Change</a>
+					</li>
+				}
+			</ul>
+		}
+	</section>
+}
+
+// checkoutButton starts a plan: the module sends the browser on to the provider's
+// checkout.
+templ checkoutButton(c *gin.Context, product, label string) {
+	<form method="post" action="/account/subscriptions" data-busy-form>
+		@ui.CSRFField(c)
+		<input type="hidden" name="product" value={ product }/>
+		<input type="hidden" name="next" value="/account"/>
+		<button type="submit" class="btn primary small">
+			{ label }
+			@ui.Spinner()
+		</button>
+	</form>
+}
+
+// changePage asks before a change, with what it does and costs.
+templ changePage(c *gin.Context, v changeView) {
+	<div class="page-header">
+		<h1>Change to { v.Quote.Product.Name }</h1>
+		<p class="lead">From { v.From.Product.Name }. { gives(v.Quote.Product.ID) }</p>
+	</div>
+	<section class="panel stack">
+		for _, line := range v.summary() {
+			<p>{ line }</p>
+		}
+		<form method="post" action={ templ.SafeURL("/account/subscriptions/" + v.From.ID + "/change") } class="cluster" data-busy-form>
+			@ui.CSRFField(c)
+			<input type="hidden" name="product" value={ v.Quote.Product.ID }/>
+			<input type="hidden" name="next" value="/account"/>
+			<button type="submit" class="btn primary">
+				{ v.action() }
+				@ui.Spinner()
+			</button>
+			<a class="btn ghost" href="/account">Keep { v.From.Product.Name }</a>
+		</form>
 	</section>
 }
 

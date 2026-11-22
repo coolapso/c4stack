@@ -13,9 +13,15 @@ small paid text API:
 - **API keys.** Keys start with `tl_`. The API under `/api/v1` authenticates them.
 - **Credits.** Users buy credit through Creem. `POST /api/v1/analyse` debits 2 credits,
   once per `Idempotency-Key`.
-- **A subscription.** Textlab Pro, €5 a month, halves the price of an analysis while
-  it's in effect (`subscriptions`): renewing, or canceled until its period ends. It's on sale when `TEXTLAB_CREEM_PRO_PRODUCT_ID`
-  names a recurring Creem product; the settings page lists it, cancels it at the
+- **Plans.** Two plans, each monthly or yearly, in one group of subscriptions
+  (`subscriptions`, `plans.go`): Pro (€5 a month, €50 a year) halves the price of an
+  analysis, and Max (€15 a month, €150 a year) makes analyses free, while the plan is in
+  effect: renewing, or canceled until its period ends. They're on sale when
+  `TEXTLAB_CREEM_PRO_MONTHLY`, `TEXTLAB_CREEM_PRO_YEARLY`, `TEXTLAB_CREEM_MAX_MONTHLY` and
+  `TEXTLAB_CREEM_MAX_YEARLY` name recurring Creem products. The overview starts a plan
+  and changes it, after a page with Creem's quote: what the change charges or refunds
+  now. A change from yearly to monthly waits for the end of the year paid for, and
+  keeping the plan drops it. The settings page lists the plan, cancels it at the
   period's end, and opens Creem's billing page. Coming back from Creem's checkout
   starts it at once; renewals and cancellations arrive at `/webhooks/subscriptions`,
   which Creem reaches locally through a tunnel. While its public URL is local, Textlab
@@ -51,8 +57,8 @@ http://localhost:8082 instead, and stop the database and Mailpit when it stops. 
 `task dev:tunnel` gives it the public address the test store sends its webhooks to.
 
 Without access to that Infisical project, use a Creem store of your own in test mode,
-with a one-time product (checkouts set its price) and, for Textlab Pro, a recurring
-one. Its webhooks need a public address, such as a Cloudflare quick tunnel, which prints
+with a one-time product (checkouts set its price) and, for the plans, four recurring
+ones. Its webhooks need a public address, such as a Cloudflare quick tunnel, which prints
 a new one each time it starts:
 
 ```sh
@@ -67,7 +73,9 @@ out:
 ```sh
 export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=…
 export TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET=…
-export TEXTLAB_CREEM_PRODUCT_ID=prod_… TEXTLAB_CREEM_PRO_PRODUCT_ID=prod_…
+export TEXTLAB_CREEM_PRODUCT_ID=prod_…
+export TEXTLAB_CREEM_PRO_MONTHLY=prod_… TEXTLAB_CREEM_PRO_YEARLY=prod_…
+export TEXTLAB_CREEM_MAX_MONTHLY=prod_… TEXTLAB_CREEM_MAX_YEARLY=prod_…
 task dev
 ```
 

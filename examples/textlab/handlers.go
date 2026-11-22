@@ -15,7 +15,7 @@ import (
 	"github.com/coolapso/c4stack/accounts"
 	"github.com/coolapso/c4stack/apikeys"
 	"github.com/coolapso/c4stack/credits"
-	"github.com/coolapso/c4stack/payments"
+	"github.com/coolapso/c4stack/subscriptions"
 	"github.com/coolapso/c4stack/web"
 	"github.com/gin-gonic/gin"
 )
@@ -79,12 +79,54 @@ func (t *textlab) overview(c *gin.Context) {
 			active++
 		}
 	}
-	pro, err := t.pro(c.Request.Context(), accounts.Current(c).ID)
+	plan, err := t.planView(c.Request.Context(), accounts.Current(c).ID)
 	if err != nil {
 		t.fail(c, err)
 		return
 	}
-	t.layout.Render(c, http.StatusOK, "Overview", overviewPage(c, summary, active, jobs, t.subs != nil, pro))
+	t.layout.Render(c, http.StatusOK, "Overview", overviewPage(c, summary, active, jobs, t.subs != nil, plan))
+}
+
+// planView reads the account's plan.
+func (t *textlab) planView(ctx context.Context, accountID string) (planView, error) {
+	if t.subs == nil {
+		return planView{}, nil
+	}
+	list, err := t.subs.List(ctx, accountID)
+	if err != nil {
+		return planView{}, err
+	}
+	return newPlanView(list, t.subs.Products()), nil
+}
+
+// changePlan asks before changing the account's plan to another product, with what the
+// change does and costs, as Creem would charge it: people see the amount before they
+// agree to pay it.
+func (t *textlab) changePlan(c *gin.Context) {
+	ctx := c.Request.Context()
+	accountID := accounts.Current(c).ID
+	v, err := t.planView(ctx, accountID)
+	if err != nil {
+		t.fail(c, err)
+		return
+	}
+	product := c.Param("product")
+	if v.Current == nil || !v.Current.Live() || product == v.Current.Product.ID {
+		c.Redirect(http.StatusSeeOther, "/account")
+		return
+	}
+	q, err := t.subs.QuoteChange(ctx, accountID, v.Current.ID, subscriptions.ChangeRequest{Product: product})
+	switch {
+	case errors.Is(err, subscriptions.ErrUnknownProduct), errors.Is(err, subscriptions.ErrInvalid):
+		t.layout.NotFound(c)
+	case errors.Is(err, subscriptions.ErrNotFound), errors.Is(err, subscriptions.ErrNotLive):
+		c.Redirect(http.StatusSeeOther, "/account")
+	case err != nil:
+		web.Log(c).Error("quoting a plan change failed", "error", err)
+		t.layout.Error(c, http.StatusBadGateway, "The price didn't load", "Nothing was changed. Please try again in a moment.")
+	default:
+		t.layout.Render(c, http.StatusOK, "Change to "+q.Product.Name, changePage(c, changeView{From: *v.Current, Quote: q}))
+	}
 }
 
 func (t *textlab) jobs(c *gin.Context) {
@@ -138,42 +180,28 @@ func readText(c *gin.Context) (string, bool) {
 	return req.Text, true
 }
 
-// analyseCost is what one analysis costs, in credits (EUR cents); proAnalyseCost is
-// its price with Textlab Pro.
-const (
-	analyseCost    = 2
-	proAnalyseCost = 1
-)
+// analyseCost is what one analysis costs without a plan, in credits (EUR cents).
+const analyseCost = 2
 
-// proProduct is Textlab Pro's product ID.
-const proProduct = "pro"
-
-// pro reports whether an account's Textlab Pro is in effect: paid for, whether it
-// renews or ends at the period's end, and while the provider retries a failed payment.
-// One that ends counts only until its period does, in case the webhook that ends it
-// never arrives.
-func (t *textlab) pro(ctx context.Context, accountID string) (bool, error) {
+// analysisCost is what an analysis costs the account: the lowest of the plans in
+// effect, which can be two for a while, such as a canceled plan that runs to its
+// period's end beside a new one.
+func (t *textlab) analysisCost(ctx context.Context, accountID string) (int64, error) {
+	cost := int64(analyseCost)
 	if t.subs == nil {
-		return false, nil
+		return cost, nil
 	}
 	subs, err := t.subs.List(ctx, accountID)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
+	now := time.Now()
 	for _, s := range subs {
-		if s.Product.ID != proProduct {
-			continue
-		}
-		switch s.Status {
-		case payments.SubscriptionActive, payments.SubscriptionTrialing, payments.SubscriptionPastDue:
-			return true, nil
-		case payments.SubscriptionCanceling:
-			if s.PeriodEnd.After(time.Now()) {
-				return true, nil
-			}
+		if p, ok := planOf(s.Product.ID); ok && inEffect(s, now) {
+			cost = min(cost, p.AnalyseCost)
 		}
 	}
-	return false, nil
+	return cost, nil
 }
 
 // analysis is an analysis's result.
@@ -202,15 +230,11 @@ func (t *textlab) analyse(c *gin.Context) {
 	ctx := c.Request.Context()
 	accountID := apikeys.Current(c).AccountID
 	hash := sha256.Sum256([]byte(text))
-	cost := int64(analyseCost)
-	pro, err := t.pro(ctx, accountID)
+	cost, err := t.analysisCost(ctx, accountID)
 	if err != nil {
 		web.Log(c).Error("reading the subscription failed", "error", err)
 		apiError(c, http.StatusServiceUnavailable, "unavailable", "Try again in a moment.")
 		return
-	}
-	if pro {
-		cost = proAnalyseCost
 	}
 	result := analysis{
 		Words:        len(strings.Fields(text)),
@@ -234,8 +258,11 @@ func (t *textlab) analyse(c *gin.Context) {
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		if err := tx.Debit(cost, "analyse:"+key, "Text analysis"); err != nil {
-			return err
+		// A free analysis, on Max, charges nothing; its result is still kept for the key.
+		if cost > 0 {
+			if err := tx.Debit(cost, "analyse:"+key, "Text analysis"); err != nil {
+				return err
+			}
 		}
 		data, _ := json.Marshal(result)
 		_, err = tx.SQL().ExecContext(ctx, `

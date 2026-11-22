@@ -252,38 +252,46 @@ func TestOIDC(t *testing.T) {
 	}
 }
 
-// TestPro buys Textlab Pro: the overview offers it, the checkout goes to the provider,
-// and once the provider's webhook starts the subscription, an analysis costs half.
-func TestPro(t *testing.T) {
+// TestPlans sells the plans: the overview offers them, the checkout goes to the
+// provider, and once the provider's webhook starts one, an analysis costs what the plan
+// says. A change asks first, with the provider's quote; one from a yearly plan to a
+// monthly one waits for the end of the year, unless the account keeps what it has.
+func TestPlans(t *testing.T) {
 	_, h, pay := newTextlab(t, origin)
 	b := newBrowser(t, h)
-	keyRec := b.do(http.MethodPost, "/account/api-keys", url.Values{"name": {"Pro"}}, http.Header{"Hx-Request": {"true"}})
+	keyRec := b.do(http.MethodPost, "/account/api-keys", url.Values{"name": {"Plans"}}, http.Header{"Hx-Request": {"true"}})
 	key := regexp.MustCompile(`tl_[A-Za-z0-9_-]{43}`).FindString(keyRec.Body.String())
 	page := b.do(http.MethodGet, "/account", nil, nil)
-	if !strings.Contains(page.Body.String(), "Go Pro") || !strings.Contains(page.Header().Get("Content-Security-Policy"), "https://pay.example") {
-		t.Fatalf("overview without Pro: %s", page.Header().Get("Content-Security-Policy"))
+	if body := page.Body.String(); !strings.Contains(body, `value="pro-monthly"`) || !strings.Contains(body, `value="max-yearly"`) ||
+		!strings.Contains(page.Header().Get("Content-Security-Policy"), "https://pay.example") {
+		t.Fatalf("overview without a plan: %s", page.Header().Get("Content-Security-Policy"))
 	}
-	rec := b.do(http.MethodPost, "/account/subscriptions", url.Values{"product": {"pro"}, "next": {"/account"}}, nil)
+	rec := b.do(http.MethodPost, "/account/subscriptions", url.Values{"product": {"pro-monthly"}, "next": {"/account"}}, nil)
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://pay.example/co_") {
 		t.Fatalf("checkout: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 	c := pay.subscriptionCheckouts[0]
-	if c.ProductID != "prod_pro" || c.Email != "ada@example.com" || c.SuccessURL != origin+"/account/subscriptions/started?next=%2Faccount" {
+	if c.ProductID != "prod_pro_monthly" || c.Email != "ada@example.com" || c.SuccessURL != origin+"/account/subscriptions/started?next=%2Faccount" {
 		t.Fatalf("checkout %+v", c)
 	}
-	body, _ := json.Marshal(payments.SubscriptionEvent{ID: "evt_pro", Kind: payments.SubscriptionStarted, Reference: c.Reference,
-		State: payments.SubscriptionState{ID: "sub_pro", CustomerID: "cust_ada", ProductID: "prod_pro", Units: 1, Status: payments.SubscriptionActive}})
-	req := httptest.NewRequest(http.MethodPost, origin+"/webhooks/subscriptions", bytes.NewReader(body))
-	req.Header.Set("X-Signature", "valid")
-	webhook := httptest.NewRecorder()
-	h.ServeHTTP(webhook, req)
-	if webhook.Code != http.StatusOK {
-		t.Fatalf("webhook: %d", webhook.Code)
+	webhook := func(e payments.SubscriptionEvent) {
+		t.Helper()
+		body, _ := json.Marshal(e)
+		req := httptest.NewRequest(http.MethodPost, origin+"/webhooks/subscriptions", bytes.NewReader(body))
+		req.Header.Set("X-Signature", "valid")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("webhook %s: %d", e.ID, rec.Code)
+		}
 	}
-	if page := b.do(http.MethodGet, "/account", nil, nil).Body.String(); !strings.Contains(page, "Pro is on") {
-		t.Fatal("the overview doesn't show Pro")
+	periodEnd := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	webhook(payments.SubscriptionEvent{ID: "evt_start", Kind: payments.SubscriptionStarted, Reference: c.Reference, CreatedAt: time.Now(),
+		State: payments.SubscriptionState{ID: "sub_1", CustomerID: "cust_ada", ProductID: "prod_pro_monthly", Units: 1, Status: payments.SubscriptionActive, PeriodEnd: periodEnd}})
+	if page := b.do(http.MethodGet, "/account", nil, nil).Body.String(); !strings.Contains(page, "Pro, monthly") || !strings.Contains(page, "Renews on "+day(periodEnd)) {
+		t.Fatal("the overview doesn't show the plan")
 	}
-	if page := b.do(http.MethodGet, "/account/settings", nil, nil).Body.String(); !strings.Contains(page, "Textlab Pro") {
+	if page := b.do(http.MethodGet, "/account/settings", nil, nil).Body.String(); !strings.Contains(page, "Pro, monthly") {
 		t.Fatal("the settings page doesn't list the subscription")
 	}
 	// Buy credit, then analyse at Pro's price.
@@ -291,29 +299,77 @@ func TestPro(t *testing.T) {
 	paid := httptest.NewRequest(http.MethodPost, origin+"/webhooks/payments", bytes.NewReader(paidEvent(pay.last())))
 	paid.Header.Set("X-Signature", "valid")
 	h.ServeHTTP(httptest.NewRecorder(), paid)
-	got := decode(t, api(h, http.MethodPost, "/api/v1/analyse", key, map[string]string{"text": "one two"}, http.Header{"Idempotency-Key": {"pro-1"}}))
-	if got["charged_cents"] != float64(1) {
-		t.Fatalf("analysis with Pro: %v", got)
+	analyse := func(idempotencyKey string) float64 {
+		t.Helper()
+		got := decode(t, api(h, http.MethodPost, "/api/v1/analyse", key, map[string]string{"text": "one two"}, http.Header{"Idempotency-Key": {idempotencyKey}}))
+		cost, ok := got["charged_cents"].(float64)
+		if !ok {
+			t.Fatalf("analysis %s: %v", idempotencyKey, got)
+		}
+		return cost
+	}
+	if cost := analyse("pro-1"); cost != 1 {
+		t.Fatalf("analysis on Pro: %v", cost)
 	}
 	// While it renews, the account can't be deleted.
 	if rec := b.do(http.MethodPost, "/account/delete", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusConflict {
-		t.Fatalf("deletion with Pro: %d", rec.Code)
+		t.Fatalf("deletion with a plan: %d", rec.Code)
 	}
+
+	// A change asks first, with the provider's quote, then makes it at the provider.
+	page = b.do(http.MethodGet, "/account/plan/change/max-monthly", nil, nil)
+	if body := page.Body.String(); page.Code != http.StatusOK || !strings.Contains(body, "Pay €10.00 and change") || !strings.Contains(body, "€20.00 a month, plus VAT") {
+		t.Fatalf("change page: %d %s", page.Code, body)
+	}
+	action := regexp.MustCompile(`/account/subscriptions/[0-9a-f-]{36}/change`).FindString(page.Body.String())
+	change := func(product string) {
+		t.Helper()
+		rec := b.do(http.MethodPost, action, url.Values{"product": {product}, "next": {"/account"}}, nil)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account" {
+			t.Fatalf("change to %s: %d %q", product, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	change("max-monthly")
+	if changes := pay.testChanges(); len(changes) != 1 || changes[0].ProductID != "prod_max_monthly" {
+		t.Fatalf("changes at the provider: %+v", changes)
+	}
+	if cost := analyse("max-1"); cost != 0 {
+		t.Fatalf("analysis on Max: %v", cost)
+	}
+
+	// To yearly at once; back to monthly waits for the end of the year paid for.
+	change("max-yearly")
+	page = b.do(http.MethodGet, "/account/plan/change/pro-monthly", nil, nil)
+	if body := page.Body.String(); !strings.Contains(body, "Nothing changes now") || !strings.Contains(body, "Change on "+day(periodEnd)) {
+		t.Fatalf("waiting change page: %s", body)
+	}
+	change("pro-monthly")
+	if changes := pay.testChanges(); len(changes) != 2 {
+		t.Fatalf("a waiting change reached the provider: %+v", changes)
+	}
+	overview := b.do(http.MethodGet, "/account", nil, nil).Body.String()
+	if !strings.Contains(overview, "Changes to Pro, monthly on "+day(periodEnd)) || !strings.Contains(overview, "Keep Max, yearly") {
+		t.Fatal("the overview doesn't show the waiting change")
+	}
+	if cost := analyse("max-2"); cost != 0 {
+		t.Fatalf("analysis while Max waits to change: %v", cost)
+	}
+	change("max-yearly")
+	if overview := b.do(http.MethodGet, "/account", nil, nil).Body.String(); strings.Contains(overview, "Changes to") {
+		t.Fatal("keeping the plan didn't drop the waiting change")
+	}
+
 	// Canceled, it counts until its period ends, and not after, even if the webhook that
 	// ends it never comes.
 	for _, tc := range []struct {
 		end  time.Time
 		cost float64
-	}{{time.Now().Add(time.Hour), 1}, {time.Now().Add(-time.Hour), 2}} {
-		body, _ := json.Marshal(payments.SubscriptionEvent{ID: "evt_cancel_" + tc.end.Format(time.RFC3339Nano), Kind: payments.SubscriptionChanged,
+	}{{time.Now().Add(time.Hour), 0}, {time.Now().Add(-time.Hour), 2}} {
+		webhook(payments.SubscriptionEvent{ID: "evt_cancel_" + tc.end.Format(time.RFC3339Nano), Kind: payments.SubscriptionChanged,
 			Reference: c.Reference, CreatedAt: time.Now(),
-			State: payments.SubscriptionState{ID: "sub_pro", Status: payments.SubscriptionCanceling, PeriodEnd: tc.end}})
-		req := httptest.NewRequest(http.MethodPost, origin+"/webhooks/subscriptions", bytes.NewReader(body))
-		req.Header.Set("X-Signature", "valid")
-		h.ServeHTTP(httptest.NewRecorder(), req)
-		got := decode(t, api(h, http.MethodPost, "/api/v1/analyse", key, map[string]string{"text": "one two"}, http.Header{"Idempotency-Key": {"after-" + tc.end.Format(time.RFC3339Nano)}}))
-		if got["charged_cents"] != tc.cost {
-			t.Fatalf("canceling, ending %s: %v", tc.end, got)
+			State: payments.SubscriptionState{ID: "sub_1", Status: payments.SubscriptionCanceling, PeriodEnd: tc.end}})
+		if cost := analyse("after-" + tc.end.Format(time.RFC3339Nano)); cost != tc.cost {
+			t.Fatalf("canceling, ending %s: %v", tc.end, cost)
 		}
 	}
 }
