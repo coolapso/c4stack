@@ -95,6 +95,7 @@ task test:app          # generate the starter app and serve it end to end
 task test:upgrade      # move a generated app to the next release
 task test:example      # the example app, with browser tests
 task serve             # run the example app on http://localhost:8082
+task dev:tmux          # task serve in a tmux window, with the database's and Mailpit's logs
 task tunnel            # a public address for Creem's webhooks while it runs
 task db:connect        # psql on the example's database
 task db:wipe           # delete the example's database (asks first)
@@ -106,6 +107,10 @@ fetches the Creem test keys from the maintainer's Infisical project, so it needs
 `infisical` CLI, logged in, with access to that project. Without it, give the example
 your own Creem test keys in your shell, as [its README](examples/textlab/README.md)
 describes.
+
+Inside tmux, `task dev:tmux` runs `task serve` in a window of its own, with a pane each
+for the database's logs and Mailpit's. Ctrl+C in `task serve`'s pane stops everything
+and closes the window.
 
 Releases are the owner's: `task release:full` runs every check above, then semrel tags
 the next version and publishes its GitHub release. [Maintaining](docs/maintaining.md)

@@ -45,7 +45,8 @@ task dev                  # http://localhost:8080; codes arrive at http://localh
 ```
 
 At the repository root, `task serve` runs the same steps for the maintainer, with the
-Creem keys from Infisical.
+Creem keys from Infisical, and `task dev:tmux` runs it in a tmux window with the
+database's and Mailpit's logs.
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/analyse \

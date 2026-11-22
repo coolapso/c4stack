@@ -109,6 +109,27 @@ tasks:
       - task db:migrate
       - task dev DEV_PORT=8082
 
+  # task serve in a tmux window, as an app's task dev:tmux. The database and Mailpit
+  # start first, so their panes follow the logs while task serve fetches its settings
+  # and migrates. Ctrl+C in task serve's pane stops the example, the database and
+  # Mailpit, which ends the log panes and closes the window. When task serve can't
+  # start, such as when Infisical isn't logged in, its pane closes; run task serve on
+  # its own to see why.
+  dev:tmux:
+    desc: Run task serve in a new tmux window, with the database's and Mailpit's logs
+    dir: examples/textlab
+    preconditions:
+      - sh: '[ -n "$TMUX" ]'
+        msg: Run task dev:tmux inside a tmux session.
+    cmds:
+      - task db:up mail:up
+      - |
+        app_pane=$(tmux new-window -d -P -F '#{pane_id}' -c '{{.TASKFILE_DIR}}' -n textlab "task serve")
+        tmux split-window -d -t "$app_pane" -c "$PWD" "task db:logs"
+        tmux split-window -d -t "$app_pane" -c "$PWD" "docker compose logs -f mailpit"
+        tmux select-layout -t "$app_pane" tiled
+        tmux select-pane -t "$app_pane"
+
   # A public address for Creem's webhooks while task serve runs: a Cloudflare quick
   # tunnel, which needs no account and gets a new address each time it starts (it
   # prints it). In Creem's test mode, Developers → Webhooks, point a webhook at
