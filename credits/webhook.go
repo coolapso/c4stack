@@ -76,7 +76,6 @@ type intent struct {
 	status      string
 	checkoutID  sql.NullString
 	orderID     sql.NullString
-	paidCents   sql.NullInt64
 }
 
 var errNoIntent = errors.New("credits: no matching payment")
@@ -115,14 +114,13 @@ func (cr *Credits) apply(ctx context.Context, e payments.Event) (applied, error)
 func decide(t *Tx, in intent, e payments.Event) applied {
 	r := applied{intentID: in.id}
 	review := func(reason string) applied { r.review = reason; return r }
-	if e.Currency != in.currency {
-		return review("currency_mismatch")
-	}
 	mismatch := func(stored sql.NullString, got string) bool {
 		return stored.Valid && got != "" && got != stored.String
 	}
 	if e.Kind == payments.Paid {
 		switch {
+		case e.Currency != in.currency:
+			return review("currency_mismatch")
 		case in.status == "paid" || in.status == "refunded" || in.status == "charged_back":
 			r.outcome = "duplicate"
 		case e.AmountCents != in.chargeCents:
@@ -150,7 +148,10 @@ func decide(t *Tx, in intent, e payments.Event) applied {
 		return review("checkout_mismatch")
 	case mismatch(in.orderID, e.OrderID):
 		return review("order_mismatch")
-	case e.AmountCents < in.paidCents.Int64:
+	// A reversal is in the currency the buyer paid in, so it's compared with what that
+	// payment came to, in the same event, rather than with the price. One that doesn't
+	// say could be partial: taking back all the credit for it could take too much.
+	case e.PaidCents <= 0 || e.AmountCents < e.PaidCents:
 		return review("partial_reversal")
 	default:
 		r.outcome = "reversed"
@@ -220,12 +221,12 @@ func (cr *Credits) lockIntent(ctx context.Context, found intent, fn func(t *Tx, 
 		in := intent{id: found.id}
 		err := t.tx.QueryRowContext(ctx, `
 			SELECT account_id, credit_amount_cents, checkout_amount_cents, currency, provider_status,
-			       provider_checkout_id, provider_order_id, paid_amount_cents
+			       provider_checkout_id, provider_order_id
 			FROM payment_intents
 			WHERE id = $1
 			FOR UPDATE`, found.id,
 		).Scan(&in.accountID, &in.creditCents, &in.chargeCents, &in.currency, &in.status,
-			&in.checkoutID, &in.orderID, &in.paidCents)
+			&in.checkoutID, &in.orderID)
 		if err != nil {
 			return err
 		}

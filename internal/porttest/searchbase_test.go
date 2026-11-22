@@ -464,7 +464,9 @@ func TestSearchbaseMovesOntoC4Stack(t *testing.T) {
 		t.Fatalf("balance after the in-flight checkout: %d", s.BalanceCents)
 	}
 	p.webhook(t, fmt.Sprintf(`{"id":"evt_refund","eventType":"refund.created","object":{"id":"ref_1","status":"succeeded",
-		"refund_amount":2628,"refund_currency":"EUR","checkout":{"id":"ch_1","request_id":%q,"product":"prod_credits"},
+		"refund_amount":2628,"refund_currency":"EUR",
+		"transaction":{"id":"tran_1","amount":2628,"amount_paid":2628,"currency":"EUR","tax_amount":0,"status":"refunded"},
+		"checkout":{"id":"ch_1","request_id":%q,"product":"prod_credits"},
 		"order":{"id":"ord_1"}}}`, w.paidIntent))
 	if s := p.summary(t, w.ada); s.BalanceCents != 997 {
 		t.Fatalf("balance after the refund: %d", s.BalanceCents)

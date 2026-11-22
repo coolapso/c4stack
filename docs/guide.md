@@ -589,7 +589,9 @@ The contracts that matter:
   reports only verified email addresses as verified. A new identity joins the account
   that has its verified address, so this is what keeps accounts safe.
 - `Delete` returns nil only after the provider confirmed the deletion.
-- `ParseWebhook` verifies the signature before anything else.
+- `ParseWebhook` verifies the signature before anything else. A refund or dispute
+  gives `PaidCents`, what the payment it reverses came to, in its own currency: without
+  it, credits sends the reversal to review.
 
 A provider that keeps its users in the app's database implements
 `identity.TxProvider` too. `accounts.New` then lends it the hooks that create accounts

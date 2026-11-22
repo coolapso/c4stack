@@ -412,12 +412,12 @@ func TestPurchaseAndWebhooks(t *testing.T) {
 
 	// Spend everything, then the refund takes the balance below zero.
 	f.credits.Debit(ctx, ada, 1000, "spend", "")
-	partial := payments.Event{ID: "evt_partial", Kind: payments.Refunded, Reference: p.IntentID, AmountCents: 500, Currency: "EUR"}
+	partial := payments.Event{ID: "evt_partial", Kind: payments.Refunded, Reference: p.IntentID, AmountCents: 500, PaidCents: 1310, Currency: "EUR"}
 	f.webhook(partial, "valid")
-	refund := payments.Event{ID: "evt_refund", Kind: payments.Refunded, Reference: p.IntentID, AmountCents: 1310, Currency: "EUR"}
+	refund := payments.Event{ID: "evt_refund", Kind: payments.Refunded, Reference: p.IntentID, AmountCents: 1310, PaidCents: 1310, Currency: "EUR"}
 	f.webhook(refund, "valid")
 	f.webhook(refund, "valid")
-	dispute := payments.Event{ID: "evt_dispute", Kind: payments.Disputed, OrderID: "ord_1", AmountCents: 1310, Currency: "EUR"}
+	dispute := payments.Event{ID: "evt_dispute", Kind: payments.Disputed, OrderID: "ord_1", AmountCents: 1310, PaidCents: 1310, Currency: "EUR"}
 	f.webhook(dispute, "valid")
 	if got := f.balance(t, ada); got != -1000 {
 		t.Fatalf("balance after refund: %d", got)
@@ -453,7 +453,7 @@ func TestWebhooksThatNeedAnOperator(t *testing.T) {
 	if code := f.webhook(payments.Event{ID: "evt_late", Kind: payments.Paid, Reference: q.IntentID, AmountCents: q.ChargeCents, PaidCents: q.ChargeCents, Currency: "EUR"}, "valid"); code != http.StatusOK {
 		t.Fatalf("late payment: %d", code)
 	}
-	f.webhook(payments.Event{ID: "evt_late_refund", Kind: payments.Refunded, Reference: q.IntentID, AmountCents: q.ChargeCents, Currency: "EUR"}, "valid")
+	f.webhook(payments.Event{ID: "evt_late_refund", Kind: payments.Refunded, Reference: q.IntentID, AmountCents: q.ChargeCents, PaidCents: q.ChargeCents, Currency: "EUR"}, "valid")
 	var status string
 	f.a.DB().QueryRow(`SELECT provider_status FROM payment_intents WHERE id = $1`, q.IntentID).Scan(&status)
 	if got := f.reviews(t); got[len(got)-1] != "paid_after_account_deleted" || status != "refunded" {

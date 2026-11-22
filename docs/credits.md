@@ -89,15 +89,20 @@ checkout ID, then by its order ID. Without a payment provider, it answers 404.
 | Any | Database or other transient failure | 503 | Nothing; the provider retries |
 | Paid | Unpaid purchase, amount and currency match | 200 | Purchase paid; credit granted once |
 | Paid | Already paid, refunded or disputed | 200 | Nothing |
-| Paid | Amount, currency or checkout differs, or a discount lowered the payment | 200 | Review |
+| Paid | Amount, currency or checkout differs, or a discount code lowered the price | 200 | Review |
 | Paid | The account was deleted | 200 | Purchase paid, no credit; review for a refund |
-| Refund or dispute | Paid purchase, full amount | 200 | Credit reversed once, even below zero |
+| Refund or dispute | Paid purchase, all of the payment | 200 | Credit reversed once, even below zero |
 | Refund or dispute | Already reversed | 200 | Nothing |
-| Refund or dispute | Partial amount, or currency, checkout or order differs | 200 | Review |
+| Refund or dispute | Part of the payment, or the event doesn't say what was paid, or the checkout or order differs | 200 | Review |
 | Refund or dispute | Purchase not yet paid | 200 | Review |
 | Refund or dispute | The account was deleted | 200 | Purchase marked reversed; no ledger change |
 | Any | No matching purchase | 200 | Review |
 | Any | The adapter flagged it, such as a refund that has not succeeded | 200 | Review |
+
+A purchase is priced in its own currency, such as EUR, but Creem can let the buyer pay
+in theirs, such as SEK: a refund or dispute is then in that currency. So a payment is
+checked against the price, in the price's currency, and a refund or dispute against what
+its payment came to, in the same event and currency.
 
 Creem retries a failed delivery after 30 seconds, 5 minutes, 30 minutes and 6 hours, then
 gives up. A failure that lasts longer needs the operator: compare Creem's dashboard with

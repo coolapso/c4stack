@@ -49,15 +49,16 @@ func TestDecide(t *testing.T) {
 	created := pending
 	created.status, created.checkoutID = "created", sql.NullString{}
 	paid := pending
-	paid.status, paid.paidCents = "paid", sql.NullInt64{Int64: 1310, Valid: true}
+	paid.status = "paid"
 	paid.orderID = sql.NullString{String: "ord_1", Valid: true}
 	refunded := paid
 	refunded.status = "refunded"
 	chargedBack := paid
 	chargedBack.status = "charged_back"
 
-	pay := payments.Event{Kind: payments.Paid, AmountCents: 1083, PaidCents: 1310, Currency: "EUR", CheckoutID: "co_1"}
-	refund := payments.Event{Kind: payments.Refunded, AmountCents: 1310, Currency: "EUR"}
+	pay := payments.Event{Kind: payments.Paid, AmountCents: 1083, PaidCents: 1083, Currency: "EUR", CheckoutID: "co_1"}
+	// A refund of all that was paid, tax included.
+	refund := payments.Event{Kind: payments.Refunded, AmountCents: 1310, PaidCents: 1310, Currency: "EUR"}
 	with := func(e payments.Event, change func(*payments.Event)) payments.Event { change(&e); return e }
 
 	cases := []struct {
@@ -73,7 +74,7 @@ func TestDecide(t *testing.T) {
 		{"repeated payment", account, paid, pay, "duplicate", ""},
 		{"payment after refund", account, refunded, pay, "duplicate", ""},
 		{"other amount", account, pending, with(pay, func(e *payments.Event) { e.AmountCents = 999 }), "", "amount_mismatch"},
-		{"discount", account, pending, with(pay, func(e *payments.Event) { e.PaidCents = 0 }), "", "discounted"},
+		{"discount", account, pending, with(pay, func(e *payments.Event) { e.PaidCents = 1000 }), "", "discounted"},
 		{"other currency", account, pending, with(pay, func(e *payments.Event) { e.Currency = "USD" }), "", "currency_mismatch"},
 		{"other checkout", account, pending, with(pay, func(e *payments.Event) { e.CheckoutID = "co_2" }), "", "checkout_mismatch"},
 		{"payment after deletion", deleted, pending, pay, "paid", "paid_after_account_deleted"},
@@ -84,6 +85,10 @@ func TestDecide(t *testing.T) {
 		{"refund of another checkout", account, paid, with(refund, func(e *payments.Event) { e.CheckoutID = "co_2" }), "", "checkout_mismatch"},
 		{"refund of another order", account, paid, with(refund, func(e *payments.Event) { e.OrderID = "ord_2" }), "", "order_mismatch"},
 		{"partial refund", account, paid, with(refund, func(e *payments.Event) { e.AmountCents = 500 }), "", "partial_reversal"},
+		// The buyer paid in their own currency: the refund is in it too.
+		{"refund in the buyer's currency", account, paid, with(refund, func(e *payments.Event) { e.AmountCents, e.PaidCents, e.Currency = 15200, 15200, "SEK" }), "reversed", ""},
+		{"partial refund in the buyer's currency", account, paid, with(refund, func(e *payments.Event) { e.AmountCents, e.PaidCents, e.Currency = 7600, 15200, "SEK" }), "", "partial_reversal"},
+		{"refund that doesn't say what was paid", account, paid, with(refund, func(e *payments.Event) { e.PaidCents = 0 }), "", "partial_reversal"},
 		{"refund before payment", account, pending, refund, "", "reversal_before_payment"},
 	}
 	for _, c := range cases {
