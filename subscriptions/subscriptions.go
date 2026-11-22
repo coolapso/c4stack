@@ -133,6 +133,7 @@ type Subscriptions struct {
 	proration  payments.Proration
 	atEnd      func(from, to Product) bool
 	provider   string
+	onChange   []func(ctx context.Context, tx *sql.Tx, sub Subscription) error
 }
 
 var productID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -409,6 +410,41 @@ func (s *Subscriptions) product(id string) Product {
 	return Product{ID: id, Name: id, MaxUnits: 1}
 }
 
+// OnChange adds a hook that runs whenever the module writes a subscription's state:
+// its product, units, status or period end, from a webhook, the provider's answer to a
+// change or a cancellation, a checkout's return or the sync command. It runs in the
+// transaction that writes it, with the subscription as written, so an app records
+// there what the change means for it, such as an account whose allowances elsewhere
+// must follow its plan, and does the slow part after: the record can't be lost to a
+// crash between the two. An error rolls the write back, and a webhook's event is then
+// retried. A hook may run when nothing changed, such as for an event sent twice; a
+// checkout that hasn't completed isn't a subscription yet, and runs none. Add hooks
+// before the app serves.
+func (s *Subscriptions) OnChange(hook func(ctx context.Context, tx *sql.Tx, sub Subscription) error) {
+	s.onChange = append(s.onChange, hook)
+}
+
+// changed runs the OnChange hooks for a subscription whose state tx wrote.
+func (s *Subscriptions) changed(ctx context.Context, tx *sql.Tx, id string) error {
+	if len(s.onChange) == 0 {
+		return nil
+	}
+	sub, err := s.scan(tx.QueryRowContext(ctx, `
+		SELECT `+columns+`
+		FROM `+withPending+`
+		WHERE s.id = $1`, id,
+	))
+	if err != nil {
+		return err
+	}
+	for _, hook := range s.onChange {
+		if err := hook(ctx, tx, sub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // List returns an account's subscriptions, newest first, without checkouts that
 // haven't completed.
 func (s *Subscriptions) List(ctx context.Context, accountID string) (_ []Subscription, err error) {
@@ -672,12 +708,14 @@ func (s *Subscriptions) readBack(ctx context.Context, l *locked, fallback paymen
 		if fallback == "" {
 			return nil
 		}
-		_, err := l.tx.ExecContext(ctx, `
+		if _, err := l.tx.ExecContext(ctx, `
 			UPDATE subscriptions
 			SET status = $2, updated_at = now()
 			WHERE id = $1`, l.sub.ID, string(fallback),
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		return s.changed(ctx, l.tx, l.sub.ID)
 	}
 	out, err := s.applyState(ctx, l.tx, l.sub.ID, state, time.Time{})
 	if out.review != "" {

@@ -225,6 +225,26 @@ What a subscription gives an account is the app's: read `subs.List`, and decide 
 each one's product, units and status, such as `active` and `canceling` until the
 period ends, and `past_due` while the provider retries.
 
+When what it gives lives somewhere else, such as allowances on another service, keep it
+in step with `subs.OnChange`: the hook runs in the transaction that writes a
+subscription's state, so record there which account to look at, in a table of your
+own, and do the slow part from a job:
+
+```go
+subs.OnChange(func(ctx context.Context, tx *sql.Tx, s subscriptions.Subscription) error {
+	if s.AccountID == "" {
+		return nil // the account was deleted
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO allowance_checks (account_id, due_at) VALUES ($1, now())
+		ON CONFLICT (account_id) DO UPDATE SET due_at = now()`, s.AccountID)
+	return err
+})
+```
+
+A crash between the two loses nothing: the row stays until the job has done its part.
+An error from the hook rolls the write back, and the provider sends the event again.
+
 Before a change, show what it costs: `subs.QuoteChange` takes the same request as
 `Change` and says, when the provider quotes changes (`payments.ChangeQuoter`, as
 Creem's adapter does), what is charged and refunded at once, tax included, and what the

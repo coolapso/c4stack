@@ -282,6 +282,11 @@ func (s *Subscriptions) applyState(ctx context.Context, tx *sql.Tx, id string, s
 	); err != nil {
 		return applied{}, err
 	}
+	if status != "pending" {
+		if err := s.changed(ctx, tx, id); err != nil {
+			return applied{}, err
+		}
+	}
 	if !payments.SubscriptionStatus(status).Live() {
 		return out, nil
 	}

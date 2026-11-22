@@ -1033,6 +1033,7 @@ func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error 
 func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r ChangeRequest) error
 func (s *Subscriptions) QuoteChange(ctx context.Context, accountID, id string, r ChangeRequest) (Quote, error)
 func (s *Subscriptions) PortalURL(ctx context.Context, accountID string) (string, error)
+func (s *Subscriptions) OnChange(hook func(ctx context.Context, tx *sql.Tx, sub Subscription) error) // in the transaction that writes a state
 func (s *Subscriptions) Confirm(ctx context.Context, accountID string) error // read completed checkouts
 func (s *Subscriptions) Webhook(c *gin.Context)
 func (s *Subscriptions) Mount(r gin.IRouter, layout ui.Layout) // r: e.g. /account/subscriptions
@@ -1064,6 +1065,15 @@ webhook; that read isn't ordered against webhooks, so it leaves `state_at` alone
 retries), `unpaid`, `paused`, `canceling` (runs until `PeriodEnd`, then ends) and
 `canceled`. A subscription is *live* when it would charge again: all but `canceling`
 and `canceled`.
+
+**Following changes.** `OnChange` hooks run whenever the module writes a
+subscription's state, in the same transaction, with the subscription as written: when a
+webhook, a checkout's return or the sync command applies the provider's state, when a
+change or a cancellation reads it back, and when a cancellation falls back to
+`canceling` because the provider couldn't be read. An app records there what it must
+do about it and does it later, so a crash can't lose it; a hook's error rolls the write
+back, and the provider's retry brings the event again. Checkouts that haven't completed
+run none.
 
 **Changes, and what they cost.** `QuoteChange` says what `Change` would do, for the
 page that asks before it: when, and what the provider charges and refunds then, from a
