@@ -93,10 +93,13 @@ func setup(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return err
 	}
-	handler, err := build(a, cfg, providers{identity: idp, login: idp, payments: pay, email: tracking})
+	h, err := build(a, cfg, providers{identity: idp, login: idp, payments: pay, email: tracking})
 	if err != nil {
 		return err
 	}
-	a.Serve(web.Server{Addr: cfg.Addr, Handler: handler, HealthPath: "/health"})
+	a.Serve(web.Server{Addr: cfg.Addr, Handler: h.public, HealthPath: "/health"})
+	if h.internal != nil {
+		a.Serve(web.Server{Addr: cfg.InternalAddr, Handler: h.internal})
+	}
 	return nil
 }

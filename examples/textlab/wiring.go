@@ -48,18 +48,27 @@ type textlab struct {
 	db     *sql.DB
 }
 
+// handlers are what Textlab serves: the public site, and the internal API when its
+// settings give it one.
+type handlers struct {
+	public http.Handler
+	// internal is the API only other services call (internal.go); nil without
+	// TEXTLAB_INTERNAL_ADDR.
+	internal http.Handler
+}
+
 // build wires the modules and routes. It is separate from setup so tests can pass
 // their own providers.
-func build(a *app.App, cfg config, p providers) (http.Handler, error) {
+func build(a *app.App, cfg config, p providers) (handlers, error) {
 	// Accounts have names: people give one after signing up, and services that sign in
 	// with Textlab get it with the profile scope.
 	accts, err := accounts.New(a, p.identity, accounts.Config{Names: true})
 	if err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	keys, err := apikeys.New(a, apikeys.Config{Prefix: "tl"})
 	if err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	cr, err := credits.New(a, accts, credits.Config{
 		Payments: p.payments,
@@ -72,7 +81,7 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 		Holds: heldByJobs,
 	})
 	if err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	if p.email != nil {
 		if _, err := expiry.New(a, cr, expiry.Config{
@@ -81,13 +90,13 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 			AppName:    "Textlab",
 			CreditsURL: cfg.PublicURL + "/account/credits",
 		}); err != nil {
-			return nil, err
+			return handlers{}, err
 		}
 	}
 
 	provider, err := oidcProvider(a, accts, cfg, p.identity)
 	if err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	// The plans make analyses cheaper while their subscription is in effect (plans.go).
 	var subs *subscriptions.Subscriptions
@@ -98,7 +107,7 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 			Products:          planProducts(cfg),
 			ChangeAtPeriodEnd: changeAtPeriodEnd,
 		}); err != nil {
-			return nil, err
+			return handlers{}, err
 		}
 	}
 
@@ -113,15 +122,15 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 		AnyHost:        cfg.local(),
 	})
 	if err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	static, err := fs.Sub(staticFiles, "static")
 	if err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	assets := ui.NewAssets("/assets")
 	if err := assets.Add("app", static); err != nil {
-		return nil, err
+		return handlers{}, err
 	}
 	t := &textlab{accounts: accts, keys: keys, credits: cr, subs: subs, layout: consoleLayout(assets), db: a.DB()}
 
@@ -157,7 +166,14 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	api.POST("/analyse", t.analyse)
 	api.POST("/jobs", t.createJob)
 	api.POST("/jobs/:id/complete", t.completeJob)
-	return r, nil
+
+	h := handlers{public: r}
+	if cfg.InternalAddr != "" {
+		if h.internal, err = internalAPI(cfg, subs); err != nil {
+			return handlers{}, err
+		}
+	}
+	return h, nil
 }
 
 // oidcProvider makes Textlab an OpenID Connect provider for the client in its

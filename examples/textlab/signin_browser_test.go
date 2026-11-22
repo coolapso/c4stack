@@ -68,13 +68,13 @@ func TestSignInBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := build(a, config{PublicURL: public, SecretKey: strings.Repeat("s", 32)}, providers{
+	h, err := build(a, config{PublicURL: public, SecretKey: strings.Repeat("s", 32)}, providers{
 		identity: idp, login: idp, payments: &testPayments{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: handler}}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: h.public}}
 	srv.Start()
 	defer srv.Close()
 

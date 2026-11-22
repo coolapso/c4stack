@@ -180,12 +180,20 @@ func paidEvent(c payments.Checkout) []byte {
 	return body
 }
 
-// newTextlab wires Textlab on a fresh database with test providers.
+// newTextlab wires Textlab on a fresh database with test providers, and returns its
+// public handler.
 func newTextlab(t *testing.T, publicURL string) (*app.App, http.Handler, *testPayments) {
+	t.Helper()
+	a, h, pay := newTextlabWith(t, publicURL, nil)
+	return a, h.public, pay
+}
+
+// newTextlabWith is newTextlab with settings of the test's own on top.
+func newTextlabWith(t *testing.T, publicURL string, configure func(*config)) (*app.App, handlers, *testPayments) {
 	t.Helper()
 	a := apptest.New(t, app.Config{Name: "textlab", Migrations: appMigrations})
 	pay := &testPayments{}
-	handler, err := build(a, config{
+	cfg := config{
 		PublicURL:        publicURL,
 		SecretKey:        strings.Repeat("s", 32),
 		OIDCClientID:     "notes",
@@ -195,12 +203,16 @@ func newTextlab(t *testing.T, publicURL string) (*app.App, http.Handler, *testPa
 		CreemProYearly:   "prod_pro_yearly",
 		CreemMaxMonthly:  "prod_max_monthly",
 		CreemMaxYearly:   "prod_max_yearly",
-	}, providers{
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	h, err := build(a, cfg, providers{
 		identity: testIdentity{},
 		payments: pay,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a, handler, pay
+	return a, h, pay
 }

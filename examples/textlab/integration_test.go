@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -371,5 +372,64 @@ func TestPlans(t *testing.T) {
 		if cost := analyse("after-" + tc.end.Format(time.RFC3339Nano)); cost != tc.cost {
 			t.Fatalf("canceling, ending %s: %v", tc.end, cost)
 		}
+	}
+}
+
+// TestInternalAPI: with an internal address, Textlab serves the subscription reviews to
+// a caller with the token, and only to it; without one, it serves no internal API.
+func TestInternalAPI(t *testing.T) {
+	if _, h, _ := newTextlabWith(t, origin, nil); h.internal != nil {
+		t.Fatal("an internal API without TEXTLAB_INTERNAL_ADDR")
+	}
+	sum := sha256.Sum256([]byte("staff-app-token"))
+	_, h, _ := newTextlabWith(t, origin, func(c *config) {
+		c.InternalAddr = "127.0.0.1:0"
+		c.InternalTokenHashes = []string{fmt.Sprintf("%x", sum)}
+	})
+	call := func(method, path, token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, "http://textlab-internal:8081"+path, strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.internal.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := call(http.MethodGet, "/v1/reviews", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("without the token: %d", rec.Code)
+	}
+	if got := decode(t, call(http.MethodGet, "/v1/reviews", "staff-app-token", "")); fmt.Sprint(got["reviews"]) != "[]" {
+		t.Fatalf("no reviews yet: %v", got)
+	}
+
+	// A renewal of a plan no account has goes to review.
+	body, _ := json.Marshal(payments.SubscriptionEvent{ID: "evt_stranger", Kind: payments.SubscriptionChanged, CreatedAt: time.Now(),
+		State: payments.SubscriptionState{ID: "sub_stranger", ProductID: "prod_pro_monthly", Units: 1, Status: payments.SubscriptionActive}})
+	req := httptest.NewRequest(http.MethodPost, origin+"/webhooks/subscriptions", bytes.NewReader(body))
+	req.Header.Set("X-Signature", "valid")
+	h.public.ServeHTTP(httptest.NewRecorder(), req)
+
+	reviews, _ := decode(t, call(http.MethodGet, "/v1/reviews", "staff-app-token", ""))["reviews"].([]any)
+	if len(reviews) != 1 {
+		t.Fatalf("reviews: %v", reviews)
+	}
+	review := reviews[0].(map[string]any)
+	if review["event_id"] != "evt_stranger" || review["reason"] != "unknown_subscription" || review["account_id"] != nil {
+		t.Fatalf("the review: %v", review)
+	}
+	resolve := fmt.Sprintf("/v1/reviews/%v/resolve", review["id"])
+	if rec := call(http.MethodPost, resolve, "staff-app-token", `{"note":""}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("resolving without a note: %d", rec.Code)
+	}
+	if rec := call(http.MethodPost, resolve, "staff-app-token", `{"note":"not ours: a test at Creem"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("resolving: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(http.MethodPost, resolve, "staff-app-token", `{"note":"again"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("resolving twice: %d", rec.Code)
+	}
+	if got := decode(t, call(http.MethodGet, "/v1/reviews", "staff-app-token", "")); fmt.Sprint(got["reviews"]) != "[]" {
+		t.Fatalf("reviews after resolving: %v", got)
 	}
 }

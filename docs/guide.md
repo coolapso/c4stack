@@ -577,6 +577,54 @@ It keys its users by the issuer and the `sub` claim, the account's ID, never by 
 the address can change, and the subject never does. `docs/architecture.md` lists what
 the provider checks and what it doesn't offer.
 
+## Serve an internal API
+
+An API that only other services call, such as a staff app of yours asking this one for
+accounts or subscription reviews, goes on a second server, at an address the ingress
+doesn't route, with an engine of its own: `web.NewInternal`. Every request needs a
+bearer token whose SHA-256 the app keeps.
+
+```go
+// config.go: the address, and the hash of the caller's token, from a secret store.
+InternalAddr      string   // ACME_INTERNAL_ADDR, such as ":8081"
+InternalTokenHash []string // ACME_INTERNAL_TOKEN_SHA256, comma-separated for a rotation
+
+// setup
+internal, err := web.NewInternal(web.InternalConfig{TokenHashes: cfg.InternalTokenHash})
+if err != nil {
+	return err
+}
+v1 := internal.Group("/v1")
+v1.GET("/reviews", func(c *gin.Context) {
+	reviews, err := subs.Reviews(c.Request.Context())
+	if err != nil {
+		web.Log(c).Error("reviews", "error", err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"reviews": reviews})
+})
+a.Serve(web.Server{Addr: cfg.Addr, Handler: handler, HealthPath: "/health"})
+if cfg.InternalAddr != "" {
+	a.Serve(web.Server{Addr: cfg.InternalAddr, Handler: internal})
+}
+```
+
+Make the caller's token and its hash once, give the token to the caller and the hash to
+the app, each through its secret store:
+
+```sh
+token=$(openssl rand -hex 32)
+printf %s "$token" | sha256sum | cut -d' ' -f1   # the hash
+```
+
+To replace a token, list the new hash beside the old one, move the caller to the new
+token, then drop the old hash. The internal server has no health endpoints of its own:
+probes use the public one's. In Kubernetes, give the internal port a Service of its own
+that no Ingress names, and a NetworkPolicy that lets only the caller's pods reach it.
+`docs/architecture.md` ("web", "app") has what the engine checks and how the servers
+start and stop.
+
 ## Ask for names
 
 Accounts have no name unless the app asks for one, as an app where people see each

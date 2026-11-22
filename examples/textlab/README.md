@@ -38,6 +38,12 @@ small paid text API:
   `TEXTLAB_OIDC_CLIENT_ID`,
   `TEXTLAB_OIDC_CLIENT_SECRET` and `TEXTLAB_OIDC_REDIRECT_URIS` (comma-separated). The
   issuer is `TEXTLAB_PUBLIC_URL`. Without a client, the provider has none.
+- **An internal API.** With `TEXTLAB_INTERNAL_ADDR` (such as `:8081`, an address only
+  your other services reach), Textlab serves a second server for them
+  (`internal.go`, `web.NewInternal`): `GET /v1/reviews` lists the open subscription
+  reviews and `POST /v1/reviews/{id}/resolve` with `{"note": "…"}` resolves one, for a
+  staff app of yours. Every request needs a bearer token whose SHA-256, in hex, is in
+  `TEXTLAB_INTERNAL_TOKEN_SHA256` (comma-separated, to replace a token).
 - **Replaceable providers.** `build` takes the identity, payment and email providers,
   so the tests pass their own.
 

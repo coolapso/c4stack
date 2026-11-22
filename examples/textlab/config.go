@@ -40,8 +40,13 @@ type config struct {
 	OIDCClientID     string
 	OIDCClientSecret string
 	OIDCRedirectURIs []string
-	LogLevel         slog.Level
-	LogFormat        string
+	// The internal API (internal.go), for other services of yours: its address, which
+	// only they reach, and the SHA-256 of each caller's token. Without the address,
+	// Textlab serves none.
+	InternalAddr        string
+	InternalTokenHashes []string
+	LogLevel            slog.Level
+	LogFormat           string
 }
 
 func env(name string) string {
@@ -70,6 +75,8 @@ func loadConfig() (config, error) {
 		OIDCClientID:                   env("OIDC_CLIENT_ID"),
 		OIDCClientSecret:               env("OIDC_CLIENT_SECRET"),
 		OIDCRedirectURIs:               list(env("OIDC_REDIRECT_URIS")),
+		InternalAddr:                   env("INTERNAL_ADDR"),
+		InternalTokenHashes:            list(env("INTERNAL_TOKEN_SHA256")),
 		LogFormat:                      env("LOG_FORMAT"),
 	}
 	if cfg.Addr == "" {
@@ -105,6 +112,9 @@ func loadConfig() (config, error) {
 	// and every event refused.
 	if cfg.sellsPlans() && cfg.CreemSubscriptionWebhookSecret == "" {
 		return config{}, errors.New("with the plans' products, set TEXTLAB_CREEM_SUBSCRIPTION_WEBHOOK_SECRET")
+	}
+	if cfg.InternalAddr != "" && len(cfg.InternalTokenHashes) == 0 {
+		return config{}, errors.New("with TEXTLAB_INTERNAL_ADDR, set TEXTLAB_INTERNAL_TOKEN_SHA256 to the SHA-256 of the caller's token")
 	}
 	if cfg.OIDCClientID != "" && (cfg.OIDCClientSecret == "" || len(cfg.OIDCRedirectURIs) == 0) {
 		return config{}, errors.New("with TEXTLAB_OIDC_CLIENT_ID, set TEXTLAB_OIDC_CLIENT_SECRET and TEXTLAB_OIDC_REDIRECT_URIS")
