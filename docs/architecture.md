@@ -493,6 +493,7 @@ func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) // ni
 func (s *Accounts) RequireSignIn(c *gin.Context)
 func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
+func (s *Accounts) ByEmail(ctx context.Context, email string) (Account, error) // the primary address, any case
 func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) // refuse: *DeletionRefused

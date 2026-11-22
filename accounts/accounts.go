@@ -194,6 +194,27 @@ func (s *Accounts) Get(ctx context.Context, id string) (Account, error) {
 	return a, err
 }
 
+// ByEmail returns the account whose primary address is email, ignoring case, such as
+// for a staff app looking someone up by the address they wrote from.
+func (s *Accounts) ByEmail(ctx context.Context, email string) (Account, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return Account{}, ErrNotFound
+	}
+	var a Account
+	err := s.app.DB().QueryRowContext(ctx, `
+		SELECT id, primary_email, COALESCE(name, ''), created_at
+		FROM accounts
+		WHERE lower(primary_email) = lower($1)
+		ORDER BY primary_email = $1 DESC
+		LIMIT 1`, email,
+	).Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	return a, err
+}
+
 // Each of these wraps identity.ErrRefused, so a provider that signs people in can tell
 // them it cannot sign them in to this account.
 var (

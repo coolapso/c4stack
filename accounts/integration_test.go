@@ -238,6 +238,15 @@ func TestEmailChanges(t *testing.T) {
 	if _, err := f.accounts.Get(ctx, "not-a-uuid"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("invalid ID: %v", err)
 	}
+	// ByEmail finds it by the new address, in any case, and not by the old one.
+	if got, err := f.accounts.ByEmail(ctx, " New@Example.com "); err != nil || got.ID != a.ID || got.Email != "new@example.com" {
+		t.Fatalf("by email: %+v, %v", got, err)
+	}
+	for _, email := range []string{"v@example.com", "", "nobody@example.com"} {
+		if _, err := f.accounts.ByEmail(ctx, email); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("by email %q: %v", email, err)
+		}
+	}
 }
 
 func TestRequireSignIn(t *testing.T) {
