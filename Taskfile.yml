@@ -79,28 +79,16 @@ tasks:
       - task test:integration
       - task test:browser
 
-  # The maintainer's daily setup. The example gets the Creem test keys from the
-  # Infisical project Searchbase Cloud's development tasks use, in its local
-  # environment, as Searchbase's own app:serve does; nothing is kept in a
-  # local file. Its other settings are in examples/textlab/Taskfile.yml, and sign-in
-  # codes arrive in Mailpit at http://localhost:8025. Without access to that project,
-  # give the example your own Creem test keys; see examples/textlab/README.md.
+  # The maintainer's daily setup, on port 8082. The example's settings are in
+  # examples/textlab/Taskfile.yml: its Creem test keys come from the maintainer's
+  # Infisical project when its tasks start, and nothing is kept in a local file.
+  # Sign-in codes arrive in Mailpit at http://localhost:8025. Without access to that
+  # project, give the example a Creem test store of your own; see examples/textlab/README.md.
   serve:
     desc: Serve the example app with live reload on http://localhost:8082, with settings from Infisical
     dir: examples/textlab
-    vars:
-      INFISICAL_PROJECT_ID: 7b164ffd-8588-43f9-8c98-291204864d4d
-      CREEM_API_KEY:
-        sh: infisical secrets get --plain --silent --projectId {{.INFISICAL_PROJECT_ID}} --env local --path /creem API_KEY
-      CREEM_WEBHOOK_SECRET:
-        sh: infisical secrets get --plain --silent --projectId {{.INFISICAL_PROJECT_ID}} --env local --path /creem WEBHOOK_SECRET
     env:
       TEXTLAB_PUBLIC_URL: http://localhost:8082
-      TEXTLAB_CREEM_PRODUCT_ID: prod_3XE2xgtVlwJ64ehEItnBo3
-      # Textlab Pro, a test-mode recurring product: €5 a month.
-      TEXTLAB_CREEM_PRO_PRODUCT_ID: prod_2E9COUD6qRZ8fJz5unI4Ff
-      TEXTLAB_CREEM_API_KEY: '{{.CREEM_API_KEY}}'
-      TEXTLAB_CREEM_WEBHOOK_SECRET: '{{.CREEM_WEBHOOK_SECRET}}'
     cmds:
       - task db:up mail:up
       # Stops the database and Mailpit when the server stops, including on Ctrl-C; the
@@ -112,9 +100,9 @@ tasks:
   # task serve in a tmux window, as an app's task dev:tmux. The database and Mailpit
   # start first, so their panes follow the logs while task serve fetches its settings
   # and migrates. Ctrl+C in task serve's pane stops the example, the database and
-  # Mailpit, which ends the log panes and closes the window. When task serve can't
-  # start, such as when Infisical isn't logged in, its pane closes; run task serve on
-  # its own to see why.
+  # Mailpit, which ends the log panes and closes the window. When task serve fails
+  # before it serves, such as on a failed migration, its pane closes; run task serve
+  # on its own to see why.
   dev:tmux:
     desc: Run task serve in a new tmux window, with the database's and Mailpit's logs
     dir: examples/textlab

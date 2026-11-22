@@ -102,10 +102,10 @@ task db:wipe           # delete the example's database (asks first)
 ```
 
 `task serve` starts the example's database and Mailpit, migrates, and serves with live
-reload. When the server stops, it stops them too, keeping the database's data. It
-fetches the Creem test keys from the maintainer's Infisical project, so it needs the
-`infisical` CLI, logged in, with access to that project. Without it, give the example
-your own Creem test keys in your shell, as [its README](examples/textlab/README.md)
+reload. When the server stops, it stops them too, keeping the database's data. The
+example fetches the Creem test keys from the maintainer's Infisical project, so it needs
+the `infisical` CLI, logged in, with access to that project. Without it, give the
+example a Creem test store of your own, as [its README](examples/textlab/README.md)
 describes.
 
 Inside tmux, `task dev:tmux` runs `task serve` in a window of its own, with a pane each

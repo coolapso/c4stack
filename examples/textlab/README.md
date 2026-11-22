@@ -35,18 +35,29 @@ small paid text API:
   so the tests pass their own.
 
 `Taskfile.yml` holds the development settings, with a new secret key each time a task
-starts. Buying credit needs a Creem test-mode key, webhook secret and one-time product
-with a custom price; give them in your shell, or from Infisical with `INFISICAL_PROJECT`:
+starts. It names the products of the maintainer's Creem test store, and its tasks fetch
+the store's test key and webhook secret from the maintainer's Infisical project, with
+the `infisical` CLI:
 
 ```sh
-export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=… TEXTLAB_CREEM_PRODUCT_ID=…
 task db:up mail:up db:migrate
 task dev                  # http://localhost:8080; codes arrive at http://localhost:8025
 ```
 
-At the repository root, `task serve` runs the same steps for the maintainer, with the
-Creem keys from Infisical, and `task dev:tmux` runs it in a tmux window with the
-database's and Mailpit's logs.
+Inside tmux, `task dev:tmux` does both in a window of its own, with the database's and
+Mailpit's logs. At the repository root, `task serve` and `task dev:tmux` serve Textlab on
+http://localhost:8082 instead, and stop the database and Mailpit when it stops.
+
+Without access to that Infisical project, use a Creem store of your own in test mode,
+with a one-time product (checkouts set its price) and, for Textlab Pro, a recurring
+one. Give their settings in your shell. With `TEXTLAB_CREEM_API_KEY` there, the tasks
+leave Infisical out:
+
+```sh
+export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=…
+export TEXTLAB_CREEM_PRODUCT_ID=prod_… TEXTLAB_CREEM_PRO_PRODUCT_ID=prod_…
+task dev
+```
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/analyse \
