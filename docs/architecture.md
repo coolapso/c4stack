@@ -1163,7 +1163,14 @@ days, since a checkout's page may stay open long, and the record of events older
 30 days. The
 commands are `subscriptions list <account-id>`, `subscriptions reviews`,
 `subscriptions resolve <review-id> <note…>` and `subscriptions sync <subscription-id>`,
-which reads the provider's state and applies it.
+which reads the provider's state and applies it. The same are functions, for an app
+that shows them to its staff (on an internal API, say): `Reviews(ctx)` returns the open
+reviews, the oldest first, each with its event, reason, and subscription and account
+when the event names one the module knows; `Resolve(ctx, id, note)` marks one handled
+with a required note (`ErrNoReview` when no open review has the ID); `Sync(ctx, id)`
+applies the provider's state, running the `OnChange` hooks, and returns the status and
+the reason when the state needs a look (`ErrNotFound`, or `ErrNotAtProvider` for a
+checkout that never finished).
 
 ### email and email/scaleway
 

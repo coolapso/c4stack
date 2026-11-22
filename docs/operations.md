@@ -272,6 +272,9 @@ acme subscriptions sync <subscription-id>   # read its state from the provider
 acme subscriptions resolve <review-id> <what you did>
 ```
 
+An app can show the same to its staff instead: `Reviews`, `Resolve` and `Sync` are
+functions too (`docs/architecture.md`, "subscriptions").
+
 A `second_in_group` means the account pays twice for one plan: cancel or refund one in
 the provider's dashboard. A `deleted_account` means a deleted account's subscription
 was paid, such as a checkout finished after the deletion: the module canceled it at
