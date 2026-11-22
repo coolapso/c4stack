@@ -55,6 +55,7 @@ type Creem struct {
 	api      string
 	checkout *url.URL
 	client   *http.Client
+	products *productCache
 }
 
 var _ payments.Provider = (*Creem)(nil)
@@ -92,6 +93,7 @@ func New(cfg Config) (*Creem, error) {
 		cfg:      cfg,
 		api:      strings.TrimSuffix(api, "/"),
 		checkout: checkout,
+		products: &productCache{entries: map[string]cachedProduct{}},
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error {

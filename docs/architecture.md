@@ -764,6 +764,19 @@ type Subscriber interface {
 	ChangeSubscription(ctx context.Context, id string, c SubscriptionChange) error // product, units, proration
 	CustomerPortal(ctx context.Context, customerID string) (string, error)
 }
+// Optional: what a change would charge and refund, made now or at a later time.
+type ChangeQuoter interface {
+	QuoteChange(ctx context.Context, id string, c SubscriptionChange, at time.Time) (ChangeQuote, error)
+}
+type ChangeQuote struct {
+	Currency          string
+	TaxIncluded       bool  // at the rate of the last payment; false: tax comes on top
+	Charge, ChargeTax int64 // charged at once
+	Refund            int64 // refunded at once, an estimate
+	NewPeriod         bool  // the change starts a new billing period
+	Renewal, RenewalTax int64
+	RenewsAt          time.Time
+}
 type SubscriptionState struct {
 	ID, CustomerID, ProductID string
 	Units                     int // 0 when the event doesn't say
@@ -793,6 +806,13 @@ type SubscriptionEvent struct {
   the old one. A change upgrades the product, then sets
   the units on the one item. A refund or dispute that names a subscription is the
   subscriptions module's, and credits ignores it.
+- Creem quotes nothing before a change, so `QuoteChange` works out what Creem does, as
+  its test API showed: between products with the same billing period, the period
+  stays, and the difference for the time left is charged or refunded; to another
+  billing period, a new period starts, charged in full, and what was paid for the time
+  left is refunded. Tax is at the rate of the subscription's last payment
+  (`tax_amount` of `amount_paid`, which includes it). Products are read once every ten
+  minutes.
 - An API key starting with `creem_test_` selects Creem's test API.
 - Webhooks are verified with HMAC-SHA256 from the `creem-signature` header.
 - The `checkout_url` Creem returns must match `CheckoutOrigin`. That is the configured

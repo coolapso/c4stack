@@ -233,13 +233,16 @@ func (c *Creem) ParseSubscriptionWebhook(header http.Header, body []byte) (payme
 
 // subscription is the part of Creem's subscription object the adapter reads.
 type subscription struct {
-	ID        string            `json:"id"`
-	Status    string            `json:"status"`
-	Product   ref               `json:"product"`
-	Customer  ref               `json:"customer"`
-	Metadata  map[string]string `json:"metadata"`
-	PeriodEnd string            `json:"current_period_end_date"`
-	Items     []struct {
+	ID       string            `json:"id"`
+	Status   string            `json:"status"`
+	Product  ref               `json:"product"`
+	Customer ref               `json:"customer"`
+	Metadata map[string]string `json:"metadata"`
+	// PeriodStart and LastTransaction are read only by quotes.
+	PeriodStart     string   `json:"current_period_start_date"`
+	PeriodEnd       string   `json:"current_period_end_date"`
+	LastTransaction *payment `json:"last_transaction"`
+	Items           []struct {
 		ID        string `json:"id"`
 		ProductID string `json:"product_id"`
 		PriceID   string `json:"price_id"`

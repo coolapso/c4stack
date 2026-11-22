@@ -56,6 +56,43 @@ type SubscriptionChange struct {
 	Proration Proration
 }
 
+// ChangeQuoter is a Subscriber that can say what a change to a subscription would charge
+// or refund before it is made, so people see the amount before they agree to it. It is
+// optional: the subscriptions module quotes changes only through a provider that
+// implements it.
+type ChangeQuoter interface {
+	// QuoteChange returns what the change would do if it were made at at: now, or a
+	// later time within the current period, such as its end.
+	QuoteChange(ctx context.Context, id string, c SubscriptionChange, at time.Time) (ChangeQuote, error)
+}
+
+// ChangeQuote is what a change to a subscription would charge and refund when it is
+// made, and what the subscription charges after it. Amounts are in the cents of
+// Currency.
+type ChangeQuote struct {
+	// Currency is the amounts' ISO 4217 code, such as EUR.
+	Currency string
+	// TaxIncluded is true when the amounts include tax, at the rate of the
+	// subscription's last payment. When it is false, the amounts are before tax, and
+	// tax comes on top.
+	TaxIncluded bool
+	// Charge is charged at once for the change, and ChargeTax is its tax.
+	Charge, ChargeTax int64
+	// Refund goes back to the payment method at once, its tax included: what was paid
+	// for the rest of the period. The provider works it out from the payments it took,
+	// so it may differ by a few cents.
+	Refund int64
+	// NewPeriod is true when the change starts a new billing period, such as a change
+	// to a product with another billing period: Charge is then the new product's whole
+	// price.
+	NewPeriod bool
+	// Renewal is what the subscription charges each period after the change, and
+	// RenewalTax is its tax.
+	Renewal, RenewalTax int64
+	// RenewsAt is when the subscription next renews after the change.
+	RenewsAt time.Time
+}
+
 // Proration says how a change's price difference is charged.
 type Proration int
 
@@ -110,7 +147,8 @@ const (
 	// SubscriptionChanged means a subscription's state changed: paid, renewed,
 	// changed, canceled, failed or anything else the provider reports.
 	SubscriptionChanged
-	// SubscriptionRefunded means the merchant refunded a subscription's payment.
+	// SubscriptionRefunded means a payment of the subscription was refunded: by the
+	// merchant, or by the provider for the time a change left unused.
 	SubscriptionRefunded
 	// SubscriptionDisputed means the buyer's bank disputed a subscription's payment.
 	SubscriptionDisputed
@@ -127,7 +165,7 @@ type SubscriptionEvent struct {
 	// carry are zero.
 	State SubscriptionState
 	// CreatedAt is when the provider created the event. Events can arrive out of order;
-	// it says which is newer.
+	// it says which is newer. For a refund, it is about when the refund was made.
 	CreatedAt time.Time
 	// Review is set when the event can't be applied as it stands. It names why.
 	Review string
