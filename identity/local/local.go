@@ -108,6 +108,15 @@ type Config struct {
 	Sender email.Sender
 	// SignedInPath is where sign-in goes without a next path. Zero means "/".
 	SignedInPath string
+	// Allow, when set, limits sign-up and sign-in to the addresses it allows, such as
+	// staff on an allow-list. An address it refuses is answered as any other, so the
+	// form doesn't tell who is on the list, but its code is a decoy: never sent, never
+	// right. An account whose address it no longer allows can't sign in with a code or
+	// a passkey, its sessions stop working at their next request, and no address change
+	// leads to an address it refuses. It gets addresses in lower case and runs on every
+	// request, so it must be fast and safe to call at once from many. Nil allows every
+	// address.
+	Allow func(address string) bool
 	// MaxCodesPerHour is a ceiling on the codes the whole app sends in an hour, to
 	// protect the sending domain. Zero means no ceiling. It only adds a limit: the
 	// others are fixed.
@@ -304,6 +313,9 @@ func localPath(p string) bool {
 // Name returns "local".
 func (l *Local) Name() string { return providerName }
 
+// allowed reports whether Config.Allow lets an address sign up and sign in.
+func (l *Local) allowed(address string) bool { return l.cfg.Allow == nil || l.cfg.Allow(address) }
+
 // UseAccounts receives the accounts module's hooks.
 func (l *Local) UseAccounts(h identity.AccountHooks) { l.hooks = h }
 
@@ -341,6 +353,9 @@ func (l *Local) Authenticate(r *http.Request) (identity.Identity, error) {
 	}
 	if err != nil {
 		return identity.Identity{}, fmt.Errorf("local: session lookup: %w", err)
+	}
+	if !l.allowed(id.Email) {
+		return identity.Identity{}, identity.ErrNoSession
 	}
 	id.EmailVerified = true
 	if stale {
@@ -427,6 +442,9 @@ func (l *Local) SessionTx(ctx context.Context, tx *sql.Tx, r *http.Request) (ide
 	}
 	if err != nil {
 		return identity.Identity{}, err
+	}
+	if !l.allowed(id.Email) {
+		return identity.Identity{}, identity.ErrNoSession
 	}
 	err = tx.QueryRowContext(ctx, `
 		SELECT method, created_at

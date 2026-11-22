@@ -158,6 +158,11 @@ One flow does both. It answers the same way whether or not the address has an ac
    5. redirects to `/login/code`.
 
    Only the mailbox's owner sees which email went out. The page is the same either way.
+
+   With `Config.Allow`, an address it refuses gets a decoy code instead: counted against
+   the same limits, leading to the same pages, never sent and never right, so the form
+   doesn't tell who is on the list. A code that was right is still refused, and no user
+   made, if the address stopped being allowed after it went out.
 3. **`GET /login/code`** says "We sent a code to ann@example.com. It works for 10
    minutes." It has a field for the code (`inputmode="numeric"`,
    `autocomplete="one-time-code"`), "Send a new code" and "Use another address". Without
@@ -775,6 +780,7 @@ each one.
 | A code sent before a deletion, an address change or a recovery | A code sent to an existing user goes with that user, and works only while the user still has the address it went to. Address changes and recoveries delete the user's waiting codes. |
 | Relaying a code through a phishing site | A code can be phished; a passkey can't, because the browser binds it to the real site. Code emails name the site. The settings page encourages adding a passkey after a code sign-in. |
 | Learning whether an address has an account | One flow for sign-up and sign-in, with the same page and limits either way. An address change to a taken address makes a decoy attempt that behaves exactly like a real one. Both branches send an email, so timing matches too. |
+| Learning who is on an allow-list (`Config.Allow`) | A refused address gets the same pages and limits, with a decoy code. Nothing is sent, so its answer can come faster than one that sends an email: an app whose list must stay secret from anyone timing it keeps the form behind something more, such as an IP allow-list. |
 | Flooding a mailbox through the app | Per-address, per-network, per-user and optional app-wide sending limits. |
 | Locking someone out with wrong codes or by using up their codes | Only the shared counters can be used up, and they reset each window. Known browsers have their own counters, and passkeys always work. A code-only user on a new browser stays locked out while an attacker keeps at it: see [The limits](#the-limits). |
 | Stealing a session cookie | `HttpOnly`, `Secure`, `__Host-`, `SameSite=Lax`. Never in a URL or a log. |
@@ -812,6 +818,7 @@ type Config struct {
 	SignedInPath    string                     // where sign-in goes without a next path; zero means "/"
 	MaxCodesPerHour int                        // optional: codes the whole app may send an hour; zero means no ceiling
 	Message         func(Notice) email.Message // optional: the app's own emails
+	Allow           func(address string) bool  // optional: the only addresses that may sign up and sign in
 }
 
 func New(a *app.App, cfg Config) (*Local, error) // registers the commands and the jobs
@@ -828,6 +835,13 @@ func (l *Local) Mount(r gin.IRouter, layout ui.Layout) // /login and its steps u
 `RPID` must never change once passkeys exist, because every passkey belongs to one
 domain. An app on `app.acme.example` that wants passkeys to work across `acme.example`
 sets it to `acme.example`.
+
+`Allow` keeps an app to some people, such as staff on an allow-list. It gets addresses
+in lower case and runs on every request. An address it refuses gets decoy codes (see the
+code flow), an account whose address it no longer allows can't sign in with a code or a
+passkey (403), its sessions stop working at their next request, and no address change
+leads to an address it refuses. Allowing the address again brings back the sessions
+that haven't expired. Nil allows every address.
 
 `SecretKey` is the same value the app gives `web.Config`. The module derives its own key
 from it, and needs it outside requests too, in `local unblock`.
@@ -964,6 +978,7 @@ An app that does move goes like this:
 | After an address change | This browser stays signed in with a new token; every other session ends | It is recent and has just proved the new address, and a copy of its old token stops working. Hanko signed everyone out because it had to. |
 | Lockout by wrong codes | Known browsers keep their own counters | The address's counters must be shared to stop guessing, so an attacker can use them up. Browsers that signed in before shouldn't depend on them. |
 | Address changes to a taken address | A decoy attempt | Otherwise the attempt's behaviour would tell a signed-in person which addresses have accounts. |
+| Who may sign in | Everyone, unless `Config.Allow` limits it | An app for staff needs a list; the address stays the root of trust, so the list is of addresses, checked at every sign-in and request. |
 | Codes when a passkey exists | Still accepted | Losing a passkey must not lock anyone out. The address stays the root of trust. |
 | Security notices | Queued with the change | A notice committed with its change can't be lost to a crash or a closed tab. |
 | A deleted user's queued notices | Still sent, then deleted: once the email provider accepts them, and after 3 days at most | They stay out of the deletion transaction, so deleting the account can't suppress the notice of an address change made just before. They're still deleted, only a little later: usually they were sent before the deletion, and a queued one never stays more than 3 days. |

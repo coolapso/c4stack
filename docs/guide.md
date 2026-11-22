@@ -525,6 +525,14 @@ Message: func(n local.Notice) email.Message {
 },
 ```
 
+To keep an app to some people, such as staff, set `Config.Allow`: only the addresses it
+allows sign up and sign in, and someone taken off the list is signed out at their next
+request.
+
+```go
+Allow: func(address string) bool { return slices.Contains(cfg.Staff, address) },
+```
+
 The security values (code length and lifetime, attempts, session lifetimes, limits) are
 fixed. The one setting is `MaxCodesPerHour`, an optional ceiling on the codes the whole
 app sends in an hour, to protect the sending domain. `docs/sign-in.md` explains every

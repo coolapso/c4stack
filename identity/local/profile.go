@@ -190,6 +190,10 @@ func (l *Local) emailStart(c *gin.Context) {
 		d.err = "This is already your address."
 		l.renderPage(c, http.StatusUnprocessableEntity, "Change your address", emailPage(d))
 		return
+	case !l.allowed(address):
+		d.err = "This address can't be used here."
+		l.renderPage(c, http.StatusUnprocessableEntity, "Change your address", emailPage(d))
+		return
 	}
 	if status, msg := l.sendNewAddressCode(c, id.Subject, address); msg != "" {
 		d.err = msg
@@ -376,6 +380,10 @@ func (l *Local) emailVerify(c *gin.Context) {
 		}
 		if expired || sentTo != address {
 			message = "This code has expired. Send a new one."
+			return deleteCode(ctx, tx, codeID)
+		}
+		if !l.allowed(address) {
+			message = "This address can't be used here."
 			return deleteCode(ctx, tx, codeID)
 		}
 		sessionID, recent, err := l.currentSession(ctx, tx, c.Request, id.Subject)

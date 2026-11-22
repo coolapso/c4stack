@@ -176,11 +176,13 @@ func (e *tooSoonError) Error() string { return "local: a new code too soon" }
 // sendCode makes a code for the attempt's address, emails it, and saves the attempt in
 // the browser. With replace, the new code ends the attempt's others, no sooner than
 // resendAfter after the newest. It returns a status and a message for the page when it
-// sent nothing.
+// sent nothing. For an address Config.Allow refuses, the code is a decoy, counted as
+// any other, and nothing is sent.
 func (l *Local) sendCode(c *gin.Context, a *attempt, replace bool) (int, string) {
 	ctx := c.Request.Context()
 	dev, hasDevice := readDevice(c)
 	codeID, code := newUUID(), newCode()
+	refused := !l.allowed(a.Email)
 	var userID sql.NullString
 	err := l.inTx(ctx, func(tx *sql.Tx) error {
 		var since time.Time
@@ -204,10 +206,14 @@ func (l *Local) sendCode(c *gin.Context, a *attempt, replace bool) (int, string)
 		if err := l.countSend(ctx, tx, c, a.Email, known); err != nil {
 			return err
 		}
+		hash := l.codeHash(codeID, code)
+		if refused {
+			hash = newToken() // never matches
+		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO local_codes (id, purpose, email, user_id, code_hash, device, attempt, expires_at)
-			VALUES ($1, 'sign_in', $2, $3, $4, $5, $6, now() + make_interval(secs => $7))`,
-			codeID, a.Email, userID, l.codeHash(codeID, code), known, a.ID, codeLifetime.Seconds(),
+			INSERT INTO local_codes (id, purpose, email, user_id, code_hash, decoy, device, attempt, expires_at)
+			VALUES ($1, 'sign_in', $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))`,
+			codeID, a.Email, userID, hash, refused, known, a.ID, codeLifetime.Seconds(),
 		)
 		return err
 	})
@@ -217,6 +223,11 @@ func (l *Local) sendCode(c *gin.Context, a *attempt, replace bool) (int, string)
 	}
 	if status, msg := l.failure(c, err, "sending a sign-in code"); msg != "" {
 		return status, msg
+	}
+	if refused {
+		a.CodeID, a.SentAt = codeID, l.now()
+		saveAttempt(c, *a)
+		return 0, ""
 	}
 	kind := SignUpCode
 	if userID.Valid {
@@ -464,6 +475,11 @@ func (l *Local) verifyCode(c *gin.Context, a attempt, code string) (verifyResult
 		}
 		if err := deleteCode(ctx, tx, a.CodeID); err != nil {
 			return err
+		}
+		if !l.allowed(sentTo) {
+			// Allowed when the code went out, no longer.
+			res.message = "This code is no longer valid. Send a new one."
+			return nil
 		}
 		uid := userID.String
 		if !userID.Valid {

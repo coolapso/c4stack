@@ -108,16 +108,26 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith is newFixture with configure changing the provider's Config.
+func newFixtureWith(t *testing.T, configure func(*Config)) *fixture {
+	t.Helper()
 	f := &fixture{t: t, mail: &testSender{}, clock: time.Now()}
 	f.a = apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{accounts.Migrations, Migrations}})
-	var err error
-	f.l, err = New(f.a, Config{
+	cfg := Config{
 		AppName:      "Acme",
 		PublicURL:    publicURL,
 		SecretKey:    strings.Repeat("s", 32),
 		Sender:       f.mail,
 		SignedInPath: "/account",
-	})
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	var err error
+	f.l, err = New(f.a, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

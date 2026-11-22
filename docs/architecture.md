@@ -401,6 +401,9 @@ and the threats each part answers. In short:
 - People sign up and sign in in one flow, with an 8-digit code sent by email or with a
   passkey (WebAuthn, through go-webauthn). The answer is the same whether an address has
   an account or not.
+- `Config.Allow` can keep it to the addresses on a list, such as staff: a refused
+  address gets a decoy code, and an account taken off the list can't sign in and loses
+  its sessions at their next request.
 - Users, sessions, passkeys and codes live in the app's database, in the `local`
   migrations. Sessions are stored as SHA-256 hashes and checked on every request; codes
   and the limits' counters as HMACs keyed from the app's secret key.

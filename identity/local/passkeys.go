@@ -136,6 +136,8 @@ func (e *passkeyError) Error() string { return e.message }
 
 var (
 	errCeremonyGone = &passkeyError{status: http.StatusConflict, message: "This sign-in expired. Try again.", retry: true}
+	// errNotAllowed is a passkey of an account whose address Config.Allow refuses.
+	errNotAllowed   = &passkeyError{status: http.StatusForbidden, message: "This account can't sign in here."}
 	errPasskeyGone  = &passkeyError{status: http.StatusUnauthorized, message: "This passkey can't sign in here any more. Sign in with a code, then add it again."}
 	errPasskeyFails = &passkeyError{status: http.StatusUnauthorized, message: "Your passkey didn't work. Try again, or sign in with a code."}
 )
@@ -296,6 +298,9 @@ func (l *Local) passkeySignIn(c *gin.Context, cer ceremony, userID string, parse
 		}
 		if err != nil {
 			return err
+		}
+		if !l.allowed(user.address) {
+			return errNotAllowed
 		}
 		var passkeyID string
 		err = tx.QueryRowContext(ctx, `
