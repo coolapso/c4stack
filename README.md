@@ -96,7 +96,7 @@ task test:upgrade      # move a generated app to the next release
 task test:example      # the example app, with browser tests
 task serve             # run the example app on http://localhost:8082
 task dev:tmux          # task serve in a tmux window, with the database's and Mailpit's logs
-task tunnel            # a public address for Creem's webhooks while it runs
+task dev:tunnel        # the maintainer's public address for Creem's webhooks while it runs
 task db:connect        # psql on the example's database
 task db:wipe           # delete the example's database (asks first)
 ```

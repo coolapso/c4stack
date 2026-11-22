@@ -47,7 +47,8 @@ task dev                  # http://localhost:8080; codes arrive at http://localh
 
 Inside tmux, `task dev:tmux` does both in a window of its own, with the database's and
 Mailpit's logs. At the repository root, `task serve` and `task dev:tmux` serve Textlab on
-http://localhost:8082 instead, and stop the database and Mailpit when it stops.
+http://localhost:8082 instead, and stop the database and Mailpit when it stops. There,
+`task dev:tunnel` gives it the public address the test store sends its webhooks to.
 
 Without access to that Infisical project, use a Creem store of your own in test mode,
 with a one-time product (checkouts set its price) and, for Textlab Pro, a recurring
@@ -58,6 +59,14 @@ leave Infisical out:
 export TEXTLAB_CREEM_API_KEY=creem_test_… TEXTLAB_CREEM_WEBHOOK_SECRET=…
 export TEXTLAB_CREEM_PRODUCT_ID=prod_… TEXTLAB_CREEM_PRO_PRODUCT_ID=prod_…
 task dev
+```
+
+For your store's webhooks, give Textlab a public address of your own, such as a
+Cloudflare quick tunnel, which prints a new one each time it starts. In Creem's test
+mode, point webhooks at its `/webhooks/payments` and `/webhooks/subscriptions`:
+
+```sh
+cloudflared tunnel --no-autoupdate --url http://localhost:8080
 ```
 
 ```sh

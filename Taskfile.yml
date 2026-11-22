@@ -118,16 +118,27 @@ tasks:
         tmux select-layout -t "$app_pane" tiled
         tmux select-pane -t "$app_pane"
 
-  # A public address for Creem's webhooks while task serve runs: a Cloudflare quick
-  # tunnel, which needs no account and gets a new address each time it starts (it
-  # prints it). In Creem's test mode, Developers → Webhooks, point a webhook at
-  # <address>/webhooks/subscriptions and one at <address>/webhooks/payments. Everything
-  # the example serves is reachable there while the tunnel runs. The Host header becomes
-  # localhost:8082, the only host the example answers for.
-  tunnel:
-    desc: Give the example app a public https address while task serve runs, for Creem's webhooks
+  # Creem's webhooks need a public address: while this runs, https://local.coolapso.sh
+  # reaches task serve. It runs the connector of the development tunnel the
+  # maintainer's local apps share (Searchbase Cloud's and notekpr's dev:tunnel too),
+  # with a hostname each: in Cloudflare, local.coolapso.sh routes to
+  # http://localhost:8082, and the example answers any host while its public URL is
+  # local. Creem's test store sends its webhooks to
+  # https://local.coolapso.sh/webhooks/payments and /webhooks/subscriptions. The
+  # tunnel's token is CLOUDFLARE_TUNNEL_TOKEN in the CLI Infisical project, shared like
+  # the tunnel, and reaches cloudflared in its environment only: never in its
+  # arguments, never printed.
+  dev:tunnel:
+    desc: Serve task serve on https://local.coolapso.sh through the shared development Cloudflare tunnel, for Creem's webhooks
+    vars:
+      TUNNEL_INFISICAL_PROJECT: 4f12d18e-e075-4a6c-ba6c-367bec3e62e7 # CLI
+    preconditions:
+      - sh: command -v cloudflared >/dev/null && command -v infisical >/dev/null
+        msg: Needs cloudflared and the Infisical CLI, signed in (infisical login).
     cmds:
-      - cloudflared tunnel --no-autoupdate --url http://localhost:8082 --http-host-header localhost:8082
+      - |
+        token=$(infisical secrets get CLOUDFLARE_TUNNEL_TOKEN --plain --silent --projectId={{.TUNNEL_INFISICAL_PROJECT}} --env=prod) || exit 1
+        TUNNEL_TOKEN="$token" cloudflared tunnel --no-autoupdate run
 
   # The example's development database, the one task serve uses. db:connect starts it
   # when it isn't running and stops it again when psql exits; db:wipe deletes it, and
