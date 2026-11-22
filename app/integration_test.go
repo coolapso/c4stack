@@ -5,6 +5,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/coolapso/c4stack/internal/testdb"
 	"github.com/coolapso/c4stack/web"
+	"github.com/gin-gonic/gin"
 )
 
 func migrations() []Migrations {
@@ -130,6 +133,88 @@ func TestServeReadinessFollowsSchema(t *testing.T) {
 	if code := <-done; code != 0 {
 		t.Fatalf("serve exit %d: %s", code, errOut.String())
 	}
+}
+
+// TestServeSeveralServers: a public server and an internal one start together and stop
+// together; one that can't start stops the others, and serve fails.
+func TestServeSeveralServers(t *testing.T) {
+	public, internal := freeAddr(t), freeAddr(t)
+	sum := sha256.Sum256([]byte("caller-token"))
+	setup := func(internalAddr string) func(context.Context, *App) error {
+		return func(ctx context.Context, a *App) error {
+			r, err := web.New(web.Config{PublicURL: "http://" + public, SecretKey: strings.Repeat("k", 32)})
+			if err != nil {
+				return err
+			}
+			r.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			in, err := web.NewInternal(web.InternalConfig{TokenHashes: []string{hex.EncodeToString(sum[:])}})
+			if err != nil {
+				return err
+			}
+			in.GET("/v1/ping", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			a.Serve(web.Server{Addr: public, Handler: r, HealthPath: "/health", DrainDelay: time.Millisecond})
+			a.Serve(web.Server{Addr: internalAddr, Handler: in, DrainDelay: time.Millisecond})
+			return nil
+		}
+	}
+	cfg := Config{Name: "acme", DatabaseURL: testdb.New(t), Migrations: migrations(), Setup: setup(internal)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	var errOut bytes.Buffer
+	go func() { done <- run(ctx, cfg, []string{"serve"}, &bytes.Buffer{}, &errOut) }()
+
+	get := func(url, token string) int {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	waitUntil(t, func() bool { return get("http://"+public+"/", "") == http.StatusNoContent })
+	waitUntil(t, func() bool { return get("http://"+internal+"/v1/ping", "caller-token") == http.StatusNoContent })
+	if code := get("http://"+internal+"/v1/ping", ""); code != http.StatusUnauthorized {
+		t.Fatalf("internal without a token: %d", code)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("serve exit %d: %s", code, errOut.String())
+	}
+	if get("http://"+public+"/", "") != 0 || get("http://"+internal+"/v1/ping", "caller-token") != 0 {
+		t.Fatal("a server still answers after serve returned")
+	}
+
+	// The internal address is taken: serve fails, and the public server doesn't stay up.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	cfg.Setup = setup(taken.Addr().String())
+	errOut.Reset()
+	if code := run(context.Background(), cfg, []string{"serve"}, &bytes.Buffer{}, &errOut); code == 0 {
+		t.Fatal("serve succeeded with its internal address taken")
+	}
+	if !strings.Contains(errOut.String(), taken.Addr().String()) {
+		t.Fatalf("the error doesn't name the address: %s", errOut.String())
+	}
+	if get("http://"+public+"/", "") != 0 {
+		t.Fatal("the public server stayed up")
+	}
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().String()
 }
 
 func waitUntil(t *testing.T, cond func() bool) {

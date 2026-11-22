@@ -301,7 +301,7 @@ func (a *App) SetLogger(l *slog.Logger)
 func (a *App) Log() *slog.Logger
 func (a *App) Command(cmd Command)
 func (a *App) Every(name string, interval time.Duration, job func(context.Context) error)
-func (a *App) Serve(s web.Server)
+func (a *App) Serve(s web.Server) // once per server; most apps have one
 
 type Command struct {
 	Name  string // "credits adjust"
@@ -310,6 +310,12 @@ type Command struct {
 	Run   func(ctx context.Context, args []string) error
 }
 ```
+
+**Servers.** `serve` runs every server `setup` passed to `Serve`, usually one. A
+second is for an API only other services call (`web.NewInternal`), on an address of
+its own. They start together and stop together: on SIGTERM each drains as described
+under web, and when one fails, such as an address already taken, the others stop and
+`serve` fails with that error, naming the address.
 
 **Database.** `Main` opens the pool before `setup` runs, using pgx through
 `database/sql`. For any host that isn't a Unix socket or loopback address, it sets

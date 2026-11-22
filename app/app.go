@@ -60,14 +60,14 @@ type Command struct {
 }
 
 // App is what Setup wires together: the database, the logger, commands, background
-// jobs and the server.
+// jobs and the servers.
 type App struct {
 	cfg      Config
 	db       *sql.DB
 	log      *slog.Logger
 	commands []Command
 	jobs     []job
-	server   *web.Server
+	servers  []web.Server
 }
 
 type job struct {
@@ -107,9 +107,12 @@ func (a *App) Every(name string, interval time.Duration, run func(context.Contex
 	a.jobs = append(a.jobs, job{name: name, interval: interval, run: run})
 }
 
-// Serve sets the server the serve command runs.
+// Serve adds a server the serve command runs. Most apps call it once. An app with an
+// API only other services call, such as an internal one on a port the ingress doesn't
+// route (web.NewInternal), calls it again with that server's address: the servers start
+// together, stop together, and when one fails the others stop too.
 func (a *App) Serve(s web.Server) {
-	a.server = &s
+	a.servers = append(a.servers, s)
 }
 
 // Require returns an error unless the app's Config lists m. Module constructors call
@@ -240,7 +243,7 @@ func list[T any](items []T) string {
 }
 
 func (a *App) serve(ctx context.Context) error {
-	if a.server == nil {
+	if len(a.servers) == 0 {
 		return errors.New("setup did not call Serve")
 	}
 	checker, err := postgres.NewChecker(a.cfg.sets())
@@ -267,11 +270,30 @@ func (a *App) serve(ctx context.Context) error {
 		wg.Wait()
 	}()
 
-	s := *a.server
-	if s.Logger == nil {
-		s.Logger = a.log
+	// Each server drains and stops when ctx ends, or when another one fails.
+	serveCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	errs := make(chan error, len(a.servers))
+	for _, s := range a.servers {
+		if s.Logger == nil {
+			s.Logger = a.log
+		}
+		go func() {
+			err := web.Serve(serveCtx, s, ready)
+			if err != nil {
+				err = fmt.Errorf("serving %s: %w", s.Addr, err)
+			}
+			stop()
+			errs <- err
+		}()
 	}
-	return web.Serve(ctx, s, ready)
+	var first error
+	for range a.servers {
+		if err := <-errs; err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func (a *App) runJob(ctx context.Context, j job) {
