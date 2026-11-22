@@ -973,6 +973,9 @@ subscriptions(id uuid, account_id → accounts ON DELETE SET NULL, provider,
 subscription_events(provider, event_id, received_at, PRIMARY KEY (provider, event_id))
 subscription_reviews(id, provider, event_id, subscription_id → subscriptions ON DELETE SET NULL,
                      reason, created_at, resolved_at, resolution, UNIQUE (provider, event_id))
+subscription_changes(id, subscription_id → subscriptions ON DELETE CASCADE, from_product,
+                     product, units, run_at, applied_at, canceled_at, created_at)
+                     -- at most one pending (neither applied nor canceled) per subscription
 ```
 
 ```go
@@ -986,6 +989,8 @@ type Config struct {
 	Products  []Product
 	Proration    payments.Proration // how a change's difference is charged; zero: at once
 	ProviderName string             // such as "Creem", for the billing link; zero: "our payment provider"
+	// Which changes wait for the end of the period paid for; nil: none.
+	ChangeAtPeriodEnd func(from, to Product) bool
 }
 type Subscription struct {
 	ID, AccountID string
@@ -995,6 +1000,19 @@ type Subscription struct {
 	Status        payments.SubscriptionStatus
 	PeriodEnd     time.Time
 	CreatedAt     time.Time
+	Pending       *PendingChange // a change that waits for the end of the period
+}
+type PendingChange struct {
+	Product Product
+	Units   int
+	At      time.Time // the period's end
+}
+type Quote struct {
+	Product Product
+	Units   int
+	At      time.Time // zero: at once; else the period's end
+	Priced  bool      // the provider quoted the amounts
+	payments.ChangeQuote
 }
 
 func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, error)
@@ -1003,6 +1021,7 @@ func (s *Subscriptions) List(ctx context.Context, accountID string) ([]Subscript
 func (s *Subscriptions) Get(ctx context.Context, accountID, id string) (Subscription, error)
 func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error // at the period's end
 func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r ChangeRequest) error
+func (s *Subscriptions) QuoteChange(ctx context.Context, accountID, id string, r ChangeRequest) (Quote, error)
 func (s *Subscriptions) PortalURL(ctx context.Context, accountID string) (string, error)
 func (s *Subscriptions) Confirm(ctx context.Context, accountID string) error // read completed checkouts
 func (s *Subscriptions) Webhook(c *gin.Context)
@@ -1036,6 +1055,22 @@ retries), `unpaid`, `paused`, `canceling` (runs until `PeriodEnd`, then ends) an
 `canceled`. A subscription is *live* when it would charge again: all but `canceling`
 and `canceled`.
 
+**Changes, and what they cost.** `QuoteChange` says what `Change` would do, for the
+page that asks before it: when, and what the provider charges and refunds then, from a
+`payments.ChangeQuoter`. A change the app's `ChangeAtPeriodEnd` picks, such as from
+yearly to monthly, waits: `Change` records it as the subscription's pending change, and
+a job every five minutes makes the changes whose period ends within the hour, before
+the provider renews the subscription, which would charge the old product for another
+period. The minutes left of the period are refunded as for any change. A new change
+replaces a pending one, a change to the product the subscription has drops it, and so
+do canceling, the subscription ending, or a change made some other way meanwhile (the
+pending change's `from_product` no longer matches). A subscription the provider renewed
+before the job reached it still gets the change, which then refunds the new period's
+unused time; the log warns. Every change the module makes is recorded when the
+provider has made it, so a refund within ten minutes of one, by the event's time, is
+that change's: the provider refunding the time a move to a cheaper product or another
+period left unused. It isn't a review.
+
 **Webhooks.** An event is taken once: its ID is recorded in the transaction that
 applies it, so a retry changes nothing and a failure leaves it for the next retry. The
 subscription is found by the reference, which the checkout's metadata carries into
@@ -1055,7 +1090,7 @@ its reason:
 | `linked_twice` | Two of the app's subscriptions claim one provider subscription. |
 | `unknown_product` | The subscription moved to a product the app doesn't list; not applied. |
 | `product_mismatch`, `product_change`, `too_many_units` | A checkout completed with another product, a subscription left its group, or it has more units than its product allows; the product or units aren't applied. |
-| `refunded`, `disputed` | A payment was refunded or disputed: the operator decides what follows. |
+| `refunded`, `disputed` | A payment was refunded, other than a change's own refund, or disputed: the operator decides what follows. |
 | `deleted_account` | A subscription of a deleted account would charge again, such as a checkout completed after the deletion. The module cancels it at once; the operator decides about its payment. |
 | `second_in_group` | Two checkouts for one group both completed: the account pays twice. |
 | `several_items`, `unknown_status`, `missing_reference`, `checkout_not_completed` | The provider's event can't be read as one subscription's state. |

@@ -20,7 +20,9 @@ import (
 //     and sends the browser to the provider. The page with that form needs
 //     web.AllowCSP(subs.CheckoutCSP()).
 //   - POST "/:id/cancel" cancels a subscription at the end of its period.
-//   - POST "/:id/change" changes a subscription's product or units.
+//   - POST "/:id/change" changes a subscription's product or units, at once or at the
+//     end of the period (Config.ChangeAtPeriodEnd). A change to what it has already
+//     drops a change that waits.
 //   - GET "/billing" sends the browser to the provider's billing page.
 //   - GET "/started" is where a checkout returns: it confirms the account's checkouts
 //     with the provider (Confirm), then continues to the local "next" path.
@@ -209,6 +211,13 @@ func describe(s Subscription) string {
 	date := ""
 	if !s.PeriodEnd.IsZero() {
 		date = s.PeriodEnd.UTC().Format("2 January 2006")
+	}
+	if s.Pending != nil && s.Live() {
+		name := s.Pending.Product.Name
+		if s.Pending.Product.MaxUnits > 1 {
+			name += " × " + strconv.Itoa(s.Pending.Units)
+		}
+		return "Changes to " + name + " on " + s.Pending.At.UTC().Format("2 January 2006")
 	}
 	switch s.Status {
 	case "active":

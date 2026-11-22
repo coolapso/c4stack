@@ -220,6 +220,26 @@ What a subscription gives an account is the app's: read `subs.List`, and decide 
 each one's product, units and status, such as `active` and `canceling` until the
 period ends, and `past_due` while the provider retries.
 
+Before a change, show what it costs: `subs.QuoteChange` takes the same request as
+`Change` and says, when the provider quotes changes (`payments.ChangeQuoter`, as
+Creem's adapter does), what is charged and refunded at once, tax included, and what the
+subscription costs after. With Creem, a change between products with the same billing
+period charges or refunds the difference for the time left; a change to another
+billing period starts a new period, charged in full, and refunds the time left. A
+change that should wait for the end of the period paid for, such as from yearly to
+monthly, is the app's choice:
+
+```go
+ChangeAtPeriodEnd: func(from, to subscriptions.Product) bool {
+	return strings.HasSuffix(from.ID, "-yearly") && strings.HasSuffix(to.ID, "-monthly")
+},
+```
+
+Such a change is recorded (`Subscription.Pending`) and made in the last hour of the
+period, before the provider renews it; a change to the product the subscription has
+already drops it, and so does canceling. A refund the provider makes for a change the
+module made isn't a review.
+
 ## Add an API endpoint that debits credit idempotently
 
 A client retries a request it is not sure went through, with the same `Idempotency-Key`

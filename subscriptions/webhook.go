@@ -113,7 +113,15 @@ func (s *Subscriptions) take(ctx context.Context, e payments.SubscriptionEvent) 
 		case e.Review != "":
 			return review(e.Review)
 		case e.Kind == payments.SubscriptionRefunded:
-			return review("refunded")
+			ours, err := refundOfChange(ctx, tx, id, e.CreatedAt)
+			if err != nil {
+				return err
+			}
+			if !ours {
+				return review("refunded")
+			}
+			res.outcome = "refund of a change"
+			return nil
 		case e.Kind == payments.SubscriptionDisputed:
 			return review("disputed")
 		}

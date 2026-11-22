@@ -48,13 +48,17 @@ func (s *Subscriptions) listCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tPRODUCT\tUNITS\tTARGET\tSTATUS\tPERIOD END")
+	fmt.Fprintln(w, "ID\tPRODUCT\tUNITS\tTARGET\tSTATUS\tPERIOD END\tTHEN")
 	for _, sub := range subs {
 		end := "-"
 		if !sub.PeriodEnd.IsZero() {
 			end = sub.PeriodEnd.UTC().Format(time.DateTime)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\n", sub.ID, sub.Product.ID, sub.Units, sub.Target, sub.Status, end)
+		then := "-"
+		if sub.Pending != nil {
+			then = fmt.Sprintf("%s × %d", sub.Pending.Product.ID, sub.Pending.Units)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n", sub.ID, sub.Product.ID, sub.Units, sub.Target, sub.Status, end, then)
 	}
 	return w.Flush()
 }

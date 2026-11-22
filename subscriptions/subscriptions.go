@@ -90,6 +90,12 @@ type Config struct {
 	// Proration says how a change's price difference is charged. Zero is
 	// payments.ProrateNow.
 	Proration payments.Proration
+	// ChangeAtPeriodEnd reports whether a change from one product to another waits for
+	// the end of the period paid for, such as from a yearly plan to a monthly one: the
+	// subscription keeps what it has until then, and the module makes the change in the
+	// last hour of the period, before the provider renews it. Nil: every change happens
+	// at once.
+	ChangeAtPeriodEnd func(from, to Product) bool
 	// ProviderName is the payment provider as people know it, such as "Creem". The
 	// settings panel says that billing opens on its site. Empty means "our payment
 	// provider".
@@ -109,6 +115,8 @@ type Subscription struct {
 	// canceling subscription. Zero until the provider says.
 	PeriodEnd time.Time
 	CreatedAt time.Time
+	// Pending is a change that waits for the end of the period, or nil.
+	Pending *PendingChange
 }
 
 // Live reports whether the subscription would charge again.
@@ -123,6 +131,7 @@ type Subscriptions struct {
 	byProvider map[string]Product
 	order      []Product
 	proration  payments.Proration
+	atEnd      func(from, to Product) bool
 	provider   string
 }
 
@@ -130,8 +139,8 @@ var productID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // New returns the module. It refuses to delete an account while one of its
 // subscriptions would charge again, and forgets what ties the account's subscriptions
-// to it when it is deleted. It deletes abandoned checkouts, and registers the
-// subscriptions operator commands.
+// to it when it is deleted. It deletes abandoned checkouts, makes the changes that
+// wait for the end of a period, and registers the subscriptions operator commands.
 func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, error) {
 	for _, m := range []app.Migrations{accounts.Migrations, Migrations} {
 		if err := a.Require(m); err != nil {
@@ -151,6 +160,7 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, erro
 		products:   map[string]Product{},
 		byProvider: map[string]Product{},
 		proration:  cfg.Proration,
+		atEnd:      cfg.ChangeAtPeriodEnd,
 		provider:   cfg.ProviderName,
 	}
 	if s.provider == "" {
@@ -175,6 +185,7 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, erro
 	accts.CheckDeletion(s.checkDeletion)
 	accts.OnDelete(s.forget)
 	a.Every("subscriptions cleanup", time.Hour, s.cleanup)
+	a.Every("subscription changes", changeCheck, s.applyDue)
 	s.registerCommands()
 	return s, nil
 }
@@ -361,23 +372,41 @@ func validTarget(t string) bool {
 	return true
 }
 
-const columns = `id, COALESCE(account_id::text, ''), product, target, units, status, period_end, created_at`
+// columns are a subscription's, with its pending change's, from withPending.
+const columns = `s.id, COALESCE(s.account_id::text, ''), s.product, s.target, s.units, s.status, s.period_end,
+	    s.created_at, c.product, c.units, c.run_at`
+
+// withPending is the subscriptions, s, each with its pending change, c, if it has one.
+const withPending = `subscriptions s
+	LEFT JOIN subscription_changes c
+	    ON c.subscription_id = s.id AND c.applied_at IS NULL AND c.canceled_at IS NULL`
 
 func (s *Subscriptions) scan(row interface{ Scan(...any) error }) (Subscription, error) {
 	var sub Subscription
 	var product, status string
-	var periodEnd sql.NullTime
-	if err := row.Scan(&sub.ID, &sub.AccountID, &product, &sub.Target, &sub.Units, &status, &periodEnd, &sub.CreatedAt); err != nil {
+	var periodEnd, runAt sql.NullTime
+	var pending sql.NullString
+	var pendingUnits sql.NullInt64
+	if err := row.Scan(&sub.ID, &sub.AccountID, &product, &sub.Target, &sub.Units, &status, &periodEnd, &sub.CreatedAt,
+		&pending, &pendingUnits, &runAt); err != nil {
 		return Subscription{}, err
 	}
-	sub.Product = s.products[product]
-	if sub.Product.ID == "" {
-		// A product the app no longer lists still shows, under its ID.
-		sub.Product = Product{ID: product, Name: product, MaxUnits: 1}
-	}
+	sub.Product = s.product(product)
 	sub.Status = payments.SubscriptionStatus(status)
 	sub.PeriodEnd = periodEnd.Time
+	if pending.Valid {
+		sub.Pending = &PendingChange{Product: s.product(pending.String), Units: int(pendingUnits.Int64), At: runAt.Time}
+	}
 	return sub, nil
+}
+
+// product returns one of the app's products by its ID. A product the app no longer
+// lists still shows, under its ID.
+func (s *Subscriptions) product(id string) Product {
+	if p, ok := s.products[id]; ok {
+		return p
+	}
+	return Product{ID: id, Name: id, MaxUnits: 1}
 }
 
 // List returns an account's subscriptions, newest first, without checkouts that
@@ -385,9 +414,9 @@ func (s *Subscriptions) scan(row interface{ Scan(...any) error }) (Subscription,
 func (s *Subscriptions) List(ctx context.Context, accountID string) (_ []Subscription, err error) {
 	rows, err := s.app.DB().QueryContext(ctx, `
 		SELECT `+columns+`
-		FROM subscriptions
-		WHERE account_id::text = $1 AND status <> 'pending'
-		ORDER BY created_at DESC, id`, accountID,
+		FROM `+withPending+`
+		WHERE s.account_id::text = $1 AND s.status <> 'pending'
+		ORDER BY s.created_at DESC, s.id`, accountID,
 	)
 	if err != nil {
 		return nil, err
@@ -412,8 +441,8 @@ func (s *Subscriptions) List(ctx context.Context, accountID string) (_ []Subscri
 func (s *Subscriptions) Get(ctx context.Context, accountID, id string) (Subscription, error) {
 	sub, err := s.scan(s.app.DB().QueryRowContext(ctx, `
 		SELECT `+columns+`
-		FROM subscriptions
-		WHERE id::text = $1 AND account_id::text = $2 AND status <> 'pending'`, id, accountID,
+		FROM `+withPending+`
+		WHERE s.id::text = $1 AND s.account_id::text = $2 AND s.status <> 'pending'`, id, accountID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Subscription{}, ErrNotFound
@@ -432,6 +461,15 @@ type locked struct {
 // changes to it go one at a time: two at once could each charge a proration. The
 // provider's calls happen while it is held; a second change meanwhile gets ErrBusy.
 func (s *Subscriptions) lock(ctx context.Context, accountID, id string) (*locked, error) {
+	if accountID == "" {
+		return nil, ErrNotFound
+	}
+	return s.lockAny(ctx, accountID, id)
+}
+
+// lockAny is lock for the module's own work, such as a change that waited: an empty
+// accountID locks the subscription whatever account it is in.
+func (s *Subscriptions) lockAny(ctx context.Context, accountID, id string) (*locked, error) {
 	tx, err := s.app.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -444,7 +482,7 @@ func (s *Subscriptions) lock(ctx context.Context, accountID, id string) (*locked
 		SELECT id, COALESCE(account_id::text, ''), product, target, units, status, period_end,
 		    created_at, provider_subscription_id
 		FROM subscriptions
-		WHERE id::text = $1 AND account_id::text = $2 AND status <> 'pending'
+		WHERE id::text = $1 AND ($2 = '' OR account_id::text = $2) AND status <> 'pending'
 		FOR UPDATE NOWAIT`, id, accountID,
 	).Scan(&sub.ID, &sub.AccountID, &product, &sub.Target, &sub.Units, &status, &periodEnd, &sub.CreatedAt, &providerID)
 	if err != nil {
@@ -457,10 +495,7 @@ func (s *Subscriptions) lock(ctx context.Context, accountID, id string) (*locked
 		}
 		return nil, err
 	}
-	sub.Product = s.products[product]
-	if sub.Product.ID == "" {
-		sub.Product = Product{ID: product, Name: product, MaxUnits: 1}
-	}
+	sub.Product = s.product(product)
 	sub.Status = payments.SubscriptionStatus(status)
 	sub.PeriodEnd = periodEnd.Time
 	if !sub.Live() || !providerID.Valid {
@@ -474,7 +509,7 @@ func (s *Subscriptions) lock(ctx context.Context, accountID, id string) (*locked
 }
 
 // Cancel cancels one of an account's subscriptions at the end of its period: it runs
-// until then, and doesn't renew.
+// until then, and doesn't renew. A change that waited for the period's end is dropped.
 func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error {
 	l, err := s.lock(ctx, accountID, id)
 	if err != nil {
@@ -482,6 +517,9 @@ func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error 
 	}
 	defer func() { _ = l.tx.Rollback() }()
 	if err := s.payments.CancelSubscription(ctx, l.providerID, true); err != nil {
+		return err
+	}
+	if err := dropPending(ctx, l.tx, l.sub.ID); err != nil {
 		return err
 	}
 	if err := s.readBack(ctx, l, payments.SubscriptionCanceling); err != nil {
@@ -499,6 +537,9 @@ type ChangeRequest struct {
 
 // Change moves one of an account's subscriptions to another product of its group, or
 // another number of units. The price difference is charged as Config.Proration says.
+// A change Config.ChangeAtPeriodEnd makes wait is recorded, and made at the end of the
+// period (Subscription.Pending). A new change replaces one that waits, and a change to
+// what the subscription has already drops it.
 //
 // It reads the provider's state first and sends only what isn't so already, so a retry
 // after a change that half happened doesn't charge its proration again. Whatever the
@@ -509,15 +550,50 @@ func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r Chan
 		return err
 	}
 	defer func() { _ = l.tx.Rollback() }()
-	sub := l.sub
+	target, units, err := s.target(l.sub, r)
+	if err != nil {
+		return err
+	}
+	if err := dropPending(ctx, l.tx, l.sub.ID); err != nil {
+		return err
+	}
+	if s.waits(l.sub.Product, target) {
+		current, err := s.payments.Subscription(ctx, l.providerID)
+		if err != nil {
+			return err
+		}
+		if current.PeriodEnd.IsZero() {
+			return errNoPeriodEnd
+		}
+		if _, err := l.tx.ExecContext(ctx, `
+			INSERT INTO subscription_changes (subscription_id, from_product, product, units, run_at)
+			VALUES ($1, $2, $3, $4, $5)`, l.sub.ID, l.sub.Product.ID, target.ID, units, current.PeriodEnd,
+		); err != nil {
+			return err
+		}
+		return l.tx.Commit()
+	}
+	changeErr, err := s.apply(ctx, l, target, units, 0)
+	if err != nil {
+		return err
+	}
+	if err := l.tx.Commit(); err != nil {
+		return err
+	}
+	return changeErr
+}
+
+// target returns the product and units a change would give a subscription: another
+// product of its group, within that product's units.
+func (s *Subscriptions) target(sub Subscription, r ChangeRequest) (Product, int, error) {
 	target := sub.Product
 	if r.Product != "" && r.Product != sub.Product.ID {
 		p, ok := s.products[r.Product]
 		if !ok {
-			return ErrUnknownProduct
+			return Product{}, 0, ErrUnknownProduct
 		}
 		if p.Group == "" || p.Group != sub.Product.Group {
-			return fmt.Errorf("%w: %s and %s aren't in one group", ErrInvalid, sub.Product.ID, p.ID)
+			return Product{}, 0, fmt.Errorf("%w: %s and %s aren't in one group", ErrInvalid, sub.Product.ID, p.ID)
 		}
 		target = p
 	}
@@ -527,15 +603,28 @@ func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r Chan
 		units = r.Units
 	}
 	if units < 1 || units > target.MaxUnits {
-		return ErrInvalid
+		return Product{}, 0, ErrInvalid
 	}
+	return target, units, nil
+}
+
+// waits reports whether a change from one product to another waits for the end of the
+// period.
+func (s *Subscriptions) waits(from, to Product) bool {
+	return s.atEnd != nil && from.ID != to.ID && s.atEnd(from, to)
+}
+
+// apply makes a change at the provider, records it, and reads the result back. It
+// returns the provider's error apart, after the state it reports is applied. A pending
+// change, by its ID, is recorded as made; otherwise the change is recorded anew.
+func (s *Subscriptions) apply(ctx context.Context, l *locked, target Product, units int, pendingID int64) (changeErr, err error) {
 	current, err := s.payments.Subscription(ctx, l.providerID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	have := current.Units
 	if have == 0 {
-		have = sub.Units
+		have = l.sub.Units
 	}
 	ch := payments.SubscriptionChange{Proration: s.proration}
 	if current.ProductID != target.ProviderID {
@@ -544,17 +633,31 @@ func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r Chan
 	if units != have {
 		ch.Units = units
 	}
-	var changeErr error
 	if ch.ProductID != "" || ch.Units != 0 {
 		changeErr = s.payments.ChangeSubscription(ctx, l.providerID, ch)
 	}
+	if changeErr == nil {
+		var err error
+		if pendingID != 0 {
+			_, err = l.tx.ExecContext(ctx, `
+				UPDATE subscription_changes
+				SET applied_at = now()
+				WHERE id = $1`, pendingID,
+			)
+		} else if ch.ProductID != "" || ch.Units != 0 {
+			_, err = l.tx.ExecContext(ctx, `
+				INSERT INTO subscription_changes (subscription_id, from_product, product, units, applied_at)
+				VALUES ($1, $2, $3, $4, now())`, l.sub.ID, l.sub.Product.ID, target.ID, units,
+			)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := s.readBack(ctx, l, ""); err != nil {
-		return err
+		return nil, err
 	}
-	if err := l.tx.Commit(); err != nil {
-		return err
-	}
-	return changeErr
+	return changeErr, nil
 }
 
 // readBack reads a subscription's state from the provider after the module changed it,
@@ -637,13 +740,19 @@ func (s *Subscriptions) forget(ctx context.Context, tx *sql.Tx, accountID string
 }
 
 // cleanup deletes checkouts nobody completed within 30 days, and the record of events
-// older than 30 days, long after the provider stops resending them. A checkout's page
-// may stay open for long, and one completed after its row is gone has no account to
-// go to, so they are kept well beyond a session.
+// and of changes made or dropped more than 30 days ago, long after the provider stops
+// resending events. A checkout's page may stay open for long, and one completed after
+// its row is gone has no account to go to, so they are kept well beyond a session.
 func (s *Subscriptions) cleanup(ctx context.Context) error {
 	if _, err := s.app.DB().ExecContext(ctx, `
 		DELETE FROM subscriptions
 		WHERE status = 'pending' AND created_at < now() - interval '30 days'`,
+	); err != nil {
+		return err
+	}
+	if _, err := s.app.DB().ExecContext(ctx, `
+		DELETE FROM subscription_changes
+		WHERE applied_at < now() - interval '30 days' OR canceled_at < now() - interval '30 days'`,
 	); err != nil {
 		return err
 	}

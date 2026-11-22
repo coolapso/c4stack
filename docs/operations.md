@@ -277,7 +277,17 @@ the provider's dashboard. A `deleted_account` means a deleted account's subscrip
 was paid, such as a checkout finished after the deletion: the module canceled it at
 once (the log says if that failed); refund as the policy says. `product_change` and
 `too_many_units` come from changes made in the provider's dashboard that the app's
-products don't allow: undo them there, or `sync` once they fit.
+products don't allow: undo them there, or `sync` once they fit. A `refunded` is a
+refund the module didn't cause: a change's own refund, of the time it left unused,
+isn't a review.
+
+Changes that wait for the end of a period (`ChangeAtPeriodEnd`) are made by the
+server within the last hour of the period, so the server must run then. `subscriptions
+list` shows a waiting change under THEN. The log says `made a subscription change that
+waited for the end of its period`, or why it failed (it is tried again every five
+minutes) or was dropped. If it says the subscription renewed first, the change went
+through and refunded the new period's unused time: check the refund in the provider's
+dashboard.
 
 ### Payment webhooks were down
 

@@ -58,6 +58,25 @@ type fakeProvider struct {
 	failUnits bool
 	// completed are the checkouts that completed, by their session ID.
 	completed map[string]payments.SubscriptionEvent
+	// quotes are the changes quoted, and when for.
+	quotes []quoted
+}
+
+type quoted struct {
+	id     string
+	change payments.SubscriptionChange
+	at     time.Time
+}
+
+// QuoteChange quotes €1 for any change, renewing at the period's end.
+func (p *fakeProvider) QuoteChange(_ context.Context, id string, c payments.SubscriptionChange, at time.Time) (payments.ChangeQuote, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.fail != nil {
+		return payments.ChangeQuote{}, p.fail
+	}
+	p.quotes = append(p.quotes, quoted{id: id, change: c, at: at})
+	return payments.ChangeQuote{Currency: "EUR", Charge: 100, RenewsAt: p.states[id].PeriodEnd}, nil
 }
 
 func (p *fakeProvider) Name() string           { return "test" }
@@ -164,6 +183,12 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith is newFixture with the module's Config changed by configure.
+func newFixtureWith(t *testing.T, configure func(*Config)) *fixture {
+	t.Helper()
 	f := &fixture{
 		a:     apptest.New(t, app.Config{Name: "test", Migrations: []app.Migrations{accounts.Migrations, Migrations}}),
 		pay:   &fakeProvider{states: map[string]payments.SubscriptionState{}, completed: map[string]payments.SubscriptionEvent{}},
@@ -173,7 +198,11 @@ func newFixture(t *testing.T) *fixture {
 	if f.accounts, err = accounts.New(f.a, testIdentity{}, accounts.Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if f.subs, err = New(f.a, f.accounts, Config{Payments: f.pay, Products: products}); err != nil {
+	cfg := Config{Payments: f.pay, Products: products}
+	if configure != nil {
+		configure(&cfg)
+	}
+	if f.subs, err = New(f.a, f.accounts, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if f.r, err = web.New(web.Config{PublicURL: "http://localhost:8080", SecretKey: strings.Repeat("s", 32)}); err != nil {
