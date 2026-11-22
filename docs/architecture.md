@@ -1077,9 +1077,7 @@ do canceling, the subscription ending, or a change made some other way meanwhile
 pending change's `from_product` no longer matches). A subscription the provider renewed
 before the job reached it still gets the change, which then refunds the new period's
 unused time; the log warns. Every change the module makes is recorded when the
-provider has made it, so a refund within ten minutes of one, by the event's time, is
-that change's: the provider refunding the time a move to a cheaper product or another
-period left unused. It isn't a review.
+provider has made it.
 
 **Webhooks.** An event is taken once: its ID is recorded in the transaction that
 applies it, so a retry changes nothing and a failure leaves it for the next retry. The
@@ -1100,7 +1098,7 @@ its reason:
 | `linked_twice` | Two of the app's subscriptions claim one provider subscription. |
 | `unknown_product` | The subscription moved to a product the app doesn't list; not applied. |
 | `product_mismatch`, `product_change`, `too_many_units` | A checkout completed with another product, a subscription left its group, or it has more units than its product allows; the product or units aren't applied. |
-| `refunded`, `disputed` | A payment was refunded, other than a change's own refund, or disputed: the operator decides what follows. |
+| `disputed` | The buyer's bank took a payment back: the operator answers it at the provider, and decides what follows. |
 | `deleted_account` | A subscription of a deleted account would charge again, such as a checkout completed after the deletion. The module cancels it at once; the operator decides about its payment. |
 | `second_in_group` | Two checkouts for one group both completed: the account pays twice. |
 | `several_items`, `unknown_status`, `missing_reference`, `checkout_not_completed` | The provider's event can't be read as one subscription's state. |
@@ -1299,7 +1297,8 @@ These features were considered and decided as follows.
 | A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
 | Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
 | Deleting an account with a subscription that renews | Refused until it's canceled | Deleting it would leave the subscription charging nobody. Canceling at the period's end is enough, so nobody waits for a yearly plan to run out. |
-| Refunds and disputes of subscriptions | Review | What a refund ends (the subscription, an add-on, nothing) is the operator's decision, as for credit. |
+| Refunds of subscriptions | Logged, not reviewed | A refund changes nothing the module keeps: the subscription's state, such as its cancellation, comes with the provider's subscription events, and the refund is the operator's own doing at the provider, or the provider's in a change. |
+| Disputes of subscriptions | Review | The buyer's bank took the payment back without the operator: they answer it at the provider, and decide what follows. |
 | Several subscriptions per account | Yes, with groups and targets | A plan, packs and add-ons for one vault are separate subscriptions. A group keeps a plan single; a target keeps an add-on to one thing. |
 | A price made of a base and per-unit prices, in one subscription | No | Creem prices a subscription as one product times its units, and documents no subscription with several items. Such a price is several subscriptions, one per price, or a product priced for the whole. |
 | Storing OpenID Connect requests before sign-in | No, sealed in the URL | Nothing is written for a visitor who never signs in, so a flood of requests costs no storage. The browser cookie gives what a stored request would: it continues only where it began. |

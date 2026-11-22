@@ -419,7 +419,7 @@ func TestReviews(t *testing.T) {
 		State: payments.SubscriptionState{ID: "sub_other_app", ProductID: "prov_elsewhere", Status: payments.SubscriptionActive}}, "")
 	check("provider's own reason", payments.SubscriptionEvent{ID: "e3", Kind: payments.SubscriptionChanged, Reference: ref, Review: "several_items",
 		State: payments.SubscriptionState{ID: "sub_1"}}, "several_items")
-	check("refund", payments.SubscriptionEvent{ID: "e4", Kind: payments.SubscriptionRefunded, State: payments.SubscriptionState{ID: "sub_1"}}, "refunded")
+	check("refund", payments.SubscriptionEvent{ID: "e4", Kind: payments.SubscriptionRefunded, State: payments.SubscriptionState{ID: "sub_1"}}, "")
 	check("dispute", payments.SubscriptionEvent{ID: "e5", Kind: payments.SubscriptionDisputed, Reference: ref, State: payments.SubscriptionState{ID: "sub_1"}}, "disputed")
 	check("reference for another subscription", payments.SubscriptionEvent{ID: "e6", Kind: payments.SubscriptionChanged, Reference: ref,
 		State: payments.SubscriptionState{ID: "sub_2", Status: payments.SubscriptionActive}}, "reference_mismatch")
@@ -645,18 +645,18 @@ func TestCleanupAndCommands(t *testing.T) {
 	if status, units, _ := f.row(t, fresh); status != "past_due" || units != 3 {
 		t.Fatalf("after sync: %s, %d", status, units)
 	}
-	f.send(t, payments.SubscriptionEvent{ID: "evt_refund", Kind: payments.SubscriptionRefunded, State: payments.SubscriptionState{ID: "sub_1"}})
+	f.send(t, payments.SubscriptionEvent{ID: "evt_dispute", Kind: payments.SubscriptionDisputed, State: payments.SubscriptionState{ID: "sub_1"}})
 	var id string
 	if err := f.a.DB().QueryRow(`SELECT id FROM subscription_reviews`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.subs.resolveCommand(ctx, []string{id, "refunded", "by", "hand"}); err != nil {
+	if err := f.subs.resolveCommand(ctx, []string{id, "answered", "the", "dispute"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.subs.resolveCommand(ctx, []string{id, "again"}); err == nil {
 		t.Fatal("resolved a review twice")
 	}
-	if n := f.count(t, `SELECT count(*) FROM subscription_reviews WHERE resolution = 'refunded by hand'`); n != 1 {
+	if n := f.count(t, `SELECT count(*) FROM subscription_reviews WHERE resolution = 'answered the dispute'`); n != 1 {
 		t.Fatal("the resolution wasn't recorded")
 	}
 }

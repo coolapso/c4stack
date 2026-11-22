@@ -112,15 +112,12 @@ func (s *Subscriptions) take(ctx context.Context, e payments.SubscriptionEvent) 
 			return review("reference_mismatch")
 		case e.Review != "":
 			return review(e.Review)
+		// A refund changes nothing the module keeps, so it's only logged: the
+		// subscription's state comes with the provider's subscription events, such as its
+		// cancellation, and a refund is the operator's own doing at the provider, or the
+		// provider's in a change.
 		case e.Kind == payments.SubscriptionRefunded:
-			ours, err := refundOfChange(ctx, tx, id, e.CreatedAt)
-			if err != nil {
-				return err
-			}
-			if !ours {
-				return review("refunded")
-			}
-			res.outcome = "refund of a change"
+			res.outcome = "refunded"
 			return nil
 		case e.Kind == payments.SubscriptionDisputed:
 			return review("disputed")

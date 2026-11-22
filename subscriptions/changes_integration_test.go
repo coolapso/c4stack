@@ -112,38 +112,12 @@ func TestChangeAtPeriodEnd(t *testing.T) {
 		t.Fatalf("applied again: %+v, %v", f.pay.changes, err)
 	}
 
-	// The refund of the time the change left isn't a review; one a day later is.
+	// The refund of the time the change left, and any later one, are only logged.
 	f.send(t, payments.SubscriptionEvent{ID: "evt_refund_change", Kind: payments.SubscriptionRefunded,
 		State: payments.SubscriptionState{ID: "sub_y"}, CreatedAt: time.Now()})
-	if r := f.reviews(t); len(r) != 0 {
-		t.Fatalf("reviews %v", r)
-	}
 	f.send(t, payments.SubscriptionEvent{ID: "evt_refund_later", Kind: payments.SubscriptionRefunded,
 		State: payments.SubscriptionState{ID: "sub_y"}, CreatedAt: time.Now().Add(24 * time.Hour)})
-	if r := f.reviews(t); len(r) != 1 || r[0] != "refunded" {
-		t.Fatalf("reviews %v", r)
-	}
-}
-
-// A change made at once is recorded, so its refund isn't a review either.
-func TestRefundOfChange(t *testing.T) {
-	f := newFixtureWith(t, yearlyToMonthly)
-	f.account(t, "ann")
-	plan := f.checkout(t, "ann", "family-monthly", 0, "")
-	f.start(t, plan, "sub_m", "prov_family_m", 1)
-	f.change(t, "ann", plan, "plus-monthly")
-	if len(f.pay.changes) != 1 {
-		t.Fatalf("changes %+v", f.pay.changes)
-	}
-	f.send(t, payments.SubscriptionEvent{ID: "evt_refund", Kind: payments.SubscriptionRefunded,
-		State: payments.SubscriptionState{ID: "sub_m"}, CreatedAt: time.Now()})
 	if r := f.reviews(t); len(r) != 0 {
-		t.Fatalf("reviews %v", r)
-	}
-	// One from an hour before the change is an operator's.
-	f.send(t, payments.SubscriptionEvent{ID: "evt_refund_before", Kind: payments.SubscriptionRefunded,
-		State: payments.SubscriptionState{ID: "sub_m"}, CreatedAt: time.Now().Add(-time.Hour)})
-	if r := f.reviews(t); len(r) != 1 {
 		t.Fatalf("reviews %v", r)
 	}
 }

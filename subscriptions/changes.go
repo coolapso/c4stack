@@ -22,10 +22,6 @@ const (
 	// changeCheck is how often the module looks for changes due, well within
 	// changeLead.
 	changeCheck = 5 * time.Minute
-	// refundWindow is how close a refund must be to a change the module made, by the
-	// provider's time and the database's, to be that change's: a provider refunds a
-	// change's unused time as it makes the change. Others go to review.
-	refundWindow = 10 * time.Minute
 )
 
 // PendingChange is a change that waits for the end of the period paid for
@@ -252,22 +248,4 @@ func (s *Subscriptions) applyPending(ctx context.Context, changeID int64, subscr
 	}
 	log.Info("made a subscription change that waited for the end of its period", "to", product)
 	return nil
-}
-
-// refundOfChange reports whether a refund made at at is a change's the module made to
-// the subscription: one of the time it left unused.
-func refundOfChange(ctx context.Context, tx *sql.Tx, subscriptionID string, at time.Time) (bool, error) {
-	if at.IsZero() {
-		return false, nil
-	}
-	var ours bool
-	err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (
-		    SELECT 1
-		    FROM subscription_changes
-		    WHERE subscription_id = $1 AND applied_at IS NOT NULL
-		        AND applied_at BETWEEN $2::timestamptz - make_interval(secs => $3) AND $2::timestamptz + make_interval(secs => $3)
-		)`, subscriptionID, at, refundWindow.Seconds(),
-	).Scan(&ours)
-	return ours, err
 }
