@@ -235,13 +235,25 @@ type checkout struct {
 	Order     order             `json:"order"`
 }
 
+// order is the part of Creem's order the adapter reads. Its amount and discount are in
+// its currency, the price's. Its amount_paid and tax_amount are in the currency the
+// buyer paid in, which Creem can choose for them, and which the order doesn't name: the
+// adapter doesn't read them.
 type order struct {
+	ID             string `json:"id"`
+	Amount         int64  `json:"amount"`
+	DiscountAmount int64  `json:"discount_amount"`
+	Currency       string `json:"currency"`
+	Status         string `json:"status"`
+	Type           string `json:"type"`
+}
+
+// transaction is the part of Creem's transaction the adapter reads: what a payment came
+// to, tax included, in the currency the buyer paid in.
+type transaction struct {
 	ID         string `json:"id"`
-	Amount     int64  `json:"amount"`
-	AmountPaid *int64 `json:"amount_paid"`
+	AmountPaid int64  `json:"amount_paid"`
 	Currency   string `json:"currency"`
-	Status     string `json:"status"`
-	Type       string `json:"type"`
 }
 
 // Creem sends related objects either expanded or as an ID.
@@ -253,6 +265,11 @@ func (o *checkout) UnmarshalJSON(data []byte) error {
 func (o *order) UnmarshalJSON(data []byte) error {
 	type plain order
 	return expanded(data, &o.ID, (*plain)(o))
+}
+
+func (t *transaction) UnmarshalJSON(data []byte) error {
+	type plain transaction
+	return expanded(data, &t.ID, (*plain)(t))
 }
 
 // ref is a related object of which only the ID matters.
@@ -283,6 +300,8 @@ func (c *Creem) paid(id string, raw json.RawMessage) (payments.Event, error) {
 	if co.Order.Type != "onetime" || string(co.Product) != c.cfg.ProductID {
 		return payments.Event{ID: id}, payments.ErrIgnored
 	}
+	// The price and what was paid for it, both in the price's currency: a discount code
+	// takes its amount off.
 	e := payments.Event{
 		ID:          id,
 		Kind:        payments.Paid,
@@ -290,11 +309,8 @@ func (c *Creem) paid(id string, raw json.RawMessage) (payments.Event, error) {
 		CheckoutID:  co.ID,
 		OrderID:     co.Order.ID,
 		AmountCents: co.Order.Amount,
-		PaidCents:   co.Order.Amount,
+		PaidCents:   co.Order.Amount - co.Order.DiscountAmount,
 		Currency:    strings.ToUpper(co.Order.Currency),
-	}
-	if co.Order.AmountPaid != nil {
-		e.PaidCents = *co.Order.AmountPaid
 	}
 	switch {
 	case co.Status != "completed" || co.Order.Status != "paid":
@@ -307,14 +323,15 @@ func (c *Creem) paid(id string, raw json.RawMessage) (payments.Event, error) {
 
 func (c *Creem) reversal(id, eventType string, raw json.RawMessage) (payments.Event, error) {
 	var r struct {
-		Amount         int64    `json:"amount"`
-		Currency       string   `json:"currency"`
-		RefundAmount   int64    `json:"refund_amount"`
-		RefundCurrency string   `json:"refund_currency"`
-		Status         string   `json:"status"`
-		Checkout       checkout `json:"checkout"`
-		Order          order    `json:"order"`
-		Subscription   ref      `json:"subscription"`
+		Amount         int64       `json:"amount"`
+		Currency       string      `json:"currency"`
+		RefundAmount   int64       `json:"refund_amount"`
+		RefundCurrency string      `json:"refund_currency"`
+		Status         string      `json:"status"`
+		Transaction    transaction `json:"transaction"`
+		Checkout       checkout    `json:"checkout"`
+		Order          order       `json:"order"`
+		Subscription   ref         `json:"subscription"`
 	}
 	if json.Unmarshal(raw, &r) != nil {
 		return payments.Event{}, payments.ErrInvalid
@@ -342,6 +359,11 @@ func (c *Creem) reversal(id, eventType string, raw json.RawMessage) (payments.Ev
 		if r.Status != "" && r.Status != "succeeded" {
 			e.Review = "refund_not_succeeded"
 		}
+	}
+	// What the reversed payment came to, in the reversal's currency, which says whether
+	// it reverses all of it. Without it, the credits module can't tell.
+	if strings.EqualFold(r.Transaction.Currency, e.Currency) {
+		e.PaidCents = r.Transaction.AmountPaid
 	}
 	return e, nil
 }

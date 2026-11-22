@@ -153,10 +153,13 @@ func TestParseWebhookVerifiesSignatures(t *testing.T) {
 	}
 }
 
+// paid is a payment in SEK of a price in EUR: Creem gives the order's amount_paid and
+// tax_amount in SEK, though the order says EUR.
 const paid = `{"id":"evt_paid","eventType":"checkout.completed","created_at":1760000000123,"object":{
 	"id":"ch_1","request_id":"intent-1","status":"completed","metadata":{"intent_id":"intent-1"},
 	"product":{"id":"prod_credits"},
-	"order":{"id":"ord_1","amount":1083,"amount_paid":1310,"currency":"eur","status":"paid","type":"onetime"}}}`
+	"order":{"id":"ord_1","amount":1083,"sub_total":1083,"tax_amount":3097,"amount_due":15487,"amount_paid":15487,
+		"currency":"eur","transaction":"tran_1","status":"paid","type":"onetime"}}}`
 
 func TestParsePaid(t *testing.T) {
 	c := adapter(t, "")
@@ -164,10 +167,14 @@ func TestParsePaid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := payments.Event{ID: "evt_paid", Kind: payments.Paid, Reference: "intent-1", CheckoutID: "ch_1", OrderID: "ord_1", AmountCents: 1083, PaidCents: 1310, Currency: "EUR",
+	want := payments.Event{ID: "evt_paid", Kind: payments.Paid, Reference: "intent-1", CheckoutID: "ch_1", OrderID: "ord_1", AmountCents: 1083, PaidCents: 1083, Currency: "EUR",
 		CreatedAt: time.UnixMilli(1760000000123).UTC()}
 	if e != want {
 		t.Fatalf("event %+v", e)
+	}
+	discounted := strings.Replace(paid, `"sub_total":1083`, `"sub_total":1083,"discount":"dis_1","discount_amount":200`, 1)
+	if e, err := c.ParseWebhook(signed(discounted), []byte(discounted)); err != nil || e.AmountCents != 1083 || e.PaidCents != 883 {
+		t.Errorf("discount code: %+v %v", e, err)
 	}
 
 	cases := map[string]struct {
@@ -192,21 +199,40 @@ func TestParsePaid(t *testing.T) {
 
 func TestParseReversals(t *testing.T) {
 	c := adapter(t, "")
+	// A refund of the SEK payment, in SEK, with the transaction it refunds.
 	refund := `{"id":"evt_refund","eventType":"refund.created","object":{"id":"ref_1","status":"succeeded",
-		"refund_amount":1310,"refund_currency":"EUR","checkout":{"id":"ch_1","request_id":"intent-1","product":"prod_credits"},
-		"order":{"id":"ord_1"}}}`
+		"refund_amount":15487,"refund_currency":"SEK",
+		"transaction":{"id":"tran_1","amount":12390,"amount_paid":15487,"currency":"SEK","tax_amount":3097,"status":"refunded"},
+		"checkout":{"id":"ch_1","request_id":"intent-1","product":"prod_credits"},
+		"order":{"id":"ord_1","amount":1083,"currency":"EUR"}}}`
 	e, err := c.ParseWebhook(signed(refund), []byte(refund))
-	if err != nil || e.Kind != payments.Refunded || e.Reference != "intent-1" || e.AmountCents != 1310 || e.OrderID != "ord_1" || e.Review != "" {
+	if err != nil || e.Kind != payments.Refunded || e.Reference != "intent-1" || e.OrderID != "ord_1" || e.Review != "" ||
+		e.AmountCents != 15487 || e.PaidCents != 15487 || e.Currency != "SEK" {
 		t.Fatalf("refund %+v %v", e, err)
+	}
+	partial := strings.Replace(refund, `"refund_amount":15487`, `"refund_amount":7000`, 1)
+	if e, _ := c.ParseWebhook(signed(partial), []byte(partial)); e.AmountCents != 7000 || e.PaidCents != 15487 {
+		t.Errorf("partial refund %+v", e)
+	}
+	// Without the transaction, or in another currency, it says nothing of what was paid.
+	for name, body := range map[string]string{
+		"transaction as ID":   strings.Replace(refund, `{"id":"tran_1","amount":12390,"amount_paid":15487,"currency":"SEK","tax_amount":3097,"status":"refunded"}`, `"tran_1"`, 1),
+		"in another currency": strings.Replace(refund, `"refund_currency":"SEK"`, `"refund_currency":"EUR"`, 1),
+	} {
+		if e, err := c.ParseWebhook(signed(body), []byte(body)); err != nil || e.PaidCents != 0 {
+			t.Errorf("%s: %+v %v", name, e, err)
+		}
 	}
 	pending := strings.Replace(refund, `"succeeded"`, `"pending"`, 1)
 	if e, _ := c.ParseWebhook(signed(pending), []byte(pending)); e.Review != "refund_not_succeeded" {
 		t.Errorf("pending refund %+v", e)
 	}
 	dispute := `{"id":"evt_dispute","eventType":"dispute.created","object":{"id":"dis_1","amount":1310,"currency":"eur",
+		"transaction":{"id":"tran_1","amount":1083,"amount_paid":1310,"currency":"EUR","tax_amount":227,"status":"chargeback"},
 		"checkout":"ch_1","order":"ord_1"}}`
 	e, err = c.ParseWebhook(signed(dispute), []byte(dispute))
-	if err != nil || e.Kind != payments.Disputed || e.CheckoutID != "ch_1" || e.OrderID != "ord_1" || e.Currency != "EUR" {
+	if err != nil || e.Kind != payments.Disputed || e.CheckoutID != "ch_1" || e.OrderID != "ord_1" || e.Currency != "EUR" ||
+		e.AmountCents != 1310 || e.PaidCents != 1310 {
 		t.Fatalf("dispute %+v %v", e, err)
 	}
 	other := `{"id":"evt_x","eventType":"subscription.active","object":{"id":"sub_1"}}`

@@ -61,9 +61,13 @@ type Event struct {
 	// AmountCents is the checkout's price for a Paid event, and the reversed amount
 	// for a refund or dispute.
 	AmountCents int64
-	// PaidCents is what the buyer actually paid, which taxes or discounts can change.
+	// PaidCents is, for a Paid event, what the buyer paid for the price: less after a
+	// discount, before taxes. For a refund or dispute, it is what the reversed payment
+	// came to, in the same currency as AmountCents: a reversal of less is partial. Zero
+	// means the provider doesn't say.
 	PaidCents int64
-	// Currency is the ISO code, such as "EUR".
+	// Currency is the amounts' ISO code, such as "EUR": the price's for a Paid event.
+	// A refund or dispute is in the currency the buyer paid in, which can be another.
 	Currency string
 	// CreatedAt is when the provider created the event, if it says.
 	CreatedAt time.Time

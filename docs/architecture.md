@@ -737,8 +737,8 @@ type Event struct {
 	CheckoutID  string
 	OrderID     string
 	AmountCents int64  // the price for Paid, the reversed amount otherwise
-	PaidCents   int64  // what the buyer paid, after taxes or discounts
-	Currency    string
+	PaidCents   int64  // Paid: the price after discounts, before taxes; otherwise what the reversed payment came to
+	Currency    string // the price's for Paid; a reversal's may be the one the buyer paid in
 	CreatedAt   time.Time // when the provider created the event, if it says
 	Review      string    // set when the event is ours but cannot be applied as it stands
 }
@@ -797,6 +797,12 @@ type SubscriptionEvent struct {
 - Credit checkouts use one configured product with `custom_price`. The purchase ID
   travels as `request_id` and as `intent_id` metadata. `ProductID` is needed only for
   them.
+- Creem can charge the buyer in their own currency. An order's `amount` and
+  `discount_amount` are in its `currency`, the price's, but its `amount_paid` and
+  `tax_amount` are in the buyer's, which the order doesn't name. So a payment's
+  `PaidCents` is `amount` less `discount_amount`. A refund or dispute names its
+  currency, and carries the transaction it reverses: its `amount_paid`, when in the same
+  currency, is the reversal's `PaidCents`.
 - Subscription checkouts use the app's recurring product with `units`. The reference
   travels as `request_id` and as `reference` metadata, which Creem copies to the
   subscription, so every subscription event carries it. Creem's `scheduled_cancel` is
