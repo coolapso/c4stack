@@ -134,6 +134,11 @@
 
     /* Signing in and confirming ------------------------------------------- */
 
+    // finishing is true while the autofill's ceremony, answered, is being finished: the
+    // page goes on by itself. A click meanwhile would replace that ceremony, and its
+    // finish would fail.
+    let finishing = false;
+
     // assert runs one ceremony, and goes on to next when it signs in.
     const assert = async (mediation, signal) => {
         const purpose = mode === 'confirm' ? 'confirm' : 'login';
@@ -145,7 +150,14 @@
             signal,
         });
         if (!cred) return;
-        const res = await post(finishURL, assertion(cred));
+        const conditional = mediation === 'conditional';
+        if (conditional) finishing = true;
+        let res;
+        try {
+            res = await post(finishURL, assertion(cred));
+        } finally {
+            if (conditional && !(res && res.ok && res.data.redirect)) finishing = false;
+        }
         if (res.ok && res.data.redirect) {
             window.location.assign(res.data.redirect);
             return;
@@ -180,6 +192,7 @@
     const start = root.querySelector('[data-passkey-start]');
     if (start && (mode === 'login' || mode === 'confirm')) {
         start.addEventListener('click', async () => {
+            if (finishing) return;
             if (autofill) {
                 autofill.abort();
                 autofill = null;
