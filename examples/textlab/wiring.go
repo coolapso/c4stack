@@ -102,7 +102,15 @@ func build(a *app.App, cfg config, p providers) (http.Handler, error) {
 	}
 
 	gin.SetMode(gin.ReleaseMode)
-	r, err := web.New(web.Config{PublicURL: cfg.PublicURL, SecretKey: cfg.SecretKey, TrustedProxies: cfg.TrustedProxies})
+	// In development, Creem's webhooks come through the tunnel (task dev:tunnel at the
+	// repository root), addressed to its hostname, so a local Textlab answers any host.
+	// Forms still post only from the public URL.
+	r, err := web.New(web.Config{
+		PublicURL:      cfg.PublicURL,
+		SecretKey:      cfg.SecretKey,
+		TrustedProxies: cfg.TrustedProxies,
+		AnyHost:        cfg.local(),
+	})
 	if err != nil {
 		return nil, err
 	}

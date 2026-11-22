@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -92,6 +94,20 @@ func loadConfig() (config, error) {
 		return config{}, errors.New("set either TEXTLAB_SMTP_URL or TEXTLAB_SCALEWAY_SECRET_KEY and TEXTLAB_SCALEWAY_PROJECT_ID")
 	}
 	return cfg, nil
+}
+
+// local reports whether Textlab runs on this machine, as in development: its public
+// URL's host is a loopback address.
+func (c config) local() bool {
+	u, err := url.Parse(c.PublicURL)
+	if err != nil {
+		return false
+	}
+	if u.Hostname() == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
 }
 
 // list splits a comma-separated setting, dropping empty items.

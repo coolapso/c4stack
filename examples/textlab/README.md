@@ -18,7 +18,8 @@ small paid text API:
   names a recurring Creem product; the settings page lists it, cancels it at the
   period's end, and opens Creem's billing page. Coming back from Creem's checkout
   starts it at once; renewals and cancellations arrive at `/webhooks/subscriptions`,
-  which Creem reaches locally through `task tunnel` at the repository root.
+  which Creem reaches locally through a tunnel. While its public URL is local, Textlab
+  answers any host, so the tunnel's hostname reaches it.
 - **Holds.** `POST /api/v1/jobs` reserves a job's cost; `POST /api/v1/jobs/{id}/complete`
   charges it and releases the hold in one transaction. Pending jobs are the holds that
   `heldByJobs` reports.
