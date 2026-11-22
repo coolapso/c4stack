@@ -203,6 +203,15 @@ type Server struct {
 }
 
 func Serve(ctx context.Context, s Server, ready func(context.Context) error) error
+
+// An engine for an API only other services call, on a server of its own.
+func NewInternal(cfg InternalConfig) (*gin.Engine, error)
+
+type InternalConfig struct {
+	TokenHashes  []string // SHA-256 of each caller's bearer token, in hex; at least one
+	MaxBodyBytes int64    // default 1 MiB
+	Logger       *slog.Logger
+}
 ```
 
 **Middleware.** The engine runs, in order:
@@ -246,6 +255,19 @@ Modules use `AllowCSP` on the groups they mount:
 - The account settings page adds the Hanko origin to `connect-src` for the profile UI.
 - The credits pages add the checkout origin to `form-action`, because the checkout POST
   answers with a redirect to the provider.
+
+**Internal APIs.** `NewInternal` builds an engine for an API that only other services
+call, such as an internal one on a second server (`app.App.Serve`) at an address the
+ingress doesn't route. It keeps the request ID, the request log, panic recovery,
+`nosniff` and the body limit, and replaces everything a browser needs with one check:
+every request carries `Authorization: Bearer <token>` for a token whose SHA-256 is in
+`TokenHashes`, compared in constant time, or it gets 401 with nothing of the header
+logged. There is no host check, since a caller reaches it by whatever name the network
+gives it, no cookies, CSRF or Content Security Policy, and no forwarding headers are
+trusted. `Log` works on its requests; `URL` and `CSRF` don't. The app keeps only the
+hashes, so it holds no credential of its callers'; a second hash lets a caller's token
+be replaced without downtime. Keep the address off the public network too, such as with
+a network policy: the token is a second lock, not the only one.
 
 **Health and shutdown.** Health endpoints are served in front of the engine, so probes
 that use pod IPs pass the host check and stay out of the request log. Readiness fails
