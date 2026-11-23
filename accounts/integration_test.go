@@ -326,6 +326,9 @@ func TestList(t *testing.T) {
 			t.Fatalf("limit %d: no error", limit)
 		}
 	}
+	if n, err := f.accounts.Count(ctx); err != nil || n != 6 {
+		t.Fatalf("count: %d, %v", n, err)
+	}
 }
 
 func TestRequireSignIn(t *testing.T) {

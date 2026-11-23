@@ -497,6 +497,7 @@ func (s *Accounts) ByEmail(ctx context.Context, email string) (Account, error) /
 func (s *Accounts) List(ctx context.Context, opts ListOptions) (AccountPage, error) // newest first; ErrInvalidCursor
 type ListOptions struct{ Search, After string; Limit int } // Search: address or name; Limit: 50 by default, 500 at most
 type AccountPage struct{ Accounts []Account; Next string } // Next: the next page's After, empty on the last
+func (s *Accounts) Count(ctx context.Context) (int, error)
 func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) // refuse: *DeletionRefused
@@ -1063,6 +1064,7 @@ type Quote struct {
 func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, error)
 func (s *Subscriptions) Checkout(ctx context.Context, accountID string, r CheckoutRequest) (url string, err error)
 func (s *Subscriptions) List(ctx context.Context, accountID string) ([]Subscription, error)
+func (s *Subscriptions) Current(ctx context.Context) ([]Subscription, error) // every account's that haven't ended, for counting
 func (s *Subscriptions) Get(ctx context.Context, accountID, id string) (Subscription, error)
 func (s *Subscriptions) Cancel(ctx context.Context, accountID, id string) error // at the period's end
 func (s *Subscriptions) Change(ctx context.Context, accountID, id string, r ChangeRequest) error

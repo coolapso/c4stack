@@ -300,6 +300,13 @@ func (s *Accounts) List(ctx context.Context, opts ListOptions) (AccountPage, err
 	return page, nil
 }
 
+// Count returns how many accounts there are, such as for a staff app's overview.
+func (s *Accounts) Count(ctx context.Context) (int, error) {
+	var n int
+	err := s.app.DB().QueryRowContext(ctx, `SELECT count(*) FROM accounts`).Scan(&n)
+	return n, err
+}
+
 // Each of these wraps identity.ErrRefused, so a provider that signs people in can tell
 // them it cannot sign them in to this account.
 var (

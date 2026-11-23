@@ -473,6 +473,45 @@ func (s *Subscriptions) List(ctx context.Context, accountID string) (_ []Subscri
 	return out, rows.Err()
 }
 
+// currentStatuses are those of a subscription that hasn't ended: the statuses Live
+// reports, and canceling, until the period ends.
+var currentStatuses = []string{
+	string(payments.SubscriptionActive), string(payments.SubscriptionTrialing), string(payments.SubscriptionPastDue),
+	string(payments.SubscriptionUnpaid), string(payments.SubscriptionPaused),
+}
+
+// Current returns every account's subscriptions that haven't ended: those that would
+// charge again, and canceled ones until their period ends. It is for counting, such as
+// customers by product on a staff app's overview: by account, the newest first. A
+// subscription whose account was deleted isn't among them.
+func (s *Subscriptions) Current(ctx context.Context) (_ []Subscription, err error) {
+	rows, err := s.app.DB().QueryContext(ctx, `
+		SELECT `+columns+`
+		FROM `+withPending+`
+		WHERE s.account_id IS NOT NULL
+		  AND (s.status = ANY ($1)
+		       OR s.status = 'canceling' AND (s.period_end IS NULL OR s.period_end > now()))
+		ORDER BY s.account_id, s.created_at DESC, s.id`, currentStatuses,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := rows.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	var out []Subscription
+	for rows.Next() {
+		sub, err := s.scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
 // Get returns one of an account's subscriptions.
 func (s *Subscriptions) Get(ctx context.Context, accountID, id string) (Subscription, error) {
 	sub, err := s.scan(s.app.DB().QueryRowContext(ctx, `
