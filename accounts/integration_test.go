@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -245,6 +246,84 @@ func TestEmailChanges(t *testing.T) {
 	for _, email := range []string{"v@example.com", "", "nobody@example.com"} {
 		if _, err := f.accounts.ByEmail(ctx, email); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("by email %q: %v", email, err)
+		}
+	}
+}
+
+func TestList(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	var ids []string
+	for _, who := range []string{"ann", "bob", "cid", "dee", "eve"} {
+		a, err := f.accounts.resolve(ctx, identity.Identity{Subject: who, Email: who + "@example.com", EmailVerified: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, a.ID)
+	}
+	// Two accounts created in one moment still come in a fixed order.
+	if _, err := f.a.DB().ExecContext(ctx, `UPDATE accounts SET created_at = (SELECT created_at FROM accounts WHERE id = $1) WHERE id = $2`, ids[2], ids[3]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.a.DB().ExecContext(ctx, `UPDATE accounts SET name = 'Bobby Tables' WHERE id = $1`, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	emails := func(p AccountPage) string {
+		var out []string
+		for _, a := range p.Accounts {
+			out = append(out, strings.TrimSuffix(a.Email, "@example.com"))
+		}
+		return strings.Join(out, " ")
+	}
+
+	// Newest first, two at a time, each once; an account created meanwhile isn't listed.
+	var seen []string
+	opts := ListOptions{Limit: 2}
+	for page := 0; ; page++ {
+		got, err := f.accounts.List(ctx, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, emails(got))
+		if page == 0 {
+			if _, err := f.accounts.resolve(ctx, identity.Identity{Subject: "fay", Email: "fay@example.com", EmailVerified: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got.Next == "" {
+			break
+		}
+		opts.After = got.Next
+	}
+	if got := strings.Join(seen, " | "); got != "eve dee | cid bob | ann" && got != "eve cid | dee bob | ann" {
+		t.Fatalf("pages: %q", got)
+	}
+
+	// Search looks in addresses and names, ignoring case.
+	for search, want := range map[string][]string{
+		"":            {"fay eve dee cid bob ann", "fay eve cid dee bob ann"},
+		" E@EXAMPLE ": {"eve dee"},
+		"tables":      {"bob"},
+		"nobody":      {""},
+	} {
+		got, err := f.accounts.List(ctx, ListOptions{Search: search})
+		if err != nil || !slices.Contains(want, emails(got)) || got.Next != "" {
+			t.Fatalf("search %q: %q, next %q, %v", search, emails(got), got.Next, err)
+		}
+	}
+	got, _ := f.accounts.List(ctx, ListOptions{Search: "Bobby"})
+	if len(got.Accounts) != 1 || got.Accounts[0].ID != ids[1] || got.Accounts[0].Name != "Bobby Tables" || got.Accounts[0].CreatedAt.IsZero() {
+		t.Fatalf("an account as listed: %+v", got.Accounts)
+	}
+
+	for _, after := range []string{"x", "1_not-a-uuid", "_" + ids[0], ids[0]} {
+		if _, err := f.accounts.List(ctx, ListOptions{After: after}); !errors.Is(err, ErrInvalidCursor) {
+			t.Fatalf("cursor %q: %v", after, err)
+		}
+	}
+	for _, limit := range []int{-1, MaxListLimit + 1} {
+		if _, err := f.accounts.List(ctx, ListOptions{Limit: limit}); err == nil {
+			t.Fatalf("limit %d: no error", limit)
 		}
 	}
 }

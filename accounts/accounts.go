@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -213,6 +214,90 @@ func (s *Accounts) ByEmail(ctx context.Context, email string) (Account, error) {
 		return Account{}, ErrNotFound
 	}
 	return a, err
+}
+
+// The bounds of ListOptions.Limit.
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 500
+)
+
+// ErrInvalidCursor means ListOptions.After is not a Next that List returned.
+var ErrInvalidCursor = errors.New("accounts: invalid list cursor")
+
+// ListOptions narrow and page List.
+type ListOptions struct {
+	// Search keeps the accounts whose primary address or name contains it, ignoring
+	// case; empty keeps them all.
+	Search string
+	// After is the Next of the page before, or empty for the first page.
+	After string
+	// Limit is the most accounts a page holds: DefaultListLimit when zero, at most
+	// MaxListLimit.
+	Limit int
+}
+
+// AccountPage is a page of accounts, as List returns it.
+type AccountPage struct {
+	Accounts []Account
+	// Next is the next page's ListOptions.After, empty on the last page.
+	Next string
+}
+
+// List returns accounts a page at a time, the newest first, such as for a staff app's
+// list of people. Paging holds while accounts come and go: no account is listed twice,
+// and those created after the first page aren't listed.
+func (s *Accounts) List(ctx context.Context, opts ListOptions) (AccountPage, error) {
+	limit := opts.Limit
+	if limit == 0 {
+		limit = DefaultListLimit
+	}
+	if limit < 1 || limit > MaxListLimit {
+		return AccountPage{}, fmt.Errorf("accounts: list limit %d is not 1 to %d", opts.Limit, MaxListLimit)
+	}
+	// The cursor is the last account's creation time, in microseconds (PostgreSQL's
+	// precision), and its ID: the order's key.
+	var afterAt time.Time
+	var afterID any
+	if opts.After != "" {
+		micros, id, ok := strings.Cut(opts.After, "_")
+		n, err := strconv.ParseInt(micros, 10, 64)
+		if !ok || err != nil || !validID(id) {
+			return AccountPage{}, ErrInvalidCursor
+		}
+		afterAt, afterID = time.UnixMicro(n).UTC(), strings.ToLower(id)
+	}
+	rows, err := s.app.DB().QueryContext(ctx, `
+		SELECT id, primary_email, COALESCE(name, ''), created_at
+		FROM accounts
+		WHERE ($1 = ''
+		       OR strpos(lower(primary_email), lower($1)) > 0
+		       OR strpos(lower(COALESCE(name, '')), lower($1)) > 0)
+		  AND ($2::uuid IS NULL OR (created_at, id) < ($3, $2::uuid))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4`, strings.TrimSpace(opts.Search), afterID, afterAt, limit+1,
+	)
+	if err != nil {
+		return AccountPage{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	var page AccountPage
+	for rows.Next() {
+		var a Account
+		if err := rows.Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt); err != nil {
+			return AccountPage{}, err
+		}
+		page.Accounts = append(page.Accounts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return AccountPage{}, err
+	}
+	if len(page.Accounts) > limit {
+		page.Accounts = page.Accounts[:limit]
+		last := page.Accounts[limit-1]
+		page.Next = strconv.FormatInt(last.CreatedAt.UnixMicro(), 10) + "_" + last.ID
+	}
+	return page, nil
 }
 
 // Each of these wraps identity.ErrRefused, so a provider that signs people in can tell

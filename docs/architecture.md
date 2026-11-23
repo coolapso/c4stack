@@ -494,6 +494,9 @@ func (s *Accounts) RequireSignIn(c *gin.Context)
 func Current(c *gin.Context) Account
 func (s *Accounts) Get(ctx context.Context, id string) (Account, error)
 func (s *Accounts) ByEmail(ctx context.Context, email string) (Account, error) // the primary address, any case
+func (s *Accounts) List(ctx context.Context, opts ListOptions) (AccountPage, error) // newest first; ErrInvalidCursor
+type ListOptions struct{ Search, After string; Limit int } // Search: address or name; Limit: 50 by default, 500 at most
+type AccountPage struct{ Accounts []Account; Next string } // Next: the next page's After, empty on the last
 func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) // refuse: *DeletionRefused
