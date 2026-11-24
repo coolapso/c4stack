@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"strings"
 	"time"
 
@@ -123,11 +124,19 @@ func (l *Local) notice(kind Kind, to string) Notice {
 // error is logged, so it never carries what the email does: whatever the sender's
 // error says, the addresses, the code and the passkey's name are taken out.
 func (l *Local) sendNow(ctx context.Context, n Notice) error {
-	m := l.cfg.Message(n)
-	m.To = n.To
+	clean := func(err error) string {
+		said := []string{n.To, n.OldEmail, n.NewEmail, n.Code, strings.ReplaceAll(n.Code, " ", ""), n.Passkey}
+		for _, v := range said {
+			said = append(said, html.EscapeString(v)) // as the HTML has them
+		}
+		return redact(err.Error(), said...)
+	}
+	m, err := l.message(ctx, n)
+	if err != nil {
+		return errors.New("local: writing the email failed: " + clean(err))
+	}
 	if _, err := l.cfg.Sender.Send(ctx, m); err != nil {
-		return errors.New("local: the email provider refused the message: " + redact(err.Error(),
-			n.To, n.OldEmail, n.NewEmail, n.Code, strings.ReplaceAll(n.Code, " ", ""), n.Passkey))
+		return errors.New("local: the email provider refused the message: " + clean(err))
 	}
 	return nil
 }
@@ -299,109 +308,81 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format("2 January 2006 at 15:04") + " UTC"
 }
 
-func defaultMessage(n Notice) email.Message {
-	m := email.Message{To: n.To}
+// message writes the email for n: the app's Message, or the default words in the app's
+// Layout. It always goes to n.To.
+func (l *Local) message(ctx context.Context, n Notice) (email.Message, error) {
+	var m email.Message
+	if l.cfg.Message != nil {
+		m = l.cfg.Message(n)
+	} else {
+		subject, body := defaultEmail(n)
+		var err error
+		if m, err = email.Compose(ctx, subject, body, l.cfg.Layout); err != nil {
+			return email.Message{}, err
+		}
+	}
+	m.To = n.To
+	return m, nil
+}
+
+// defaultEmail writes an email's subject and body in the default words.
+func defaultEmail(n Notice) (string, email.Body) {
+	var subject string
+	var b email.Body
+	b.Paragraph("Hello,")
 	switch n.Kind {
 	case SignInCode:
-		m.Subject = fmt.Sprintf("Your %s sign-in code", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-Here is your code to sign in to %s:
-
-    %s
-
-Enter it at %s, on the page where you asked for it. It works once, within %d minutes.
-
-If you didn't ask for it, ignore this email: nobody can sign in without the code. Never give it to anyone. %s will never ask you for it.
-`, n.AppName, n.Code, n.Site, n.Minutes, n.AppName)
+		subject = fmt.Sprintf("Your %s sign-in code", n.AppName)
+		b.Paragraph(fmt.Sprintf("Here is your code to sign in to %s:", n.AppName))
+		b.Code(n.Code)
+		b.Paragraph(fmt.Sprintf("Enter it at %s, on the page where you asked for it. It works once, within %d minutes.", n.Site, n.Minutes))
+		b.Paragraph(fmt.Sprintf("If you didn't ask for it, ignore this email: nobody can sign in without the code. Never give it to anyone. %s will never ask you for it.", n.AppName))
 	case SignUpCode:
-		m.Subject = fmt.Sprintf("Your %s sign-up code", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-Here is your code to create %s account with this address:
-
-    %s
-
-Enter it at %s, on the page where you asked for it. It works once, within %d minutes.
-
-If you didn't ask for it, ignore this email: no account is created without the code.
-`, article(n.AppName), n.Code, n.Site, n.Minutes)
+		subject = fmt.Sprintf("Your %s sign-up code", n.AppName)
+		b.Paragraph(fmt.Sprintf("Here is your code to create %s account with this address:", article(n.AppName)))
+		b.Code(n.Code)
+		b.Paragraph(fmt.Sprintf("Enter it at %s, on the page where you asked for it. It works once, within %d minutes.", n.Site, n.Minutes))
+		b.Paragraph("If you didn't ask for it, ignore this email: no account is created without the code.")
 	case NewAddressCode:
-		m.Subject = fmt.Sprintf("Confirm your new address for %s", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-Someone signed in to %s asked to use this address for their account. To confirm it, enter this code at %s:
-
-    %s
-
-It works once, within %d minutes. If you didn't ask for it, ignore this email: the address isn't used without the code.
-`, n.AppName, n.Site, n.Code, n.Minutes)
+		subject = fmt.Sprintf("Confirm your new address for %s", n.AppName)
+		b.Paragraph(fmt.Sprintf("Someone signed in to %s asked to use this address for their account. To confirm it, enter this code at %s:", n.AppName, n.Site))
+		b.Code(n.Code)
+		b.Paragraph(fmt.Sprintf("It works once, within %d minutes. If you didn't ask for it, ignore this email: the address isn't used without the code.", n.Minutes))
 	case AddressTaken:
-		m.Subject = fmt.Sprintf("Your address and %s", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-Someone signed in to %s asked to use this address for their account. This address already has %s account, so nothing changes, and that account stays as it is.
-
-If it was you, sign in with this address to use that account, or choose another address.
-`, n.AppName, article(n.AppName))
+		subject = fmt.Sprintf("Your address and %s", n.AppName)
+		b.Paragraph(fmt.Sprintf("Someone signed in to %s asked to use this address for their account. This address already has %s account, so nothing changes, and that account stays as it is.", n.AppName, article(n.AppName)))
+		b.Paragraph("If it was you, sign in with this address to use that account, or choose another address.")
 	case AddressChanged:
-		m.Subject = fmt.Sprintf("Your %s address was changed", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-The address of your %s account was changed from %s to %s on %s, from %s. Sign-in codes now go to the new address, and your other devices were signed out.
-
-If you made this change, there is nothing to do.
-
-If you didn't, someone else may be signed in to your account. Reply to this email right away, and quote this reference: %s
-`, n.AppName, n.OldEmail, n.NewEmail, formatTime(n.At), n.Device, n.Reference)
+		subject = fmt.Sprintf("Your %s address was changed", n.AppName)
+		b.Paragraph(fmt.Sprintf("The address of your %s account was changed from %s to %s on %s, from %s. Sign-in codes now go to the new address, and your other devices were signed out.", n.AppName, n.OldEmail, n.NewEmail, formatTime(n.At), n.Device))
+		b.Paragraph("If you made this change, there is nothing to do.")
+		b.Paragraph("If you didn't, someone else may be signed in to your account. Reply to this email right away, and quote this reference: " + n.Reference)
 	case PasskeyAdded:
-		m.Subject = fmt.Sprintf("A passkey was added to your %s account", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-A passkey named %q was added to your %s account on %s, from %s. It can sign in to your account without a code.
-
-If you added it, there is nothing to do.
-
-If you didn't, sign in, remove it, and sign out your other devices:
-%s
-`, n.Passkey, n.AppName, formatTime(n.At), n.Device, n.SettingsURL)
+		subject = fmt.Sprintf("A passkey was added to your %s account", n.AppName)
+		b.Paragraph(fmt.Sprintf("A passkey named %q was added to your %s account on %s, from %s. It can sign in to your account without a code.", n.Passkey, n.AppName, formatTime(n.At), n.Device))
+		b.Paragraph("If you added it, there is nothing to do.")
+		b.Paragraph("If you didn't, sign in, remove it, and sign out your other devices.")
+		b.Link("Open your settings", n.SettingsURL)
 	case PasskeyRemoved:
-		m.Subject = fmt.Sprintf("A passkey was removed from your %s account", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-The passkey named %q was removed from your %s account on %s, from %s. It can no longer sign in.
-
-If you removed it, there is nothing to do.
-
-If you didn't, sign in and check your passkeys and devices:
-%s
-`, n.Passkey, n.AppName, formatTime(n.At), n.Device, n.SettingsURL)
+		subject = fmt.Sprintf("A passkey was removed from your %s account", n.AppName)
+		b.Paragraph(fmt.Sprintf("The passkey named %q was removed from your %s account on %s, from %s. It can no longer sign in.", n.Passkey, n.AppName, formatTime(n.At), n.Device))
+		b.Paragraph("If you removed it, there is nothing to do.")
+		b.Paragraph("If you didn't, sign in and check your passkeys and devices.")
+		b.Link("Open your settings", n.SettingsURL)
 	case CodesPaused:
-		m.Subject = fmt.Sprintf("Sign-in codes for your %s account are paused", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-Wrong sign-in codes for your %s account were entered many times today. Until %s, %s only accepts codes for it on browsers where you signed in before. Nobody signed in with the wrong codes.
-
-You can also sign in with a passkey, if you added one. If you can't sign in and need to, reply to this email.
-`, n.AppName, formatTime(n.Until), n.AppName)
+		subject = fmt.Sprintf("Sign-in codes for your %s account are paused", n.AppName)
+		b.Paragraph(fmt.Sprintf("Wrong sign-in codes for your %s account were entered many times today. Until %s, %s only accepts codes for it on browsers where you signed in before. Nobody signed in with the wrong codes.", n.AppName, formatTime(n.Until), n.AppName))
+		b.Paragraph("You can also sign in with a passkey, if you added one. If you can't sign in and need to, reply to this email.")
 	case AddressChangedBySupport:
-		m.Subject = fmt.Sprintf("Your %s address was changed by support", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-%s's support changed the address of your %s account from %s to %s on %s. Every device was signed out and every passkey removed. Sign-in codes now go to the new address.
-
-If you didn't ask for this, reply to this email right away, and quote this reference: %s
-`, n.AppName, n.AppName, n.OldEmail, n.NewEmail, formatTime(n.At), n.Reference)
+		subject = fmt.Sprintf("Your %s address was changed by support", n.AppName)
+		b.Paragraph(fmt.Sprintf("%s's support changed the address of your %s account from %s to %s on %s. Every device was signed out and every passkey removed. Sign-in codes now go to the new address.", n.AppName, n.AppName, n.OldEmail, n.NewEmail, formatTime(n.At)))
+		b.Paragraph("If you didn't ask for this, reply to this email right away, and quote this reference: " + n.Reference)
 	case AddressSetBySupport:
-		m.Subject = fmt.Sprintf("Your %s account now uses this address", n.AppName)
-		m.Text = fmt.Sprintf(`Hello,
-
-%s's support set this address on your %s account on %s. Every device was signed out and every passkey removed. To sign in, ask for a code with this address at %s, then add your passkeys again.
-
-If you didn't ask for this, reply to this email.
-`, n.AppName, n.AppName, formatTime(n.At), n.Site)
+		subject = fmt.Sprintf("Your %s account now uses this address", n.AppName)
+		b.Paragraph(fmt.Sprintf("%s's support set this address on your %s account on %s. Every device was signed out and every passkey removed. To sign in, ask for a code with this address at %s, then add your passkeys again.", n.AppName, n.AppName, formatTime(n.At), n.Site))
+		b.Paragraph("If you didn't ask for this, reply to this email.")
 	}
-	return m
+	return subject, b
 }
 
 // article puts "a" or "an" before a name: "an Acme account", "a Textlab account".

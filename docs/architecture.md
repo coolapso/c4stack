@@ -963,7 +963,8 @@ type Config struct {
 	Policy     Policy
 	AppName    string                                         // named in the default warning
 	CreditsURL string                                         // linked from the warning
-	Message    func(Notice) email.Message                     // optional
+	Message    func(Notice) email.Message                     // optional: the app's own warning
+	Layout     email.Layout                                   // optional: the default warning's HTML, in the app's look
 	OnRun      func(ctx context.Context, r Result, err error) // optional: each run's outcome
 }
 
@@ -1201,11 +1202,12 @@ A nil error from `Send` means the provider accepted the message, not that it arr
 The Scaleway adapter reports a message delivered once Scaleway's status is `sent`: the
 recipient's mail system took it.
 
-A module writes its emails as a `Body`, once: its text is the message's
+The modules write their default emails as a `Body`, once: its text is the message's
 `Text`, and its HTML (a `p` for each paragraph, a `p.code` for a code, a `p.action`
 holding an `a.button` for a link, and no styles) goes into the app's `Layout`, when the
 module has one, for the message's `HTML`. The two can't say different things. Without a
-layout, a message is text alone.
+layout, a message is text alone. A module's `Message` replaces the default words, HTML
+and all, so a module refuses `Message` and `Layout` together.
 
 `scaleway.New(scaleway.Config{SecretKey, ProjectID, Region, From, FromName, ReplyTo})`.
 The region defaults to `fr-par`. Errors carry the HTTP status, never the provider's

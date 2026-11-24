@@ -89,6 +89,7 @@ func build(a *app.App, cfg config, p providers) (handlers, error) {
 			Policy:     expiry.Policy{InactiveMonths: 12, NoticeDays: 30},
 			AppName:    "Textlab",
 			CreditsURL: cfg.PublicURL + "/account/credits",
+			Layout:     emailLayout,
 		}); err != nil {
 			return handlers{}, err
 		}

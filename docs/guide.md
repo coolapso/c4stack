@@ -430,6 +430,62 @@ layout := ui.Layout{
 
 `examples/textlab/layout.templ` is a complete custom layout.
 
+## Give the emails your look
+
+The emails C4Stack writes, `identity/local`'s codes and notices and `credits/expiry`'s
+warning, are plain text. Give their module a `Layout` and each gets an HTML version
+too, in the app's look, beside the same text: mail apps show the HTML, and people who
+prefer text, or whose mail app shows none, read the text. The words stay the defaults,
+in the app's name.
+
+A layout is a Templ component with an `email.Page` parameter. It writes the whole
+document, with the page's `Body` in it:
+
+```templ
+templ emailLayout(p email.Page) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ p.Subject }</title>
+			<style>
+				body { margin: 0; padding: 24px 12px; background: #f7f7f5; color: #1f2328; font: 16px/1.6 system-ui, sans-serif; }
+				.code { font: 600 26px/1.3 ui-monospace, monospace; letter-spacing: 0.1em; }
+				.button { display: inline-block; padding: 10px 18px; background: #0f766e; color: #fff; border-radius: 6px; text-decoration: none; }
+			</style>
+		</head>
+		<body>
+			<div style="display: none; max-height: 0; overflow: hidden">{ p.Preview }</div>
+			<p><strong>Acme</strong></p>
+			@p.Body
+		</body>
+	</html>
+}
+```
+
+```go
+idp, err := local.New(a, local.Config{
+	// ...
+	Layout: emailLayout,
+})
+_, err = expiry.New(a, cr, expiry.Config{
+	// ...
+	Layout: emailLayout,
+})
+```
+
+The body is a `p` for each paragraph, a `p.code` for a code to copy and a `p.action`
+holding an `a.button` for a link. Mail apps load nothing from the web unasked, and many
+keep only a `style` element in the head, so put the styles there, and link no
+stylesheet, font or picture. `Preview` is the message's text on one line: mail apps show
+the start of each email in their lists, so a layout that puts its own words first, such
+as the app's name, puts `Preview` before them, hidden.
+
+`Layout` styles the default words only. An app that writes its own with `Message`
+writes the HTML too, by hand or with an `email.Body` and `email.Compose`, so a module
+refuses the two together. `examples/textlab/email.templ` is a complete layout.
+
 ## Move or replace an account page
 
 **Move.** The keys and credits pages go wherever their group is. The account pages go
@@ -514,10 +570,11 @@ Give `local.Config.Origins` the same list as `web.Config.Origins`. Passkeys belo
 passkeys. An app on `app.acme.example` whose passkeys should work across `acme.example`
 sets it to `acme.example`.
 
-The emails are plain text, in the app's name, and never name C4Stack. To use your own
-words or look, set `Config.Message`. It writes every kind of email, from a `Notice`
-that carries what the email says (the code, the addresses, the passkey's name, the
-device, the time and a reference for support):
+The emails are plain text, in the app's name, and never name C4Stack. `Config.Layout`
+gives them an HTML version in the app's look too ([Give the emails your
+look](#give-the-emails-your-look)). To use your own words, set `Config.Message`. It
+writes every kind of email, from a `Notice` that carries what the email says (the code,
+the addresses, the passkey's name, the device, the time and a reference for support):
 
 ```go
 Message: func(n local.Notice) email.Message {

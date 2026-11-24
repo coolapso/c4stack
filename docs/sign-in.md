@@ -571,9 +571,10 @@ doubled. Rotate on every replica together where that matters.
 ## The emails
 
 Every email is plain text, to one recipient, sent through the app's `email.Sender` from
-the app's own domain. The app's name is in each subject and C4Stack's in none. The words
-below are the defaults. An app brings its own words, look and templates through
-`Config.Message`, as `credits/expiry` does.
+the app's own domain; with `Config.Layout`, it is also HTML in the app's look, saying the
+same. The app's name is in each subject and C4Stack's in none. The words below are the
+defaults. An app brings its own words through `Config.Message`, as `credits/expiry`
+does.
 
 **Codes** are sent at once, in the request, because the person is waiting for them.
 
@@ -678,8 +679,9 @@ which site the code is for, to make it harder to phish (see [Threats](#threats))
 >
 > If you added it, there is nothing to do.
 >
-> If you didn't, sign in, remove it, and sign out your other devices:
-> https://acme.example/account/settings
+> If you didn't, sign in, remove it, and sign out your other devices.
+>
+> Open your settings: https://acme.example/account/settings
 
 **Passkey removed.**
 
@@ -692,8 +694,9 @@ which site the code is for, to make it harder to phish (see [Threats](#threats))
 >
 > If you removed it, there is nothing to do.
 >
-> If you didn't, sign in and check your passkeys and devices:
-> https://acme.example/account/settings
+> If you didn't, sign in and check your passkeys and devices.
+>
+> Open your settings: https://acme.example/account/settings
 
 **Codes paused**, once per window, to an address with a user.
 
@@ -818,6 +821,7 @@ type Config struct {
 	SignedInPath    string                     // where sign-in goes without a next path; zero means "/"
 	MaxCodesPerHour int                        // optional: codes the whole app may send an hour; zero means no ceiling
 	Message         func(Notice) email.Message // optional: the app's own emails
+	Layout          email.Layout               // optional: the default emails' HTML, in the app's look
 	Allow           func(address string) bool  // optional: the only addresses that may sign up and sign in
 }
 

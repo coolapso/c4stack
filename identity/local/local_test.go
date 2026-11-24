@@ -3,10 +3,13 @@ package local
 import (
 	"context"
 	"fmt"
+	"html"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/coolapso/c4stack/app"
 	"github.com/coolapso/c4stack/email"
 )
@@ -161,27 +164,82 @@ func TestDefaultMessages(t *testing.T) {
 	}
 }
 
+// defaultMessage writes n's email in the default words, as text alone.
+func defaultMessage(n Notice) email.Message {
+	m, err := (&Local{}).message(context.Background(), n)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
+
+// testLayout is a plain document around the body.
+func testLayout(p email.Page) templ.Component {
+	return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
+		_, _ = io.WriteString(w, "<!DOCTYPE html>\n<title>"+html.EscapeString(p.Subject)+"</title>\n")
+		return p.Body.Render(ctx, w)
+	})
+}
+
+func TestLayout(t *testing.T) {
+	l := &Local{cfg: Config{Layout: testLayout}}
+	at := time.Date(2026, 11, 19, 14, 2, 0, 0, time.UTC)
+	for k := SignInCode; k <= AddressSetBySupport; k++ {
+		n := Notice{Kind: k, To: "ann@example.com", AppName: "Acme", Site: "acme.example", Code: "4821 0937", Minutes: 10,
+			Passkey: "Ann's <laptop>", At: at, SettingsURL: "https://acme.example/account/settings"}
+		m, err := l.message(context.Background(), n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Text != defaultMessage(n).Text || !strings.HasPrefix(m.HTML, "<!DOCTYPE html>\n<title>"+html.EscapeString(m.Subject)) {
+			t.Errorf("%v: %+v", k, m)
+		}
+		if strings.Contains(m.HTML, "<laptop>") {
+			t.Errorf("%v: the HTML carries an unescaped name", k)
+		}
+		switch k {
+		case SignInCode, SignUpCode, NewAddressCode:
+			if !strings.Contains(m.HTML, `<p class="code">4821 0937</p>`) {
+				t.Errorf("%v: no code in the HTML:\n%s", k, m.HTML)
+			}
+		case PasskeyAdded, PasskeyRemoved:
+			if !strings.Contains(m.HTML, `<a class="button" href="https://acme.example/account/settings">`) {
+				t.Errorf("%v: no link in the HTML:\n%s", k, m.HTML)
+			}
+		}
+	}
+	both := Config{AppName: "Acme", PublicURL: "https://acme.example", SecretKey: strings.Repeat("s", 32), Sender: nopSender{},
+		Message: defaultMessage, Layout: testLayout}
+	if _, err := New(newApp(), both); err == nil {
+		t.Error("accepted Message and Layout together")
+	}
+}
+
 // leakySender fails with everything the message says, as a careless adapter might.
 type leakySender struct{}
 
 func (leakySender) Send(_ context.Context, m email.Message) (string, error) {
-	return "", fmt.Errorf("refused %s: %s %s", strings.ToUpper(m.To), m.Subject, m.Text)
+	return "", fmt.Errorf("refused %s: %s %s %s", strings.ToUpper(m.To), m.Subject, m.Text, m.HTML)
 }
 
 func TestSenderErrorsCarryNothingTheEmailDoes(t *testing.T) {
-	l := &Local{cfg: Config{Sender: leakySender{}, Message: defaultMessage}}
-	for _, n := range []Notice{
-		{Kind: SignInCode, To: "ann@example.com", AppName: "Acme", Code: "4821 0937"},
-		{Kind: AddressChanged, To: "ann@example.com", AppName: "Acme", OldEmail: "ann@example.com", NewEmail: "ann@example.org"},
-		{Kind: PasskeyAdded, To: "ann@example.com", AppName: "Acme", Passkey: "Ann's work laptop"},
+	for _, l := range []*Local{
+		{cfg: Config{Sender: leakySender{}}},
+		{cfg: Config{Sender: leakySender{}, Layout: testLayout}},
 	} {
-		err := l.sendNow(context.Background(), n)
-		if err == nil {
-			t.Fatal("no error")
-		}
-		for _, secret := range []string{"ann@example", "4821", "0937", "Ann's work laptop"} {
-			if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
-				t.Errorf("%v: the error carries %q: %v", n.Kind, secret, err)
+		for _, n := range []Notice{
+			{Kind: SignInCode, To: "ann@example.com", AppName: "Acme", Code: "4821 0937"},
+			{Kind: AddressChanged, To: "ann@example.com", AppName: "Acme", OldEmail: "ann@example.com", NewEmail: "ann@example.org"},
+			{Kind: PasskeyAdded, To: "ann@example.com", AppName: "Acme", Passkey: "Ann's work laptop"},
+		} {
+			err := l.sendNow(context.Background(), n)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			for _, secret := range []string{"ann@example", "4821", "0937", "work laptop"} {
+				if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret)) {
+					t.Errorf("%v: the error carries %q: %v", n.Kind, secret, err)
+				}
 			}
 		}
 	}

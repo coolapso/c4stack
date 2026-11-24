@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/coolapso/c4stack/accounts"
 	"github.com/coolapso/c4stack/app"
 	"github.com/coolapso/c4stack/app/apptest"
@@ -415,7 +417,7 @@ func TestTheWarningGoesToTheAccount(t *testing.T) {
 	f := newFixture(t)
 	f.account(t, "ada@example.com", 1000)
 	f.expiry.cfg.Message = func(n Notice) email.Message {
-		m := defaultMessage(n)
+		m, _ := defaultMessage(context.Background(), n, nil)
 		m.To = "someone@example.com"
 		return m
 	}
@@ -485,5 +487,33 @@ func TestNewNeedsASender(t *testing.T) {
 	f := newFixture(t)
 	if _, err := New(f.a, f.credits, Config{Policy: Policy{InactiveMonths: 12, NoticeDays: 30}, AppName: "Acme", CreditsURL: "https://acme.example"}); err == nil {
 		t.Fatal("expiry without an email sender")
+	}
+}
+
+// The layout gives the default warning an HTML version, and can't go with Message.
+func TestLayout(t *testing.T) {
+	f := newFixture(t)
+	f.account(t, "ada@example.com", 1234)
+	f.expiry.cfg.Layout = func(p email.Page) templ.Component {
+		return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
+			_, _ = io.WriteString(w, "<!DOCTYPE html>\n<title>"+p.Subject+"</title>\n")
+			return p.Body.Render(ctx, w)
+		})
+	}
+	f.now = time.Date(2025, 1, 30, 0, 0, 0, 0, time.UTC)
+	if r := f.run(t); r.Warned != 1 {
+		t.Fatalf("no warning: %+v", r)
+	}
+	m := f.mail.sent[0]
+	if !strings.HasPrefix(m.HTML, "<!DOCTYPE html>\n<title>"+m.Subject) || !strings.Contains(m.HTML, "€12.34") ||
+		!strings.Contains(m.HTML, `<a class="button" href="https://acme.example/account/credits">See your credit</a>`) ||
+		!strings.HasSuffix(m.Text, "\n\nSee your credit: https://acme.example/account/credits\n") {
+		t.Fatalf("warning %+v", m)
+	}
+
+	cfg := f.expiry.cfg
+	cfg.Message = func(Notice) email.Message { return email.Message{} }
+	if _, err := New(f.a, f.credits, cfg); err == nil {
+		t.Fatal("accepted Message and Layout together")
 	}
 }

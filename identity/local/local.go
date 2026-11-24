@@ -121,9 +121,13 @@ type Config struct {
 	// protect the sending domain. Zero means no ceiling. It only adds a limit: the
 	// others are fixed.
 	MaxCodesPerHour int
-	// Message writes the emails. Zero uses plain defaults that name AppName. An email
-	// always goes to Notice.To, whatever the message's To says.
+	// Message writes the emails. Zero uses the default words, which name AppName. An
+	// email always goes to Notice.To, whatever the message's To says.
 	Message func(Notice) email.Message
+	// Layout gives the default emails an HTML version in the app's look, beside their
+	// text. Zero sends them as text alone. It styles only the default words: with
+	// Message, the app writes the HTML too, so the two can't be set together.
+	Layout email.Layout
 }
 
 // Local is the provider. It implements identity.TxProvider, and the profile UI that the
@@ -161,9 +165,6 @@ func New(a *app.App, cfg Config) (*Local, error) {
 	l := &Local{app: a, cfg: cfg, loginPath: "/login", settingsPath: defaultSettings, now: time.Now}
 	if err := l.validate(); err != nil {
 		return nil, err
-	}
-	if l.cfg.Message == nil {
-		l.cfg.Message = defaultMessage
 	}
 	var err error
 	if l.codeKey, err = hkdf.Key(sha256.New, []byte(cfg.SecretKey), nil, "local-code", 32); err != nil {
@@ -213,6 +214,9 @@ func (l *Local) validate() error {
 	}
 	if cfg.MaxCodesPerHour < 0 {
 		return errors.New("local: MaxCodesPerHour cannot be negative")
+	}
+	if cfg.Message != nil && cfg.Layout != nil {
+		return errors.New("local: set Message or Layout, not both; Layout styles the default emails, and Message replaces them")
 	}
 	origin, host, secure, err := canonicalOrigin(cfg.PublicURL)
 	if err != nil {

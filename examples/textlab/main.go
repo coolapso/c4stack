@@ -89,6 +89,7 @@ func setup(ctx context.Context, a *app.App) error {
 		SecretKey:    cfg.SecretKey,
 		Sender:       mailer,
 		SignedInPath: "/account",
+		Layout:       emailLayout, // email.templ
 	})
 	if err != nil {
 		return err

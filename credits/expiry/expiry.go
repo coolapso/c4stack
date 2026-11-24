@@ -73,9 +73,13 @@ type Config struct {
 	AppName string
 	// CreditsURL is the absolute URL of the credits page, linked from the warning.
 	CreditsURL string
-	// Message writes the warning. Zero uses a plain default that names AppName. The
+	// Message writes the warning. Zero uses the default words, which name AppName. The
 	// warning always goes to Notice.To, whatever the message's To says.
 	Message func(Notice) email.Message
+	// Layout gives the default warning an HTML version in the app's look, beside its
+	// text. Zero sends it as text alone. It styles only the default words: with Message,
+	// the app writes the HTML too, so the two can't be set together.
+	Layout email.Layout
 	// OnRun, if set, receives the outcome of every run: the hourly ones, the credits
 	// expire command's and the app's own calls to Run. Use it to record metrics. It
 	// runs after the run released its lock, and must return quickly.
@@ -107,12 +111,11 @@ func New(a *app.App, cr *credits.Credits, cfg Config) (*Expiry, error) {
 		return nil, errors.New("expiry: NoticeDays must be between 1 and 365")
 	case cfg.AppName == "":
 		return nil, errors.New("expiry: AppName is required")
+	case cfg.Message != nil && cfg.Layout != nil:
+		return nil, errors.New("expiry: set Message or Layout, not both; Layout styles the default warning, and Message replaces it")
 	}
 	if u, err := url.Parse(cfg.CreditsURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return nil, errors.New("expiry: CreditsURL must be an absolute URL")
-	}
-	if cfg.Message == nil {
-		cfg.Message = defaultMessage
 	}
 	x := &Expiry{app: a, credits: cr, cfg: cfg, now: time.Now}
 	a.Every("credit expiry", time.Hour, func(ctx context.Context) error {
@@ -393,7 +396,7 @@ func (x *Expiry) dueWarnings(ctx context.Context, now time.Time, after string) (
 // reports whether the provider accepted the warning. If recording fails, the next run
 // sends the warning again, which is safer than expiring credit without one.
 func (x *Expiry) warn(ctx context.Context, now time.Time, d due) (bool, error) {
-	m := x.cfg.Message(Notice{
+	m, err := x.message(ctx, Notice{
 		To:           d.email,
 		AppName:      x.cfg.AppName,
 		BalanceCents: d.balance,
@@ -401,7 +404,9 @@ func (x *Expiry) warn(ctx context.Context, now time.Time, d due) (bool, error) {
 		ExpiresAt:    d.announced,
 		CreditsURL:   x.cfg.CreditsURL,
 	})
-	m.To = d.email
+	if err != nil {
+		return false, err
+	}
 	id, err := x.cfg.Sender.Send(ctx, m)
 	if err != nil {
 		return false, err
@@ -529,17 +534,29 @@ func (x *Expiry) expire(ctx context.Context, now time.Time, accountID string) (i
 	return cents, err
 }
 
-func defaultMessage(n Notice) email.Message {
-	day := n.ExpiresAt.UTC().Format("2 January 2006")
-	return email.Message{
-		To:      n.To,
-		Subject: fmt.Sprintf("Your %s credit expires on %s", n.AppName, day),
-		Text: fmt.Sprintf(`Hello,
-
-You have %s of %s credit that has not been used since %s.
-Unless you use it or buy more credit before %s, it expires on that day.
-
-See your credit: %s
-`, credits.FormatEuros(n.BalanceCents), n.AppName, n.LastActivity.UTC().Format("2 January 2006"), day, n.CreditsURL),
+// message writes the warning: the app's Message, or the default words in the app's
+// Layout. It always goes to n.To.
+func (x *Expiry) message(ctx context.Context, n Notice) (email.Message, error) {
+	var m email.Message
+	if x.cfg.Message != nil {
+		m = x.cfg.Message(n)
+	} else {
+		var err error
+		if m, err = defaultMessage(ctx, n, x.cfg.Layout); err != nil {
+			return email.Message{}, err
+		}
 	}
+	m.To = n.To
+	return m, nil
+}
+
+// defaultMessage writes the warning in the default words.
+func defaultMessage(ctx context.Context, n Notice, layout email.Layout) (email.Message, error) {
+	day := n.ExpiresAt.UTC().Format("2 January 2006")
+	var b email.Body
+	b.Paragraph("Hello,")
+	b.Paragraph(fmt.Sprintf("You have %s of %s credit that has not been used since %s.\nUnless you use it or buy more credit before %s, it expires on that day.",
+		credits.FormatEuros(n.BalanceCents), n.AppName, n.LastActivity.UTC().Format("2 January 2006"), day))
+	b.Link("See your credit", n.CreditsURL)
+	return email.Compose(ctx, fmt.Sprintf("Your %s credit expires on %s", n.AppName, day), b, layout)
 }
