@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
@@ -157,6 +158,55 @@ func TestSend(t *testing.T) {
 	body, _ := io.ReadAll(quotedprintable.NewReader(msg.Body))
 	if !strings.Contains(string(body), "4821 0937. Ça marche.") {
 		t.Fatalf("body %q", body)
+	}
+}
+
+func TestSendWithHTML(t *testing.T) {
+	srv := newFakeServer(t, false)
+	s, err := New(Config{URL: "smtp://" + srv.addr, From: "noreply@acme.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(context.Background(), email.Message{
+		To:      "ann@example.com",
+		Subject: "Your Acme sign-in code",
+		Text:    "Here is your code: 4821 0937. Ça marche.\n",
+		HTML:    "<!DOCTYPE html>\n<p class=\"code\">4821 0937</p>\n<p>Ça marche.</p>\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	msg, err := mail.ReadMessage(strings.NewReader(srv.data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/alternative" {
+		t.Fatalf("content type %q: %v", msg.Header.Get("Content-Type"), err)
+	}
+	r := multipart.NewReader(msg.Body, params["boundary"])
+	var parts []string
+	for {
+		p, err := r.NextRawPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Header.Get("Content-Transfer-Encoding") != "quoted-printable" {
+			t.Fatalf("encoding %q", p.Header.Get("Content-Transfer-Encoding"))
+		}
+		body, _ := io.ReadAll(quotedprintable.NewReader(p))
+		parts = append(parts, p.Header.Get("Content-Type")+"\n"+string(body))
+	}
+	want := []string{
+		"text/plain; charset=utf-8\nHere is your code: 4821 0937. Ça marche.\r\n",
+		"text/html; charset=utf-8\n<!DOCTYPE html>\r\n<p class=\"code\">4821 0937</p>\r\n<p>Ça marche.</p>\r\n",
+	}
+	if len(parts) != 2 || parts[0] != want[0] || parts[1] != want[1] {
+		t.Fatalf("parts: %q", parts)
 	}
 }
 

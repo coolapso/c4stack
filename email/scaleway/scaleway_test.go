@@ -59,6 +59,14 @@ func TestSend(t *testing.T) {
 		got["additional_headers"].([]any)[0].(map[string]any)["value"] != "help@acme.example" {
 		t.Errorf("request %v", got)
 	}
+	if _, ok := got["html"]; ok {
+		t.Errorf("html without HTML: %v", got)
+	}
+	withHTML := m
+	withHTML.HTML = "<p>Body</p>"
+	if _, err := s.Send(context.Background(), withHTML); err != nil || got["html"] != "<p>Body</p>" || got["text"] != "Body" {
+		t.Fatalf("send with HTML: %v %v", got, err)
+	}
 
 	status = http.StatusUnprocessableEntity
 	_, err = s.Send(context.Background(), m)

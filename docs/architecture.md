@@ -33,7 +33,7 @@ registers.
 | `credits` | Opt-in. Ledger, holds, purchases, webhooks, history and the credits page |
 | `credits/expiry` | Opt-in. Expires unused credit after a delivered warning |
 | `subscriptions` | Opt-in. Subscriptions through a payment provider: checkout, webhooks, reviews and the settings panel |
-| `email` | The email sender interface |
+| `email` | The email sender interface, and emails written once as text and HTML in an app's layout |
 | `email/scaleway` | The Scaleway Transactional Email adapter |
 | `email/smtp` | An SMTP adapter, for development with a local mail catcher such as Mailpit |
 | `cmd/c4stack` | The app generator |
@@ -1181,17 +1181,31 @@ checkout that never finished).
 ### email and email/scaleway
 
 ```go
-type Message struct{ To, Subject, Text string }
+type Message struct{ To, Subject, Text, HTML string } // Text required; HTML optional, a whole document
 type Sender interface{ Send(ctx context.Context, m Message) (id string, err error) }
 type Tracker interface {
 	Delivery(ctx context.Context, id string) (Delivery, time.Time, error) // Pending, Delivered, Failed
 }
 type TrackingSender interface{ Sender; Tracker }
+
+type Body struct{ /* unexported */ } // Paragraph(text), Code(code), Link(label, url); Text(), HTML()
+type Page struct {
+	Subject, Preview string // Preview: the start of the text on one line, for mail apps' lists
+	Body             templ.Component
+}
+type Layout func(Page) templ.Component
+func Compose(ctx context.Context, subject string, body Body, layout Layout) (Message, error)
 ```
 
 A nil error from `Send` means the provider accepted the message, not that it arrived.
 The Scaleway adapter reports a message delivered once Scaleway's status is `sent`: the
 recipient's mail system took it.
+
+A module writes its emails as a `Body`, once: its text is the message's
+`Text`, and its HTML (a `p` for each paragraph, a `p.code` for a code, a `p.action`
+holding an `a.button` for a link, and no styles) goes into the app's `Layout`, when the
+module has one, for the message's `HTML`. The two can't say different things. Without a
+layout, a message is text alone.
 
 `scaleway.New(scaleway.Config{SecretKey, ProjectID, Region, From, FromName, ReplyTo})`.
 The region defaults to `fr-par`. Errors carry the HTTP status, never the provider's
@@ -1199,7 +1213,8 @@ response body or the recipient.
 
 `smtp.New(smtp.Config{URL, From, FromName, ReplyTo})` sends to an SMTP server, such as
 Mailpit in development: `smtp://[user:password@]host[:port]`, port 587 by default. It
-requires STARTTLS unless the host is loopback. It reports no delivery, so it is an
+requires STARTTLS unless the host is loopback. A message with HTML goes as
+`multipart/alternative`, its text first. It reports no delivery, so it is an
 `email.Sender`, not a `TrackingSender`.
 
 ## Configuration and naming

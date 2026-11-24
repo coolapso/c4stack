@@ -6,11 +6,16 @@ import (
 	"time"
 )
 
-// Message is a plain-text email to one recipient.
+// Message is an email to one recipient: plain text, and the same in HTML if it has any.
 type Message struct {
 	To      string
 	Subject string
-	Text    string
+	// Text is the message in plain text. It is required: it is what mail apps that
+	// show no HTML, and people who prefer text, read.
+	Text string
+	// HTML is the same message as a whole HTML document, for the mail apps that show
+	// it. Zero sends the text alone.
+	HTML string
 }
 
 // Sender sends transactional email, such as Scaleway Transactional Email.

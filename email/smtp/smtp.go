@@ -13,11 +13,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -164,8 +167,9 @@ func (s *SMTP) Send(ctx context.Context, m email.Message) (string, error) {
 	return id, nil
 }
 
-// compose writes the message: plain text, quoted-printable, with its headers on single
-// lines, so nothing in a subject can add a header.
+// compose writes the message: plain text, or plain text and HTML as alternatives, each
+// quoted-printable, with its headers on single lines, so nothing in a subject can add a
+// header.
 func (s *SMTP) compose(m email.Message) (string, []byte, error) {
 	raw := make([]byte, 16)
 	_, _ = rand.Read(raw)
@@ -185,16 +189,47 @@ func (s *SMTP) compose(m email.Message) (string, []byte, error) {
 	header("Date", time.Now().UTC().Format(time.RFC1123Z))
 	header("Message-ID", id)
 	header("MIME-Version", "1.0")
-	header("Content-Type", "text/plain; charset=utf-8")
-	header("Content-Transfer-Encoding", "quoted-printable")
+	if m.HTML == "" {
+		header("Content-Type", "text/plain; charset=utf-8")
+		header("Content-Transfer-Encoding", "quoted-printable")
+		b.WriteString("\r\n")
+		if err := writeQP(&b, m.Text); err != nil {
+			return "", nil, err
+		}
+		return id, []byte(b.String()), nil
+	}
+	// Text first: mail apps show the last alternative they can.
+	var body strings.Builder
+	mw := multipart.NewWriter(&body)
+	for _, alt := range []struct{ contentType, content string }{
+		{"text/plain; charset=utf-8", m.Text},
+		{"text/html; charset=utf-8", m.HTML},
+	} {
+		w, err := mw.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {alt.contentType},
+			"Content-Transfer-Encoding": {"quoted-printable"},
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		if err := writeQP(w, alt.content); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return "", nil, err
+	}
+	header("Content-Type", `multipart/alternative; boundary="`+mw.Boundary()+`"`)
 	b.WriteString("\r\n")
-	qp := quotedprintable.NewWriter(&b)
-	text := strings.ReplaceAll(strings.ReplaceAll(m.Text, "\r\n", "\n"), "\n", "\r\n")
-	if _, err := qp.Write([]byte(text)); err != nil {
-		return "", nil, err
-	}
-	if err := qp.Close(); err != nil {
-		return "", nil, err
-	}
+	b.WriteString(body.String())
 	return id, []byte(b.String()), nil
+}
+
+// writeQP writes s quoted-printable, with CRLF line ends.
+func writeQP(w io.Writer, s string) error {
+	qp := quotedprintable.NewWriter(w)
+	if _, err := qp.Write([]byte(strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n"))); err != nil {
+		return err
+	}
+	return qp.Close()
 }

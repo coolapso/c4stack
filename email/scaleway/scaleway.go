@@ -96,6 +96,9 @@ func (s *Scaleway) Send(ctx context.Context, m email.Message) (string, error) {
 		"subject":    m.Subject,
 		"text":       m.Text,
 	}
+	if m.HTML != "" {
+		body["html"] = m.HTML
+	}
 	if s.cfg.ReplyTo != "" {
 		body["additional_headers"] = []map[string]string{{"key": "Reply-To", "value": s.cfg.ReplyTo}}
 	}
