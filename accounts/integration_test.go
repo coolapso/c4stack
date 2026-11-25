@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -918,6 +919,140 @@ func TestDeletionChecks(t *testing.T) {
 	if rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusSeeOther || len(f.idp.deleted) != 1 {
 		t.Fatalf("allowed deletion: %d, deleted %v", rec.Code, f.idp.deleted)
 	}
+}
+
+func TestDeletionRequirements(t *testing.T) {
+	f := newFixture(t)
+	// Without requirements, the settings page opens the form in a dialog.
+	if page := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String(); !strings.Contains(page, `data-dialog-open="delete-account-dialog"`) || strings.Contains(page, "delete-requirements") {
+		t.Fatalf("settings page without requirements:\n%s", page)
+	}
+	elsewhere := RequirementState{Detail: "Close it there first.", Action: "Open Elsewhere", URL: "https://elsewhere.example/settings"}
+	var checkErr error
+	var readOnly []bool // whether each check's transaction was read-only
+	f.accounts.RequireForDeletion(DeletionRequirement{Name: "Your account elsewhere is closed", Check: func(ctx context.Context, tx *sql.Tx, id string) (RequirementState, error) {
+		var ro string
+		if err := tx.QueryRowContext(ctx, `SHOW transaction_read_only`).Scan(&ro); err != nil {
+			return RequirementState{}, err
+		}
+		readOnly = append(readOnly, ro == "on")
+		return elsewhere, checkErr
+	}})
+	f.accounts.RequireForDeletion(DeletionRequirement{Name: "Nothing is left to do", Check: func(ctx context.Context, tx *sql.Tx, id string) (RequirementState, error) {
+		return RequirementState{Status: RequirementMet, Detail: "Never shown."}, nil
+	}})
+	if !panics(func() { f.accounts.RequireForDeletion(DeletionRequirement{Name: "No check"}) }) {
+		t.Fatal("a requirement without a check was added")
+	}
+
+	// The settings page links to the delete page, which lists them and the recent
+	// sign-in, and asks for the list again; it offers no form until all are met.
+	if page := f.do(http.MethodGet, "/account/settings", "ada", nil, nil).Body.String(); strings.Contains(page, "delete-account-dialog") || !strings.Contains(page, `href="/account/delete"`) {
+		t.Fatalf("settings page with requirements:\n%s", page)
+	}
+	page := f.do(http.MethodGet, "/account/delete", "ada", nil, nil).Body.String()
+	for _, want := range []string{
+		`id="delete-requirements"`, `hx-get="/account/delete?since=`, `hx-trigger="every 3s"`,
+		"Your account elsewhere is closed", "Close it there first.", `href="https://elsewhere.example/settings" target="_blank" rel="noopener"`, "Open Elsewhere",
+		"Nothing is left to do", "You signed in recently",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("delete page lacks %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, "delete-confirmation") || strings.Contains(page, "Never shown.") || strings.Count(page, "requirement unmet") != 1 || strings.Count(page, "requirement met") != 2 {
+		t.Fatalf("delete page with an unmet requirement:\n%s", page)
+	}
+	if len(readOnly) != 1 || !readOnly[0] {
+		t.Fatalf("listing the requirements ran their checks read-only: %v", readOnly)
+	}
+	// The list asks for itself: only the list, until it has asked for too long.
+	htmx := http.Header{"Hx-Request": {"true"}}
+	since := strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10)
+	rec := f.do(http.MethodGet, "/account/delete?since="+since, "ada", nil, htmx)
+	if body := rec.Body.String(); strings.Contains(body, "<html") || !strings.HasPrefix(body, `<div id="delete-requirements"`) || !strings.Contains(body, "since="+since) || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("the list:\n%s", body)
+	}
+	since = strconv.FormatInt(time.Now().Add(-listFor-time.Minute).Unix(), 10)
+	if body := f.do(http.MethodGet, "/account/delete?since="+since, "ada", nil, htmx).Body.String(); strings.Contains(body, "hx-trigger") || !strings.Contains(body, "stopped checking") {
+		t.Fatalf("the list after asking for too long:\n%s", body)
+	}
+	if body := f.do(http.MethodGet, "/account/delete?since="+since, "ada", nil, nil).Body.String(); !strings.Contains(body, "<html") {
+		t.Fatal("the delete page's address with since, outside HTMX, isn't the page")
+	}
+	// Checking, or a check that fails, shows as being checked.
+	elsewhere = RequirementState{Status: RequirementChecking, Detail: "Asking Elsewhere."}
+	if page := f.do(http.MethodGet, "/account/delete", "ada", nil, nil).Body.String(); !strings.Contains(page, "requirement checking") || !strings.Contains(page, "Asking Elsewhere.") || strings.Contains(page, "Open Elsewhere") {
+		t.Fatalf("delete page while checking:\n%s", page)
+	}
+	checkErr = errors.New("the database went away")
+	if page := f.do(http.MethodGet, "/account/delete", "ada", nil, nil).Body.String(); !strings.Contains(page, "requirement checking") || !strings.Contains(page, "couldn&#39;t be checked just now") {
+		t.Fatalf("delete page with a failing check:\n%s", page)
+	}
+
+	// A deletion refuses while one isn't met, or fails while its check does.
+	if rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusBadGateway || len(f.idp.deleted) != 0 {
+		t.Fatalf("deletion with a failing check: %d, deleted %v", rec.Code, f.idp.deleted)
+	}
+	checkErr = nil
+	rec = f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil)
+	if rec.Code != http.StatusConflict || len(f.idp.deleted) != 0 || !strings.Contains(rec.Body.String(), "Asking Elsewhere.") {
+		t.Fatalf("deletion while checking: %d, deleted %v", rec.Code, f.idp.deleted)
+	}
+	if f.count(t, `SELECT count(*) FROM accounts WHERE deletion_started_at IS NOT NULL`) != 0 {
+		t.Fatal("a refused deletion marked the account")
+	}
+
+	// Once all are met, the form is there; a stale sign-in is one more to do.
+	elsewhere = RequirementState{Status: RequirementMet}
+	old := f.idp.sessions["ada"]
+	old.SignedInAt = time.Now().Add(-identity.RecentSignIn - time.Minute)
+	f.idp.sessions["stale"] = old
+	if page := f.do(http.MethodGet, "/account/delete", "stale", nil, nil).Body.String(); strings.Contains(page, "delete-confirmation") || !strings.Contains(page, "Sign in again") || !strings.Contains(page, "hx-trigger") {
+		t.Fatalf("delete page with a stale sign-in:\n%s", page)
+	}
+	page = f.do(http.MethodGet, "/account/delete", "ada", nil, nil).Body.String()
+	if !strings.Contains(page, "delete-confirmation") || strings.Contains(page, "hx-trigger") || strings.Contains(page, "requirement unmet") {
+		t.Fatalf("delete page with every requirement met:\n%s", page)
+	}
+	readOnly = nil
+	if rec := f.do(http.MethodPost, "/account/delete", "ada", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusSeeOther || len(f.idp.deleted) != 1 {
+		t.Fatalf("deletion with every requirement met: %d, deleted %v", rec.Code, f.idp.deleted)
+	}
+	if len(readOnly) != 1 || readOnly[0] {
+		t.Fatalf("the deletion ran the checks in its own transaction: %v", readOnly)
+	}
+}
+
+func TestDeletionRequirementsWithATxProvider(t *testing.T) {
+	f := newTxFixture(t)
+	f.signUp(t, "ann", "ann@example.com")
+	met := false
+	f.accounts.RequireForDeletion(DeletionRequirement{Name: "Done elsewhere", Check: func(ctx context.Context, tx *sql.Tx, id string) (RequirementState, error) {
+		if met {
+			return RequirementState{Status: RequirementMet}, nil
+		}
+		return RequirementState{}, nil
+	}})
+	if res := f.do(http.MethodPost, "/account/delete", "ann", url.Values{"confirmation": {"DELETE"}}); res.StatusCode != http.StatusConflict {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts`) + f.count(t, `SELECT count(*) FROM tx_users`); n != 2 {
+		t.Fatal("a refused deletion deleted something")
+	}
+	met = true
+	if res := f.do(http.MethodPost, "/account/delete", "ann", url.Values{"confirmation": {"DELETE"}}); res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status once met %d", res.StatusCode)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts`) + f.count(t, `SELECT count(*) FROM tx_users`); n != 0 {
+		t.Fatal("the deletion left something")
+	}
+}
+
+func panics(f func()) (panicked bool) {
+	defer func() { panicked = recover() != nil }()
+	f()
+	return false
 }
 
 func TestDeletionChecksWithATxProvider(t *testing.T) {

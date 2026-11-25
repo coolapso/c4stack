@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -25,26 +26,110 @@ var (
 	ErrCleanupPending = errors.New("accounts: local cleanup is pending")
 )
 
-// DeletionRefused is what a CheckDeletion check returns to refuse a deletion. Reason
-// tells the person what to do first.
+// DeletionRefused is what a CheckDeletion check returns to refuse a deletion, and what
+// Delete returns while a DeletionRequirement isn't met. Reason tells the person what to
+// do first.
 type DeletionRefused struct {
 	Reason string
 }
 
 func (e *DeletionRefused) Error() string { return "accounts: deletion refused: " + e.Reason }
 
-// runChecks runs the CheckDeletion checks inside tx.
+// DeletionRequirement is something that must be true before an account can be deleted,
+// such as that the person closed their account on another service first. With
+// RequireForDeletion, the delete page lists every requirement with its state, asks again
+// every few seconds, and offers to delete only once all are met.
+type DeletionRequirement struct {
+	// Name says what must be true, as the list shows it, such as "No subscription
+	// renews".
+	Name string
+	// Check reports the requirement's state for an account. It runs in a read-only
+	// transaction of its own each time the delete page lists it, and again in the
+	// deletion's transaction, which deletes nothing unless it reports RequirementMet.
+	// An error shows the requirement as being checked, and fails a deletion.
+	Check func(ctx context.Context, tx *sql.Tx, accountID string) (RequirementState, error)
+}
+
+// RequirementStatus is how far a DeletionRequirement is from being met.
+type RequirementStatus int
+
+const (
+	// RequirementUnmet means the person has something to do first. It is the zero
+	// value, so a state left empty never allows a deletion.
+	RequirementUnmet RequirementStatus = iota
+	// RequirementChecking means the answer isn't known yet, such as while another
+	// service is asked. The page asks again in a few seconds.
+	RequirementChecking
+	// RequirementMet means nothing is left to do for it.
+	RequirementMet
+)
+
+// RequirementState is a DeletionRequirement's state for one account.
+type RequirementState struct {
+	Status RequirementStatus
+	// Detail says what to do while the requirement is unmet, or what is being checked.
+	Detail string
+	// Action is a link's text, such as "Open your settings", and URL where it goes,
+	// shown while the requirement is unmet. It opens in a new tab, so the list stays
+	// open and ticks the requirement once it's met.
+	Action, URL string
+}
+
+// errRequirements refuses a deletion while a DeletionRequirement isn't met.
+var errRequirements = &DeletionRefused{Reason: "Something on the list isn't done yet."}
+
+// runChecks runs the CheckDeletion checks and the deletion requirements inside tx.
 func (s *Accounts) runChecks(ctx context.Context, tx *sql.Tx, accountID string) error {
 	for _, check := range s.checks {
 		if err := check(ctx, tx, accountID); err != nil {
 			return err
 		}
 	}
+	for _, r := range s.requirements {
+		state, err := r.Check(ctx, tx, accountID)
+		if err != nil {
+			return err
+		}
+		if state.Status != RequirementMet {
+			return errRequirements
+		}
+	}
 	return nil
 }
 
-// refusal returns the reason a check refuses to delete the account now, if one does.
-// The delete form shows it instead of asking.
+// requirementView is a deletion requirement as the delete page lists it.
+type requirementView struct {
+	Name string
+	RequirementState
+}
+
+// requirementStates reports each deletion requirement's state for the delete page. Each
+// runs in a read-only transaction of its own, so one that fails leaves the others'
+// answers; it shows as being checked.
+func (s *Accounts) requirementStates(ctx context.Context, accountID string, log *slog.Logger) []requirementView {
+	views := make([]requirementView, 0, len(s.requirements))
+	for _, r := range s.requirements {
+		state, err := s.requirementState(ctx, r, accountID)
+		if err != nil {
+			log.Warn("checking a deletion requirement failed", "requirement", r.Name, "error", err)
+			state = RequirementState{Status: RequirementChecking, Detail: "It couldn't be checked just now. Trying again."}
+		}
+		views = append(views, requirementView{Name: r.Name, RequirementState: state})
+	}
+	return views
+}
+
+func (s *Accounts) requirementState(ctx context.Context, r DeletionRequirement, accountID string) (RequirementState, error) {
+	tx, err := s.app.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return RequirementState{}, err
+	}
+	defer tx.Rollback()
+	return r.Check(ctx, tx, accountID)
+}
+
+// refusal returns the reason a CheckDeletion check refuses to delete the account now, if
+// one does. The delete form shows it instead of asking.
 func (s *Accounts) refusal(ctx context.Context, accountID string) (string, error) {
 	if len(s.checks) == 0 {
 		return "", nil
@@ -55,10 +140,12 @@ func (s *Accounts) refusal(ctx context.Context, accountID string) (string, error
 	}
 	defer tx.Rollback()
 	var refused *DeletionRefused
-	if err := s.runChecks(ctx, tx, accountID); errors.As(err, &refused) {
-		return refused.Reason, nil
-	} else if err != nil {
-		return "", err
+	for _, check := range s.checks {
+		if err := check(ctx, tx, accountID); errors.As(err, &refused) {
+			return refused.Reason, nil
+		} else if err != nil {
+			return "", err
+		}
 	}
 	return "", nil
 }
@@ -66,8 +153,9 @@ func (s *Accounts) refusal(ctx context.Context, accountID string) (string, error
 // Delete deletes the signed-in account: first the identity at the provider, then, once
 // the provider confirms, the local data in one transaction with every OnDelete hook.
 // It continues if the browser disconnects, and clears the browser session afterwards.
-// A CheckDeletion check that refuses stops it before the provider is asked, with an
-// error that wraps ErrNotDeleted and the *DeletionRefused.
+// A CheckDeletion check that refuses, or a DeletionRequirement that isn't met, stops it
+// before the provider is asked, with an error that wraps ErrNotDeleted and a
+// *DeletionRefused.
 //
 // A provider that keeps its users in the app's database (an identity.TxProvider) deletes
 // them inside that one transaction, so everything is deleted or nothing is, and the
@@ -160,7 +248,7 @@ func (s *Accounts) deleteSignedIn(ctx context.Context, r *http.Request, accountI
 // checkInTx runs the checks in a transaction of their own, for a provider outside the
 // app's database, before it is asked to delete the identity.
 func (s *Accounts) checkInTx(ctx context.Context, accountID string) error {
-	if len(s.checks) == 0 {
+	if len(s.checks) == 0 && len(s.requirements) == 0 {
 		return nil
 	}
 	tx, err := s.app.DB().BeginTx(ctx, nil)

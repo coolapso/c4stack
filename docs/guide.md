@@ -98,6 +98,44 @@ accts.OnDelete(func(ctx context.Context, tx *sql.Tx, accountID string) error {
 
 Never change a migration file once it has been applied anywhere. Add a new one.
 
+## Ask for something before an account is deleted
+
+Optionally, an app can require things before an account can be deleted, such as that
+the person closed their account on another of its services first. The delete page then
+lists them, each with its state and what to do, and a recent sign-in last; it asks for
+the list again every few seconds and offers the form once all are met. Without any, it
+asks to confirm at once. A deletion checks them all again, in its own transaction:
+
+```go
+accts.RequireForDeletion(accounts.DeletionRequirement{
+	Name: "Your account on notes.example.com is deleted",
+	Check: func(ctx context.Context, tx *sql.Tx, accountID string) (accounts.RequirementState, error) {
+		var gone sql.NullBool // answered by a worker that asks the other service
+		err := tx.QueryRowContext(ctx, `
+			SELECT gone
+			FROM closing_checks
+			WHERE account_id = $1 AND answered_at > now() - interval '2 minutes'`, accountID,
+		).Scan(&gone)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return accounts.RequirementState{Status: accounts.RequirementChecking, Detail: "Asking notes.example.com."}, nil
+		case err != nil:
+			return accounts.RequirementState{}, err
+		case !gone.Bool:
+			return accounts.RequirementState{
+				Detail: "Delete it there first, in its settings.",
+				Action: "Open notes.example.com",
+				URL:    "https://notes.example.com/settings",
+			}, nil
+		}
+		return accounts.RequirementState{Status: accounts.RequirementMet}, nil
+	},
+})
+```
+
+While the page lists them, checks run in read-only transactions: one that asks another
+system records the question with the app's own database handle, and a worker answers it.
+
 ## Enable API keys, credits or expiry
 
 Each module needs its migrations in `main.go`, its constructor, and a `Mount` for its

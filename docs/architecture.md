@@ -501,6 +501,13 @@ func (s *Accounts) Count(ctx context.Context) (int, error)
 func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) // refuse: *DeletionRefused
+func (s *Accounts) RequireForDeletion(r DeletionRequirement) // optional: the delete page lists them
+type DeletionRequirement struct {
+	Name  string
+	Check func(ctx context.Context, tx *sql.Tx, accountID string) (RequirementState, error)
+}
+type RequirementState struct{ Status RequirementStatus; Detail, Action, URL string }
+// RequirementStatus: RequirementUnmet (the zero value), RequirementChecking, RequirementMet
 func (s *Accounts) AddSection(section func(c *gin.Context) templ.Component) // a panel on the settings page
 func (s *Accounts) Delete(c *gin.Context) error // ErrNotDeleted or ErrCleanupPending on failure
 func (s *Accounts) Mount(r gin.IRouter, layout ui.Layout) // every page at its path
@@ -536,11 +543,27 @@ reorder what others read. It is the account's, whichever identity signed in, and
 with it on deletion. The `oidc` provider gives it to clients under the `profile` scope.
 
 **Other modules** add panels to the settings page with `AddSection`, after the
-account's own and before deletion, and can refuse a deletion with `CheckDeletion`, such
-as `subscriptions` while a subscription would charge again. Checks run before the
-identity provider is asked, in the deletion's transaction for a `TxProvider`, so a
-refusal deletes nothing. The delete page and the settings page's dialog show the
-refusal's reason instead of the form.
+account's own and before deletion, and can refuse a deletion with `CheckDeletion`.
+Checks run before the identity provider is asked, in the deletion's transaction for a
+`TxProvider`, so a refusal deletes nothing. The delete page and the settings page's
+dialog show the refusal's reason instead of the form.
+
+**Deletion requirements** are optional: things that must be true before an account
+can be deleted, which the person sees and does one by one, such as an app's "Your
+account on our other service is deleted".
+An app with none keeps the plain delete form. With any, the delete page lists them,
+each met (✓), being checked, or unmet with what to do and a link to do it in a new tab,
+and a recent sign-in last; it offers the form only once all are met. The settings page
+then links to the delete page instead of opening a dialog, so the list keeps an address
+of its own while the person is away doing what it asks. The list asks for itself again
+(`?since=`, with HTMX) every 3 seconds while one isn't met, and stops after 10 minutes
+with a "Check again" link, so a forgotten tab doesn't keep asking. Listing runs each
+check in a read-only transaction of its own, so one that fails shows as being checked
+without hiding the others. A deletion runs them all again with the checks, and goes
+ahead only if each reports met: the list is only what the person sees. A requirement
+that needs another system's answer, which no transaction can wait for, records the
+question in its app's own table and reports `RequirementChecking` until a worker has
+answered it.
 
 **Finding the account.** A sign-in finds its account by provider and subject. An
 identity the app has not seen joins the account whose `primary_email` is its verified
@@ -1365,6 +1388,7 @@ These features were considered and decided as follows.
 | JSON metadata on ledger entries | No | A description and a reference are enough. App-specific records go in app tables. |
 | A payment completed after its account was deleted | Review | It is recorded as paid without credit; the right action is a refund, which is an operator decision. |
 | A recent sign-in before deletion and passkey changes | Yes, 5 minutes | It proves the owner is present rather than an unattended browser. Five minutes is Searchbase's window for passkey changes; one window keeps one rule and one message. |
+| The deletion requirements' list asking again | Every 3 seconds, for 10 minutes | Often enough to tick a requirement soon after it is met elsewhere. It stops so that a forgotten tab doesn't keep asking the app, and whatever its requirements ask, for as long as it stays open. |
 | A snapshot read for the credit summary | Yes | One read-only, repeatable-read transaction keeps the balance and holds consistent. |
 | Serving outdated asset hashes | Yes, uncached | Pages from the previous release keep working during a rolling deploy. |
 | Deleting an account with a subscription that renews | Refused until it's canceled | Deleting it would leave the subscription charging nobody. Canceling at the period's end is enough, so nobody waits for a yearly plan to run out. |

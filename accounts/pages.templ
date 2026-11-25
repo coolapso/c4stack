@@ -1,6 +1,8 @@
 package accounts
 
 import (
+	"strconv"
+
 	"github.com/coolapso/c4stack/ui"
 	"github.com/gin-gonic/gin"
 )
@@ -51,14 +53,20 @@ templ settingsPage(v settingsView) {
 				<h2 id="delete-title">Delete account</h2>
 				<p>Permanently remove your account and its data. Records the law requires us to keep lose their link to you.</p>
 			</div>
-			<a class="btn small danger" href={ templ.SafeURL(v.paths.Delete) } data-dialog-open="delete-account-dialog">Delete account</a>
+			if v.checklist {
+				<a class="btn small danger" href={ templ.SafeURL(v.paths.Delete) }>Delete account</a>
+			} else {
+				<a class="btn small danger" href={ templ.SafeURL(v.paths.Delete) } data-dialog-open="delete-account-dialog">Delete account</a>
+			}
 		</div>
 	</section>
 	<div class="cluster">
 		@signOutForm(v, "", "Sign out", "btn ghost small")
 	</div>
-	@ui.Dialog(ui.DialogProps{ID: "delete-account-dialog", Title: "Delete your account?", Danger: true}) {
-		@deleteForm(v, true)
+	if !v.checklist {
+		@ui.Dialog(ui.DialogProps{ID: "delete-account-dialog", Title: "Delete your account?", Danger: true}) {
+			@deleteForm(v, true)
+		}
 	}
 }
 
@@ -75,9 +83,109 @@ templ deletePage(v settingsView) {
 		<section class="panel danger" aria-labelledby="delete-title">
 			<h2 id="delete-title">Delete account</h2>
 			<p>You are signed in as <strong>{ v.account.Email }</strong>.</p>
-			@deleteForm(v, false)
+			if v.checklist {
+				@deletionList(v)
+			} else {
+				@deleteForm(v, false)
+			}
 		</section>
 	</div>
+}
+
+// deletionList lists the deletion requirements, a recent sign-in last, and asks to
+// confirm once all are met. Until then it asks for itself again every few seconds, for
+// up to listFor, and then offers to check again.
+templ deletionList(v settingsView) {
+	<div
+		id="delete-requirements"
+		class="stack"
+		if v.asking() {
+			hx-get={ v.paths.Delete + "?since=" + strconv.FormatInt(v.since, 10) }
+			hx-trigger={ "every " + listEvery.String() }
+			hx-swap="outerHTML"
+		}
+	>
+		if v.refused != "" {
+			<p class="notice warning" role="alert">{ v.refused }</p>
+		}
+		<p>First, all of these must be done:</p>
+		<ul class="item-list" role="list">
+			for _, r := range v.requirements {
+				<li class={ "item", "requirement", requirementClass(r.Status) }>
+					@requirementMark(r.Status)
+					<div class="item-main">
+						<span>{ r.Name }</span>
+						if r.Status != RequirementMet && r.Detail != "" {
+							<span class="item-detail">{ r.Detail }</span>
+						}
+						if r.Status == RequirementUnmet && r.URL != "" {
+							<div class="requirement-action">
+								<a class="btn small" href={ templ.SafeURL(r.URL) } target="_blank" rel="noopener">
+									{ r.Action }
+									<span class="sr-only">(opens in a new tab)</span>
+								</a>
+							</div>
+						}
+					</div>
+				</li>
+			}
+			<li class={ "item", "requirement", requirementClass(v.recentStatus()) }>
+				@requirementMark(v.recentStatus())
+				<div class="item-main">
+					<span>You signed in recently</span>
+					if !v.recent {
+						<span class="item-detail">For your security, deleting your account needs a sign-in from the last few minutes.</span>
+						<div class="requirement-action">
+							if v.confirmURL != "" {
+								<a class="btn small" href={ templ.SafeURL(v.confirmURL) }>Confirm it's you</a>
+							} else {
+								@signOutForm(v, v.signInAgain, "Sign in again", "btn small")
+							}
+						</div>
+					}
+				</div>
+			</li>
+		</ul>
+		switch  {
+			case v.ready():
+				@deleteForm(v, false)
+			case v.stopped:
+				<p class="item-detail">This page stopped checking by itself.</p>
+				<div>
+					<a class="btn small" href={ templ.SafeURL(v.paths.Delete) }>Check again</a>
+				</div>
+			default:
+				<p class="item-detail">This list checks again by itself every few seconds.</p>
+				<noscript>
+					<div>
+						<a class="btn small" href={ templ.SafeURL(v.paths.Delete) }>Check again</a>
+					</div>
+				</noscript>
+		}
+	</div>
+}
+
+templ requirementMark(status RequirementStatus) {
+	<span class="requirement-mark" aria-hidden="true">
+		switch status {
+			case RequirementMet:
+				✓
+			case RequirementChecking:
+				@ui.Spinner()
+			default:
+				✗
+		}
+	</span>
+	<span class="sr-only">
+		switch status {
+			case RequirementMet:
+				Done:
+			case RequirementChecking:
+				Checking:
+			default:
+				Not done yet:
+		}
+	</span>
 }
 
 templ deleteForm(v settingsView, inDialog bool) {

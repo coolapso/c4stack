@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -129,6 +130,15 @@ type settingsView struct {
 	sections []templ.Component
 	// refused is why the account can't be deleted now; the delete form shows it.
 	refused string
+	// checklist is set when the app has deletion requirements: the delete page lists
+	// them, and the settings page links to it instead of opening a dialog.
+	checklist bool
+	// requirements are the deletion requirements' states, on the delete page.
+	requirements []requirementView
+	// since is when the delete page started asking, as Unix seconds; stopped is set once
+	// it has asked for longer than listFor.
+	since   int64
+	stopped bool
 	// signInAgain is the sign-out form's next path when deletion needs a fresh sign-in.
 	signInAgain string
 	// confirmURL is the provider's page to confirm it's the user, which replaces the
@@ -154,6 +164,7 @@ func (p *Pages) view(c *gin.Context) settingsView {
 	if cf, ok := p.s.idp.(confirmer); ok {
 		v.confirmURL = cf.ConfirmURL(paths.Delete)
 	}
+	v.checklist = len(p.s.requirements) > 0
 	refused, err := p.s.refusal(c.Request.Context(), v.account.ID)
 	if err != nil {
 		web.Log(c).Error("checking whether the account can be deleted failed", "error", err)
@@ -239,33 +250,107 @@ func (p *Pages) SaveName(c *gin.Context) {
 	c.Redirect(http.StatusSeeOther, next)
 }
 
-// DeleteForm asks to confirm the deletion.
-func (p *Pages) DeleteForm(c *gin.Context) {
-	p.layout.Render(c, http.StatusOK, "Delete account", deletePage(p.view(c)))
+// Deletion requirements: the delete page asks for their states every listEvery, for up
+// to listFor, then offers to check again. Asking without end would keep a forgotten tab
+// asking the app, and whatever the requirements ask, for as long as it stays open.
+const (
+	listEvery = 3 * time.Second
+	listFor   = 10 * time.Minute
+)
+
+// listRequirements fills in the deletion requirements' states, when the app has any.
+func (p *Pages) listRequirements(c *gin.Context, v *settingsView) {
+	if !v.checklist {
+		return
+	}
+	now := time.Now()
+	v.since = now.Unix()
+	if since, err := strconv.ParseInt(c.Query("since"), 10, 64); err == nil && since <= v.since {
+		v.since = since
+	}
+	v.stopped = now.Sub(time.Unix(v.since, 0)) > listFor
+	v.requirements = p.s.requirementStates(c.Request.Context(), v.account.ID, web.Log(c))
 }
 
-// Delete deletes the account once the user typed DELETE after a recent sign-in.
+// recentStatus is the recent sign-in's state, as the deletion list shows it.
+func (v settingsView) recentStatus() RequirementStatus {
+	if v.recent {
+		return RequirementMet
+	}
+	return RequirementUnmet
+}
+
+// ready reports whether nothing stands in the way of deleting the account: no check
+// refuses, the sign-in is recent, and every deletion requirement is met.
+func (v settingsView) ready() bool {
+	if v.refused != "" || !v.recent {
+		return false
+	}
+	for _, r := range v.requirements {
+		if r.Status != RequirementMet {
+			return false
+		}
+	}
+	return true
+}
+
+// asking reports whether the deletion list asks for itself again.
+func (v settingsView) asking() bool { return !v.ready() && !v.stopped }
+
+// requirementClass styles a requirement for its status.
+func requirementClass(status RequirementStatus) string {
+	switch status {
+	case RequirementMet:
+		return "met"
+	case RequirementChecking:
+		return "checking"
+	}
+	return "unmet"
+}
+
+// DeleteForm asks to confirm the deletion. With deletion requirements, it lists them
+// first; the list asks for itself again with "since", and gets only the list.
+func (p *Pages) DeleteForm(c *gin.Context) {
+	v := p.view(c)
+	p.listRequirements(c, &v)
+	if v.checklist && c.Query("since") != "" && c.GetHeader("HX-Request") == "true" {
+		c.Header("Cache-Control", "no-store")
+		ui.Render(c, http.StatusOK, deletionList(v))
+		return
+	}
+	p.layout.Render(c, http.StatusOK, "Delete account", deletePage(v))
+}
+
+// Delete deletes the account once the user typed DELETE after a recent sign-in, and
+// every deletion requirement is met.
 func (p *Pages) Delete(c *gin.Context) {
 	v := p.view(c)
+	render := func(status int) {
+		p.listRequirements(c, &v)
+		p.layout.Render(c, status, "Delete account", deletePage(v))
+	}
 	if c.PostForm("confirmation") != "DELETE" {
 		v.deleteError = "Type DELETE to confirm."
-		p.layout.Render(c, http.StatusUnprocessableEntity, "Delete account", deletePage(v))
+		render(http.StatusUnprocessableEntity)
 		return
 	}
 	if !v.recent {
-		p.layout.Render(c, http.StatusForbidden, "Delete account", deletePage(v))
+		render(http.StatusForbidden)
 		return
 	}
 	err := p.s.Delete(c)
 	var refused *DeletionRefused
 	switch {
+	case errors.Is(err, errRequirements):
+		v.notice = errRequirements.Reason
+		render(http.StatusConflict)
 	case errors.As(err, &refused):
 		v.refused = refused.Reason
-		p.layout.Render(c, http.StatusConflict, "Delete account", deletePage(v))
+		render(http.StatusConflict)
 	case errors.Is(err, ErrNotDeleted):
 		web.Log(c).Warn("account deletion failed at the identity provider", "error", err)
 		v.notice = "Your account could not be deleted right now. Nothing was removed. Try again in a moment."
-		p.layout.Render(c, http.StatusBadGateway, "Delete account", deletePage(v))
+		render(http.StatusBadGateway)
 	case errors.Is(err, ErrCleanupPending):
 		p.layout.Render(c, http.StatusInternalServerError, "Account deleted", deletedPage(true))
 	case err != nil:

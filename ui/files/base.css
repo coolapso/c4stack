@@ -471,6 +471,48 @@ table {
     font-size: var(--text-sm);
 }
 
+/* A checklist item: its mark, what it asks, and a link to do it. */
+.requirement {
+    align-items: flex-start;
+    justify-content: flex-start;
+}
+
+.requirement > .item-main {
+    flex: 1 1 14rem;
+}
+
+.requirement-mark {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    color: var(--muted);
+    font-weight: 700;
+}
+
+.requirement-mark > .spinner {
+    display: inline-block;
+}
+
+.requirement-action {
+    margin-top: var(--space-2);
+}
+
+.requirement.met .requirement-mark {
+    border-color: var(--success-line);
+    background: var(--success-surface);
+    color: var(--success);
+}
+
+.requirement.unmet .requirement-mark {
+    border-color: var(--danger-line);
+    background: var(--danger-surface);
+    color: var(--danger);
+}
+
 .empty {
     padding: var(--space-5);
     border: 1px dashed var(--line-strong);

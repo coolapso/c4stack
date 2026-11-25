@@ -117,9 +117,11 @@ type Accounts struct {
 	txp   identity.TxProvider
 	cfg   Config
 	hooks []func(ctx context.Context, tx *sql.Tx, accountID string) error
-	// checks can refuse a deletion; sections are other modules' settings panels.
-	checks   []func(ctx context.Context, tx *sql.Tx, accountID string) error
-	sections []func(c *gin.Context) templ.Component
+	// checks can refuse a deletion, and requirements must be met before one; sections
+	// are other modules' settings panels.
+	checks       []func(ctx context.Context, tx *sql.Tx, accountID string) error
+	requirements []DeletionRequirement
+	sections     []func(c *gin.Context) templ.Component
 }
 
 // New returns the accounts module for idp. It registers the accounts delete-local
@@ -159,6 +161,22 @@ func New(a *app.App, idp identity.Provider, cfg Config) (*Accounts, error) {
 // whose reason the delete page shows; any other error fails the deletion.
 func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) {
 	s.checks = append(s.checks, check)
+}
+
+// RequireForDeletion adds something that must be true before an account can be deleted,
+// such as that the person closed their account on another service first. It's optional:
+// without requirements, the delete page asks to confirm at once. With any, the page
+// lists them, a recent sign-in among them, each with its state, asks again every few
+// seconds while one isn't met, and asks to confirm only once all are. The settings page
+// then links to the delete page instead of opening its form in a dialog, so the list
+// keeps its own address while the person goes to do what it asks. Requirements are
+// listed in the order they were added, and checked again before anything is deleted.
+// It panics without a name or a check, which is a programming error.
+func (s *Accounts) RequireForDeletion(r DeletionRequirement) {
+	if r.Name == "" || r.Check == nil {
+		panic("accounts: a deletion requirement needs a name and a check")
+	}
+	s.requirements = append(s.requirements, r)
 }
 
 // AddSection adds a panel to the settings page, after the account's own and before
