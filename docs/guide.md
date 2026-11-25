@@ -135,6 +135,7 @@ accts.RequireForDeletion(accounts.DeletionRequirement{
 
 While the page lists them, checks run in read-only transactions: one that asks another
 system records the question with the app's own database handle, and a worker answers it.
+`subscriptions` adds "No subscription renews".
 
 ## Enable API keys, credits or expiry
 

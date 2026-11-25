@@ -549,8 +549,8 @@ Checks run before the identity provider is asked, in the deletion's transaction 
 dialog show the refusal's reason instead of the form.
 
 **Deletion requirements** are optional: things that must be true before an account
-can be deleted, which the person sees and does one by one, such as an app's "Your
-account on our other service is deleted".
+can be deleted, which the person sees and does one by one, such as `subscriptions`'s
+"No subscription renews", or an app's "Your account on our other service is deleted".
 An app with none keeps the plain delete form. With any, the delete page lists them,
 each met (✓), being checked, or unmet with what to do and a link to do it in a new tab,
 and a recent sign-in last; it offers the form only once all are met. The settings page
@@ -1175,8 +1175,9 @@ its reason:
 | `several_items`, `unknown_status`, `missing_reference`, `checkout_not_completed` | The provider's event can't be read as one subscription's state. |
 
 **Deletion.** An account can't be deleted while a subscription would charge it again:
-the delete page says to cancel it first, and deletion works right after, while the
-canceled subscription runs out (`accounts.CheckDeletion`). The records stay, without
+the delete page lists "No subscription renews", unmet with a word to cancel it first, and
+deletion works right after, while the canceled subscription runs out
+(`accounts.RequireForDeletion`). The records stay, without
 their account, target or provider customer; the provider's subscription ID stays, so
 late webhooks still find them. A checkout completed after the deletion, or a deleted
 account's subscription that comes back to life, is canceled at the provider at once and

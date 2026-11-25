@@ -183,7 +183,7 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, erro
 		s.byProvider[p.ProviderID] = p
 		s.order = append(s.order, p)
 	}
-	accts.CheckDeletion(s.checkDeletion)
+	accts.RequireForDeletion(accounts.DeletionRequirement{Name: "No subscription renews", Check: s.checkDeletion})
 	accts.OnDelete(s.forget)
 	a.Every("subscriptions cleanup", time.Hour, s.cleanup)
 	a.Every("subscription changes", changeCheck, s.applyDue)
@@ -783,9 +783,9 @@ func (s *Subscriptions) PortalURL(ctx context.Context, accountID string) (string
 	return s.payments.CustomerPortal(ctx, customer.String)
 }
 
-// checkDeletion refuses to delete an account while one of its subscriptions would
+// checkDeletion keeps an account from being deleted while one of its subscriptions would
 // charge it again: deleting the account would leave it charging nobody.
-func (s *Subscriptions) checkDeletion(ctx context.Context, tx *sql.Tx, accountID string) error {
+func (s *Subscriptions) checkDeletion(ctx context.Context, tx *sql.Tx, accountID string) (accounts.RequirementState, error) {
 	var live bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -794,12 +794,12 @@ func (s *Subscriptions) checkDeletion(ctx context.Context, tx *sql.Tx, accountID
 		    WHERE account_id = $1 AND status IN (`+liveStatuses+`)
 		)`, accountID,
 	).Scan(&live); err != nil {
-		return err
+		return accounts.RequirementState{}, err
 	}
 	if live {
-		return &accounts.DeletionRefused{Reason: "You have a subscription that renews. Cancel it on your account settings page first; you can delete your account right after."}
+		return accounts.RequirementState{Detail: "You have a subscription that renews. Cancel it on your account settings page first; you can delete your account right after."}, nil
 	}
-	return nil
+	return accounts.RequirementState{Status: accounts.RequirementMet}, nil
 }
 
 // forget runs when an account is deleted: the subscriptions' records stay, for the

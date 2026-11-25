@@ -312,7 +312,10 @@ func TestPlans(t *testing.T) {
 	if cost := analyse("pro-1"); cost != 1 {
 		t.Fatalf("analysis on Pro: %v", cost)
 	}
-	// While it renews, the account can't be deleted.
+	// While it renews, the account can't be deleted: the delete page lists it.
+	if body := b.do(http.MethodGet, "/account/delete", nil, nil).Body.String(); !strings.Contains(body, "No subscription renews") || !strings.Contains(body, "You have a subscription that renews.") || strings.Contains(body, "delete-confirmation") {
+		t.Fatalf("delete page with a plan: %s", body)
+	}
 	if rec := b.do(http.MethodPost, "/account/delete", url.Values{"confirmation": {"DELETE"}}, nil); rec.Code != http.StatusConflict {
 		t.Fatalf("deletion with a plan: %d", rec.Code)
 	}
