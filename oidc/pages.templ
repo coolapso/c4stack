@@ -1,0 +1,11 @@
+package oidc
+
+// handBackPage takes the browser back to the client when a redirect can't (handBack):
+// the Refresh header moves on at once, and the link is there if it doesn't.
+templ handBackPage(host, target string) {
+	<div class="page-header">
+		<h1>Back to { host }</h1>
+		<p class="lead">You're signed in. If { host } doesn't open by itself, continue there.</p>
+	</div>
+	<p><a class="btn primary" href={ templ.SafeURL(target) }>Continue to { host }</a></p>
+}

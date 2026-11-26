@@ -136,7 +136,38 @@ func (p *Provider) answer(c *gin.Context, redirectURI string, response any) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.Redirect(http.StatusSeeOther, target)
+	if fromElsewhere(c.Request) {
+		c.Redirect(http.StatusSeeOther, target)
+		return
+	}
+	p.handBack(c, target)
+}
+
+// fromElsewhere reports whether the browser came to the provider from another site,
+// such as the client's, or from its address bar, rather than through this app's own
+// pages. Only then does a redirect to the client surely get there: the sign-in pages'
+// forms (the code, the name, confirming) lead here through redirects with the continue
+// URL as next, and a browser stops a form's navigation at any origin the form's page
+// doesn't allow in its form-action, which allows only the app's own. A browser without
+// Sec-Fetch-Site gets the page too.
+func fromElsewhere(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "cross-site", "same-site", "none":
+		return true
+	}
+	return false
+}
+
+// handBack answers with a page that takes the browser to target by itself, with a
+// Refresh header, which is no form's navigation, so no form-action stops it; and with a
+// link to it, in case the browser doesn't refresh.
+func (p *Provider) handBack(c *gin.Context, target string) {
+	host := "the app"
+	if u, err := url.Parse(target); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	c.Header("Refresh", "0; url="+target)
+	p.layout.Render(c, http.StatusOK, "Back to "+host, handBackPage(host, target))
 }
 
 // refuse answers the client with an error, such as access_denied.

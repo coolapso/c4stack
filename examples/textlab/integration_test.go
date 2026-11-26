@@ -211,8 +211,11 @@ func TestOIDC(t *testing.T) {
 		t.Fatalf("discovery %v", got)
 	}
 	var cookies []*http.Cookie
+	// The client sends the browser over, so it comes from another site, and the
+	// provider redirects it back (TestOIDCSignInBrowser has the sign-in pages' way).
 	get := func(target string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, origin+strings.TrimPrefix(target, origin), nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
 		req.AddCookie(&http.Cookie{Name: "session", Value: "ada"})
 		for _, c := range cookies {
 			req.AddCookie(c)

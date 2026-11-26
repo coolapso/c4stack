@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -122,14 +123,17 @@ func (f *fixture) client(_ context.Context, id string) (Client, error) {
 	return c, nil
 }
 
-// browser keeps cookies between requests, as a browser does.
+// browser keeps cookies between requests, as a browser does. It says it came from
+// another site (Sec-Fetch-Site), as one the client sent over does, so the provider
+// redirects it back to the client; site changes that, as TestHandBack does.
 type browser struct {
 	f       *fixture
 	cookies map[string]*http.Cookie
+	site    string
 }
 
 func (f *fixture) browser(session string) *browser {
-	b := &browser{f: f, cookies: map[string]*http.Cookie{}}
+	b := &browser{f: f, cookies: map[string]*http.Cookie{}, site: "cross-site"}
 	if session != "" {
 		b.cookies["session"] = &http.Cookie{Name: "session", Value: session}
 	}
@@ -143,6 +147,9 @@ func (b *browser) get(target string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	for _, c := range b.cookies {
 		req.AddCookie(c)
+	}
+	if b.site != "" {
+		req.Header.Set("Sec-Fetch-Site", b.site)
 	}
 	rec := httptest.NewRecorder()
 	b.f.r.ServeHTTP(rec, req)
@@ -719,6 +726,70 @@ func TestAllow(t *testing.T) {
 	}
 	if strings.Join(asked, ",") != "notes bob@example.com,notes ann@example.com" {
 		t.Errorf("asked %v", asked)
+	}
+}
+
+// TestHandBack: a browser that comes through the app's own pages (a sign-in page's form
+// leads to the continue page through redirects), or says nothing of where it came from,
+// gets a page that takes it back to the client by itself, not a redirect, which a
+// browser stops at the client's origin when a form's page doesn't allow it in its
+// form-action. Errors for the client go back the same way.
+func TestHandBack(t *testing.T) {
+	f := newFixture(t, func(cfg *Config) {
+		cfg.Allow = func(_ context.Context, _ string, a accounts.Account) error {
+			if a.Email == "bob@example.com" {
+				return errors.New("not invited")
+			}
+			return nil
+		}
+	})
+	back := func(t *testing.T, rec *httptest.ResponseRecorder) *url.URL {
+		t.Helper()
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Location") != "" {
+			t.Fatalf("%d %v\n%s", rec.Code, rec.Header(), rec.Body.String())
+		}
+		refresh := rec.Header().Get("Refresh")
+		target, ok := strings.CutPrefix(refresh, "0; url=")
+		u, err := url.Parse(target)
+		if !ok || err != nil || !strings.HasPrefix(target, redirectURI+"?") {
+			t.Fatalf("Refresh %q", refresh)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "Back to notes.example.com") || !strings.Contains(body, `href="`+html.EscapeString(target)+`"`) {
+			t.Errorf("the page doesn't link back:\n%s", body)
+		}
+		return u
+	}
+	for _, site := range []string{"same-origin", ""} {
+		t.Run(fmt.Sprintf("Sec-Fetch-Site %q", site), func(t *testing.T) {
+			c := newRP("notes", redirectURI)
+			b := f.browser("ann")
+			cont := b.authorize(t, c, nil)
+			b.site = site
+			u := back(t, b.get(cont.String()))
+			if u.Query().Get("code") == "" || u.Query().Get("state") != c.state {
+				t.Fatalf("sent to %s", u)
+			}
+
+			c = newRP("notes", redirectURI)
+			b = f.browser("bob")
+			cont = b.authorize(t, c, nil)
+			b.site = site
+			u = back(t, b.get(cont.String()))
+			if u.Query().Get("error") != "access_denied" || u.Query().Get("state") != c.state || u.Query().Get("code") != "" {
+				t.Fatalf("refused account: sent to %s", u)
+			}
+		})
+	}
+	// From another site, or the address bar, it's a redirect.
+	for _, site := range []string{"cross-site", "same-site", "none"} {
+		c := newRP("notes", redirectURI)
+		b := f.browser("ann")
+		cont := b.authorize(t, c, nil)
+		b.site = site
+		if u := location(t, b.get(cont.String())); u.Query().Get("code") == "" {
+			t.Fatalf("%q: sent to %s", site, u)
+		}
 	}
 }
 

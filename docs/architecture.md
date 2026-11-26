@@ -743,7 +743,15 @@ another account gives `login_required`. A sign-in older than `max_age` seconds, 
 `prompt=login` one made before the request began, sends the person to sign in again
 through `Reauthenticate`, or without it gives `login_required`; once they are back, 30
 seconds allow for the clocks that date requests and sign-ins differing. Then it asks
-`Allow`, stores a code and redirects to the client.
+`Allow`, stores a code and sends the browser back to the client. When the browser came
+from another site or its address bar (`Sec-Fetch-Site` is `cross-site`, `same-site` or
+`none`), that is a 303. When it came through the app's own pages, it is a page, "Back
+to <host>", that moves on by itself with a `Refresh` header and links there too: the
+sign-in pages' forms (the code, the name, confirming) lead to the continue page through
+redirects, and a browser stops a form's navigation at any origin the form's page
+doesn't allow in its `form-action` ('self' only), so a 303 to the client would leave the
+form's button spinning. Errors for the client (`login_required`, `access_denied`) go
+back the same way.
 
 **Codes and tokens.** A code is 32 random bytes, stored as its SHA-256 with the account,
 client, redirect URI, scopes, nonce, PKCE challenge, sign-in time, the address with
