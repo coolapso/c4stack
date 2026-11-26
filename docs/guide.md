@@ -304,6 +304,30 @@ period, before the provider renews it; a change to the product the subscription 
 already drops it, and so does canceling. A refund the provider makes for a change the
 module made isn't a review.
 
+An offer applied at checkout, such as a launch discount, is a discount code at the
+provider and `CheckoutDiscount`, which names the code for a product while the offer
+lasts. A code applies to the products it lists at the provider, and lasts as the
+provider says (Creem: once, a number of months, or forever), so an offer that differs by
+billing period takes a code for each:
+
+```go
+end := time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC) // before the codes expire at the provider
+CheckoutDiscount: func(p subscriptions.Product) string {
+	switch {
+	case !time.Now().Before(end):
+		return ""
+	case strings.HasSuffix(p.ID, "-yearly"):
+		return "LAUNCH30" // 30% off the first payment
+	default:
+		return "LAUNCH30M" // 30% off for 12 months
+	}
+},
+```
+
+The provider refuses a checkout with a code it doesn't have for the product; the module
+then makes it again without the code, and warns, so a mistake costs the discount rather
+than the sale.
+
 ## Add an API endpoint that debits credit idempotently
 
 A client retries a request it is not sure went through, with the same `Idempotency-Key`

@@ -36,6 +36,9 @@ func (c *Creem) CreateSubscriptionCheckout(ctx context.Context, co payments.Subs
 	if co.Email != "" {
 		body["customer"] = map[string]string{"email": co.Email}
 	}
+	if co.DiscountCode != "" {
+		body["discount_code"] = co.DiscountCode
+	}
 	var result struct {
 		ID  string `json:"id"`
 		URL string `json:"checkout_url"`

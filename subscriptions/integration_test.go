@@ -56,6 +56,10 @@ type fakeProvider struct {
 	fail      error
 	// failUnits fails a change's units step, after its product step went through.
 	failUnits bool
+	// discounts are the discount codes the provider has; a checkout with another one
+	// fails, as Creem's does, and goes into refused.
+	discounts map[string]bool
+	refused   []payments.SubscriptionCheckout
 	// completed are the checkouts that completed, by their session ID.
 	completed map[string]payments.SubscriptionEvent
 	// quotes are the changes quoted, and when for.
@@ -92,6 +96,10 @@ func (p *fakeProvider) CreateSubscriptionCheckout(_ context.Context, c payments.
 	defer p.mu.Unlock()
 	if p.fail != nil {
 		return payments.Session{}, p.fail
+	}
+	if c.DiscountCode != "" && !p.discounts[c.DiscountCode] {
+		p.refused = append(p.refused, c)
+		return payments.Session{}, errors.New("discount not found")
 	}
 	p.checkouts = append(p.checkouts, c)
 	return payments.Session{ID: "co_" + c.Reference, URL: "https://pay.example/co_" + c.Reference}, nil
@@ -363,6 +371,31 @@ func TestSubscribe(t *testing.T) {
 	}
 	if rec := f.do(http.MethodPost, "/account/subscriptions/"+ref+"/cancel", "bob", nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("another account's cancel: %d", rec.Code)
+	}
+}
+
+// TestCheckoutDiscount: the app's discount code for a product goes to the provider with
+// its checkout, and a code the provider refuses costs the discount, not the sale.
+func TestCheckoutDiscount(t *testing.T) {
+	codes := map[string]string{"plus-yearly": "LAUNCH30", "plus-monthly": "LAUNCH30M"}
+	f := newFixtureWith(t, func(cfg *Config) {
+		cfg.CheckoutDiscount = func(p Product) string { return codes[p.ID] }
+	})
+	f.pay.discounts = map[string]bool{"LAUNCH30": true}
+
+	f.checkout(t, "ann", "plus-yearly", 0, "")
+	f.checkout(t, "bob", "vaults", 0, "")
+	if got := f.pay.checkouts; len(got) != 2 || got[0].DiscountCode != "LAUNCH30" || got[1].DiscountCode != "" {
+		t.Fatalf("checkouts %+v", got)
+	}
+
+	// The provider doesn't have the monthly code: the checkout goes ahead without it.
+	f.checkout(t, "cat", "plus-monthly", 0, "")
+	if len(f.pay.refused) != 1 || f.pay.refused[0].DiscountCode != "LAUNCH30M" {
+		t.Fatalf("refused %+v", f.pay.refused)
+	}
+	if last := f.pay.checkouts[len(f.pay.checkouts)-1]; last.ProductID != "prov_plus_m" || last.DiscountCode != "" {
+		t.Fatalf("checkout without the code %+v", last)
 	}
 }
 

@@ -46,6 +46,10 @@ type SubscriptionCheckout struct {
 	Email string
 	// SuccessURL is where the provider sends the buyer after paying.
 	SuccessURL string
+	// DiscountCode is a discount the provider applies, as if the buyer had typed it,
+	// such as a launch offer's. Empty means none. A provider refuses a checkout with a
+	// code it doesn't have for the product.
+	DiscountCode string
 }
 
 // SubscriptionChange is a change to a running subscription. A zero field stays as it is.

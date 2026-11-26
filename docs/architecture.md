@@ -1069,6 +1069,10 @@ type Config struct {
 	ProviderName string             // such as "Creem", for the billing link; zero: "our payment provider"
 	// Which changes wait for the end of the period paid for; nil: none.
 	ChangeAtPeriodEnd func(from, to Product) bool
+	// The discount code the provider applies to a new subscription's checkout, such
+	// as a launch offer's, or ""; nil: none. A checkout the provider refuses with the
+	// code is made again without it, with a warning.
+	CheckoutDiscount func(p Product) string
 }
 type Subscription struct {
 	ID, AccountID string

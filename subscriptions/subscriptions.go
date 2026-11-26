@@ -100,6 +100,13 @@ type Config struct {
 	// settings panel says that billing opens on its site. Empty means "our payment
 	// provider".
 	ProviderName string
+	// CheckoutDiscount returns the discount code the provider applies to a new
+	// subscription to p at its checkout, such as a launch offer's for a while, or ""
+	// for none. The app decides when an offer ends, before its code expires at the
+	// provider. A provider refuses a checkout with a code it doesn't have for the
+	// product: the module then warns, and checks out without the code, so a mistake
+	// costs the discount rather than the sale. Nil: no discount.
+	CheckoutDiscount func(p Product) string
 }
 
 // Subscription is an account's subscription.
@@ -133,6 +140,7 @@ type Subscriptions struct {
 	proration  payments.Proration
 	atEnd      func(from, to Product) bool
 	provider   string
+	discount   func(p Product) string
 	onChange   []func(ctx context.Context, tx *sql.Tx, sub Subscription) error
 }
 
@@ -163,6 +171,7 @@ func New(a *app.App, accts *accounts.Accounts, cfg Config) (*Subscriptions, erro
 		proration:  cfg.Proration,
 		atEnd:      cfg.ChangeAtPeriodEnd,
 		provider:   cfg.ProviderName,
+		discount:   cfg.CheckoutDiscount,
 	}
 	if s.provider == "" {
 		s.provider = "our payment provider"
@@ -241,13 +250,24 @@ func (s *Subscriptions) Checkout(ctx context.Context, accountID string, r Checko
 	if err != nil {
 		return "", err
 	}
-	session, err := s.payments.CreateSubscriptionCheckout(ctx, payments.SubscriptionCheckout{
+	co := payments.SubscriptionCheckout{
 		Reference:  id,
 		ProductID:  p.ProviderID,
 		Units:      r.Units,
 		Email:      r.Email,
 		SuccessURL: r.SuccessURL,
-	})
+	}
+	if s.discount != nil {
+		co.DiscountCode = s.discount(p)
+	}
+	session, err := s.payments.CreateSubscriptionCheckout(ctx, co)
+	if err != nil && co.DiscountCode != "" {
+		// Without the code, the buyer sees the full price at the checkout.
+		s.app.Log().Warn("subscriptions: the checkout failed with a discount code; checking out without it",
+			"product", p.ID, "code", co.DiscountCode, "error", err)
+		co.DiscountCode = ""
+		session, err = s.payments.CreateSubscriptionCheckout(ctx, co)
+	}
 	if err != nil {
 		return "", err
 	}

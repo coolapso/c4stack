@@ -71,6 +71,14 @@ func TestCreateSubscriptionCheckout(t *testing.T) {
 		customer["email"] != "ann@example.com" || b["custom_price"] != nil {
 		t.Fatalf("body %v", b)
 	}
+	if _, ok := b["discount_code"]; ok {
+		t.Errorf("a discount code without one: %v", b)
+	}
+	if _, err := c.CreateSubscriptionCheckout(context.Background(), payments.SubscriptionCheckout{
+		Reference: "ref-2", ProductID: "prod_plus", Units: 1, DiscountCode: "LAUNCH30",
+	}); err != nil || api.bodies[1]["discount_code"] != "LAUNCH30" {
+		t.Fatalf("with a discount code: %v %v", err, api.bodies[1])
+	}
 	if _, err := c.CreateSubscriptionCheckout(context.Background(), payments.SubscriptionCheckout{Reference: "r", ProductID: "p"}); err == nil {
 		t.Error("a checkout without units")
 	}
