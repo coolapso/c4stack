@@ -481,18 +481,23 @@ func TestConcurrentExchange(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	ok := 0
+	var answers []string
 	for range 8 {
 		wg.Go(func() {
-			if rec, _ := f.redeem(c, code); rec.Code == http.StatusOK {
-				mu.Lock()
+			rec, _ := f.redeem(c, code)
+			mu.Lock()
+			defer mu.Unlock()
+			if rec.Code == http.StatusOK {
 				ok++
-				mu.Unlock()
 			}
+			answers = append(answers, strconv.Itoa(rec.Code)+" "+strings.TrimSpace(rec.Body.String()))
 		})
 	}
 	wg.Wait()
-	if ok != 1 {
-		t.Fatalf("%d exchanges succeeded", ok)
+	// At most one gets tokens, and even that one may not: a reuse that marks the code
+	// before the first exchange stores its access token stops it too (revokeCode).
+	if ok > 1 {
+		t.Fatalf("%d exchanges succeeded:\n%s", ok, strings.Join(answers, "\n"))
 	}
 	// The others revoked the winner's access token.
 	if n := f.count(t, `SELECT count(*) FROM oidc_access_tokens`); n != 0 {
