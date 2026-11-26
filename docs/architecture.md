@@ -297,7 +297,7 @@ type Migrations struct {
 
 func (a *App) Require(m Migrations) error // module constructors check their migrations are listed
 func (a *App) DB() *sql.DB
-func (a *App) SetLogger(l *slog.Logger)
+func (a *App) SetLogger(l *slog.Logger) // in the app Main runs, also slog's default
 func (a *App) Log() *slog.Logger
 func (a *App) Command(cmd Command)
 func (a *App) Every(name string, interval time.Duration, job func(context.Context) error)

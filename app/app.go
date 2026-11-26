@@ -68,6 +68,9 @@ type App struct {
 	commands []Command
 	jobs     []job
 	servers  []web.Server
+	// setDefault makes a logger slog's default: slog.SetDefault in the app Main runs,
+	// nil elsewhere, such as in tests, which share the process.
+	setDefault func(*slog.Logger)
 }
 
 type job struct {
@@ -89,8 +92,16 @@ func (a *App) Name() string { return a.cfg.Name }
 // not query the database while they are constructed.
 func (a *App) DB() *sql.DB { return a.db }
 
-// SetLogger replaces the logger, which by default writes JSON to standard error.
-func (a *App) SetLogger(l *slog.Logger) { a.log = l }
+// SetLogger replaces the logger, which by default writes JSON to standard error. In
+// the app Main runs, the logger is also slog's default, so whatever logs without being
+// handed one logs the same way: web.New's request log without Config.Logger, the
+// internal server's, and libraries. Call it first in Setup, before making them.
+func (a *App) SetLogger(l *slog.Logger) {
+	a.log = l
+	if a.setDefault != nil {
+		a.setDefault(l)
+	}
+}
 
 // Log returns the app's logger.
 func (a *App) Log() *slog.Logger { return a.log }
@@ -127,13 +138,18 @@ func (a *App) Require(m Migrations) error {
 // Main runs the command named by the program's arguments and exits.
 func Main(cfg Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, cfg, os.Args[1:], os.Stdout, os.Stderr)
+	code := run(ctx, cfg, os.Args[1:], os.Stdout, os.Stderr, slog.SetDefault)
 	stop()
 	os.Exit(code)
 }
 
-func run(ctx context.Context, cfg Config, args []string, stdout, stderr io.Writer) int {
+// run runs a command. setDefault, when not nil, makes the app's logger slog's default
+// (SetLogger): Main passes slog.SetDefault, tests nothing.
+func run(ctx context.Context, cfg Config, args []string, stdout, stderr io.Writer, setDefault func(*slog.Logger)) int {
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	if setDefault != nil {
+		setDefault(logger)
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "%s: %v\n", cfg.Name, err)
 		return 1
@@ -142,12 +158,12 @@ func run(ctx context.Context, cfg Config, args []string, stdout, stderr io.Write
 		return fail(errors.New("app.Config needs a Name and a Setup function"))
 	}
 	if len(args) == 0 {
-		help(ctx, cfg, stdout, logger)
+		help(ctx, cfg, stdout, logger, setDefault)
 		return 2
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
-		help(ctx, cfg, stdout, logger)
+		help(ctx, cfg, stdout, logger, setDefault)
 		return 0
 	case "version":
 		version(stdout)
@@ -166,6 +182,7 @@ func run(ctx context.Context, cfg Config, args []string, stdout, stderr io.Write
 	defer db.Close()
 	a := New(cfg, db)
 	a.log = logger
+	a.setDefault = setDefault
 	if err := cfg.Setup(ctx, a); err != nil {
 		return fail(err)
 	}
@@ -312,7 +329,7 @@ func (a *App) runJob(ctx context.Context, j job) {
 	}
 }
 
-func help(ctx context.Context, cfg Config, w io.Writer, logger *slog.Logger) {
+func help(ctx context.Context, cfg Config, w io.Writer, logger *slog.Logger, setDefault func(*slog.Logger)) {
 	fmt.Fprintf(w, "Usage: %s <command> [arguments]\n\nCommands:\n", cfg.Name)
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "  serve\tServe the app until interrupted.")
@@ -324,6 +341,7 @@ func help(ctx context.Context, cfg Config, w io.Writer, logger *slog.Logger) {
 	// not the database.
 	a := New(cfg, nil)
 	a.log = logger
+	a.setDefault = setDefault
 	if err := cfg.Setup(ctx, a); err != nil {
 		tw.Flush()
 		fmt.Fprintf(w, "\nOperator commands are listed once the configuration is complete: %v\n", err)

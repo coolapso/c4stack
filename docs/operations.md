@@ -157,7 +157,10 @@ from the one recorded.
 
 ## Logs
 
-Logs are JSON on standard error unless the app chooses text. Each request logs its
+Logs are JSON on standard error unless the app chooses text. `app.Main` makes the
+app's logger, the JSON one or the one Setup gives `SetLogger`, slog's default, so the
+request log, the internal server's and libraries that log through slog's default write
+in the same format, which log agents that parse JSON need. Each request logs its
 method, route template, status and duration, with a request ID that is also sent in
 the `X-Request-ID` response header. Incoming request IDs are ignored.
 
@@ -166,7 +169,7 @@ secrets, panic values, or buyer names and addresses. Errors from providers carry
 codes only.
 
 The OpenID Connect provider's library logs the token and userinfo requests it refuses
-at warning level, through slog's default logger and without a request ID: the error
+at warning level, through slog's default logger (the app's) and without a request ID: the error
 and its description, never codes, tokens or secrets.
 
 ## Runbooks

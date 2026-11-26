@@ -38,11 +38,11 @@ func TestMigrateNeedsOnlyTheDatabase(t *testing.T) {
 		},
 	}
 	var out, errOut bytes.Buffer
-	if code := run(context.Background(), cfg, []string{"migrate"}, &out, &errOut); code != 0 {
+	if code := run(context.Background(), cfg, []string{"migrate"}, &out, &errOut, nil); code != 0 {
 		t.Fatalf("migrate: exit %d: %s", code, errOut.String())
 	}
 	out.Reset()
-	if code := run(context.Background(), cfg, []string{"migrate", "status"}, &out, &errOut); code != 0 {
+	if code := run(context.Background(), cfg, []string{"migrate", "status"}, &out, &errOut, nil); code != 0 {
 		t.Fatalf("migrate status: exit %d: %s", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "accounts") || !strings.Contains(out.String(), "app") {
@@ -68,10 +68,10 @@ func TestOperatorCommands(t *testing.T) {
 		},
 	}
 	var out, errOut bytes.Buffer
-	if code := run(context.Background(), cfg, []string{"accounts", "delete-local", "abc"}, &out, &errOut); code != 0 || len(got) != 1 || got[0] != "abc" {
+	if code := run(context.Background(), cfg, []string{"accounts", "delete-local", "abc"}, &out, &errOut, nil); code != 0 || len(got) != 1 || got[0] != "abc" {
 		t.Fatalf("exit %d, args %v: %s", code, got, errOut.String())
 	}
-	if code := run(context.Background(), cfg, []string{"accounts", "purge"}, &out, &errOut); code != 2 {
+	if code := run(context.Background(), cfg, []string{"accounts", "purge"}, &out, &errOut, nil); code != 2 {
 		t.Fatalf("unknown command: exit %d", code)
 	}
 }
@@ -108,7 +108,7 @@ func TestServeReadinessFollowsSchema(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	var errOut bytes.Buffer
-	go func() { done <- run(ctx, cfg, []string{"serve"}, &bytes.Buffer{}, &errOut) }()
+	go func() { done <- run(ctx, cfg, []string{"serve"}, &bytes.Buffer{}, &errOut, nil) }()
 
 	ready := func() int {
 		resp, err := http.Get("http://" + addr + "/health/ready")
@@ -120,7 +120,7 @@ func TestServeReadinessFollowsSchema(t *testing.T) {
 	}
 	waitUntil(t, func() bool { return ready() == http.StatusServiceUnavailable })
 
-	if code := run(context.Background(), cfg, []string{"migrate"}, &bytes.Buffer{}, &errOut); code != 0 {
+	if code := run(context.Background(), cfg, []string{"migrate"}, &bytes.Buffer{}, &errOut, nil); code != 0 {
 		t.Fatalf("migrate: %s", errOut.String())
 	}
 	waitUntil(t, func() bool { return ready() == http.StatusNoContent })
@@ -161,7 +161,7 @@ func TestServeSeveralServers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	var errOut bytes.Buffer
-	go func() { done <- run(ctx, cfg, []string{"serve"}, &bytes.Buffer{}, &errOut) }()
+	go func() { done <- run(ctx, cfg, []string{"serve"}, &bytes.Buffer{}, &errOut, nil) }()
 
 	get := func(url, token string) int {
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -196,7 +196,7 @@ func TestServeSeveralServers(t *testing.T) {
 	defer taken.Close()
 	cfg.Setup = setup(taken.Addr().String())
 	errOut.Reset()
-	if code := run(context.Background(), cfg, []string{"serve"}, &bytes.Buffer{}, &errOut); code == 0 {
+	if code := run(context.Background(), cfg, []string{"serve"}, &bytes.Buffer{}, &errOut, nil); code == 0 {
 		t.Fatal("serve succeeded with its internal address taken")
 	}
 	if !strings.Contains(errOut.String(), taken.Addr().String()) {
