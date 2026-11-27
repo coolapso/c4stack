@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/quotedprintable"
 	"net"
 	"net/http"
@@ -26,6 +27,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coolapso/c4stack/accounts"
+	"github.com/coolapso/c4stack/identity/local"
 	"github.com/coolapso/c4stack/internal/testdb"
 )
 
@@ -89,8 +92,15 @@ func TestStarterApp(t *testing.T) {
 	migrateEnv := []string{"ACME_DATABASE_URL=" + databaseURL}
 	shell(t, dir, migrateEnv, "task", "db:migrate")
 	status := shell(t, dir, migrateEnv, "task", "run", "--", "migrate", "status")
-	if !regexp.MustCompile(`accounts\s+2\s+-`).MatchString(status) || !regexp.MustCompile(`local\s+1\s+-`).MatchString(status) {
-		t.Fatalf("migrate status:\n%s", status)
+	// Every module migration the generated app lists is applied, and none is pending.
+	for namespace, files := range map[string]fs.FS{"accounts": accounts.Migrations.Files, "local": local.Migrations.Files} {
+		sql, err := fs.Glob(files, "*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(fmt.Sprintf(`%s\s+%d\s+-`, namespace, len(sql))).MatchString(status) {
+			t.Fatalf("migrate status, want %d %s migrations applied:\n%s", len(sql), namespace, status)
+		}
 	}
 
 	mail := newMailCatcher(t)
