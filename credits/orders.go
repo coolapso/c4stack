@@ -161,34 +161,14 @@ func (cr *Credits) Transfer(ctx context.Context, tx *sql.Tx, fromAccountID, toAc
 	if err := checkEntry(reference, description); err != nil {
 		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id
-		FROM accounts
-		WHERE id IN ($1, $2)
-		ORDER BY id
-		FOR UPDATE`, fromAccountID, toAccountID,
-	)
-	if isInvalidUUID(err) {
-		return 0, ErrNotFound
-	}
-	if err != nil {
+	if err := lockPair(ctx, tx, fromAccountID, toAccountID); err != nil {
 		return 0, err
-	}
-	locked := 0
-	for rows.Next() {
-		locked++
-	}
-	if err := rows.Close(); err != nil {
-		return 0, err
-	}
-	if locked != 2 {
-		return 0, ErrNotFound
 	}
 	from := &Tx{ctx: ctx, cr: cr, tx: tx, accountID: fromAccountID}
 	to := &Tx{ctx: ctx, cr: cr, tx: tx, accountID: toAccountID}
 
 	var moved int64
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT -amount_cents
 		FROM credit_ledger
 		WHERE account_id = $1 AND reference = $2 AND kind = 'transfer'`, fromAccountID, reference,
@@ -235,6 +215,36 @@ func (cr *Credits) Transfer(ctx context.Context, tx *sql.Tx, fromAccountID, toAc
 		}
 	}
 	return balance, nil
+}
+
+// lockPair locks two accounts, in ID order so concurrent transfers can't deadlock. It
+// returns ErrNotFound unless both exist.
+func lockPair(ctx context.Context, tx *sql.Tx, a, b string) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id
+		FROM accounts
+		WHERE id IN ($1, $2)
+		ORDER BY id
+		FOR UPDATE`, a, b,
+	)
+	if isInvalidUUID(err) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	locked := 0
+	for rows.Next() {
+		locked++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if locked != 2 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Review records an event about a payment that cannot be applied as it stands, such as

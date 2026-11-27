@@ -151,12 +151,16 @@ func TestReverseOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var k string
 		if err := rows.Scan(&k); err != nil {
 			t.Fatal(err)
 		}
 		kinds = append(kinds, k)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if len(kinds) != 2 || kinds[0] != "refund:refunded" || kinds[1] != "chargeback:charged_back" {
 		t.Fatalf("reversals %v", kinds)
