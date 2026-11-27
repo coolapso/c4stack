@@ -264,7 +264,8 @@ func ready() result {
 }
 
 // checkOrder finds the product an order bought, and refuses an order the app must not
-// grant.
+// grant. The order's total includes tax, so it is at least the product's price before
+// tax; a total below that price was discounted or underpaid.
 func (m *Marketplace) checkOrder(req payments.GrantRequest) (Product, *result) {
 	p, ok := m.products[req.ProductID]
 	if !ok {
@@ -366,7 +367,9 @@ func (m *Marketplace) provision(ctx context.Context, tx *sql.Tx, req payments.Gr
 	return r, nil
 }
 
-// order describes a request's order as a credit purchase.
+// order describes a request's order as a credit purchase. It records the pack's price
+// as what was paid, before tax like a checkout's: the request reports only the
+// order's total, tax included, which checkOrder found at least as high.
 func (m *Marketplace) order(req payments.GrantRequest, p Product) credits.Order {
 	return credits.Order{
 		Provider:    m.provider.Name(),
@@ -374,7 +377,7 @@ func (m *Marketplace) order(req payments.GrantRequest, p Product) credits.Order 
 		EventID:     req.EventID,
 		CreditCents: p.CreditCents,
 		PriceCents:  p.PriceCents,
-		PaidCents:   req.AmountCents,
+		PaidCents:   p.PriceCents,
 		PaidAt:      req.PaidAt,
 		Description: m.cfg.Description,
 	}

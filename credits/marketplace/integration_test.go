@@ -314,6 +314,26 @@ func TestProvision(t *testing.T) {
 	}
 }
 
+// Creem's order total includes tax: the purchase records the pack's price, before tax
+// like a checkout's.
+func TestAnOrderTotalIncludesTax(t *testing.T) {
+	f := newFixture(t)
+	r := provision("grt_1", "op_1", "ord_1")
+	r.AmountCents = 1300 // €10.83 and 20% VAT
+	agent := f.accountOf(t, f.ask(t, r).Env["ACME_API_KEY"])
+	var price, paid int64
+	if err := f.a.DB().QueryRow(`
+		SELECT checkout_amount_cents, paid_amount_cents
+		FROM payment_intents
+		WHERE account_id = $1`, agent,
+	).Scan(&price, &paid); err != nil || price != 1083 || paid != 1083 {
+		t.Fatalf("price %d, paid %d: %v", price, paid, err)
+	}
+	if got := f.balance(t, agent); got != 1000 {
+		t.Fatalf("balance %d", got)
+	}
+}
+
 func TestConcurrentDeliveriesOpenOneAccount(t *testing.T) {
 	f := newFixture(t)
 	var wg sync.WaitGroup

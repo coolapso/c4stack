@@ -942,7 +942,9 @@ type GrantAnswer struct {
 - Agentic Marketplace requests are `marketplace.grant.requested` events at the store's
   webhook, verified with `WebhookSecret`; their object's fields are camelCase. A request
   names its order unless it is a test or a `revoke`, whose order is the provision's.
-  `amountMinor` is read as whole minor units. The reply is snake_case JSON, and
+  `amountMinor` is read as whole minor units; it is the order's total, tax included.
+  A revocation's `reason` is read from the object, or else from the top level, where
+  Creem's support places it. The reply is snake_case JSON, and
   `GrantReply` refuses what Creem would: credentials outside `^[A-Z][A-Z0-9_]{0,63}$`,
   more than 16 of them or values that aren't 1 to 4,096 printable ASCII characters, a
   key hint over 8 characters, an entitlement over 4 KB, a failure without a reason of
@@ -1186,8 +1188,10 @@ the recorded answer.
   module or the payment webhook, does it once.
 - **Refusals.** An order for an unknown product, unpaid, in another currency than EUR or
   for less than the product's price is answered `failed`, which makes the provider
-  refund the buyer, and recorded for review. Credit comes from the product's
-  configuration, never from the request.
+  refund the buyer, and recorded for review. The order's total includes tax, so a paid
+  order is at least the price. Credit comes from the product's configuration, never
+  from the request, and the purchase records the product's price, before tax like a
+  checkout's.
 - **Failures** of the app's own, such as the database, are answered `pending`: the
   provider asks again until its deadline.
 - **Reviews.** The provider tests a listing with requests marked `test`: a provision gets
