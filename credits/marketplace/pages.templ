@@ -1,0 +1,53 @@
+package marketplace
+
+import (
+	"strconv"
+
+	"github.com/coolapso/c4stack/credits"
+	"github.com/coolapso/c4stack/ui"
+	"github.com/gin-gonic/gin"
+)
+
+// claimView is what the claim page shows.
+type claimView struct {
+	c         *gin.Context
+	token     string
+	claimable Claimable
+	err       string
+}
+
+templ claimPage(v claimView) {
+	<div class="page-header">
+		<h1>Claim your agent's account</h1>
+		<p class="lead">An AI agent bought this account on a marketplace. Claim it to make it part of yours.</p>
+	</div>
+	<section class="panel" aria-labelledby="claim-title">
+		<h2 id="claim-title">What moves into your account</h2>
+		<ul>
+			<li>{ credits.FormatEuros(v.claimable.BalanceCents) } of credit</li>
+			<li>{ keysText(v.claimable.Keys) }, which keep working for your agent</li>
+			<li>Its purchases and history</li>
+		</ul>
+		<p>Afterwards you see what your agent uses, manage its keys and buy credit here, and you get an email before your credit expires.</p>
+		<form class="stack" method="post" data-busy-form>
+			@ui.CSRFField(v.c)
+			<input type="hidden" name="token" value={ v.token }/>
+			<button type="submit" class="btn primary">
+				Claim the account
+				@ui.Spinner()
+			</button>
+			<div class="dialog-error" role="alert">
+				if v.err != "" {
+					@ui.FormError(v.err)
+				}
+			</div>
+		</form>
+	</section>
+}
+
+func keysText(n int) string {
+	if n == 1 {
+		return "1 API key"
+	}
+	return strconv.Itoa(n) + " API keys"
+}

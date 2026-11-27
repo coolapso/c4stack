@@ -305,6 +305,38 @@ dashboard with the purchases in `payment_intents`. Credit the missed ones with
 `credits adjust`, using the purchase ID as part of the reference. For subscriptions,
 `subscriptions sync <subscription-id>` reads each one's state from Creem.
 
+### Marketplace
+
+With `credits/marketplace`, the provider's marketplace requests arrive at the store's
+webhook and are answered there. Each answered request is logged with its event, grant,
+operation and order IDs; refused ones as warnings, with the reason, and recorded in
+`credits reviews` with a `marketplace_` reason. A refused request means the provider
+refunded the buyer, so the review is about why: an order that didn't match its product's
+price, an unknown product, or a buyer who already had an account.
+
+```sh
+acme marketplace grants unclaimed        # buyers' accounts, their credit and last activity
+acme marketplace grant <order-id>        # one grant and every request about it
+acme marketplace claim-link <grant-id>   # a new claim link for an owner who lost theirs
+acme marketplace revoke <grant-id>       # stop a grant's key, such as after abuse
+acme marketplace remove-tests            # accounts the listing's reviews left
+acme marketplace run                     # wipe expired secrets and expire idle accounts now
+```
+
+**An owner lost the claim link or the key.** Ask for the Creem order ID from their
+receipt, find the grant with `marketplace grant <order-id>`, and send a new claim link
+from `marketplace claim-link` to the address that wrote. Once claimed, they create keys
+in the app.
+
+**Answers failing.** A request the app couldn't answer, such as while the database was
+down, is answered pending, and the provider asks again until its deadline: 24 hours for
+a provision, 2 for a top-up. After that, the provider refunds the buyer. Alert on
+pending and failed answers through `OnAnswer`.
+
+**Unclaimed credit.** The hourly job expires the credit of unclaimed accounts after
+`InactiveMonths` without activity, with no warning, and deletes them. Expired credit is
+an `expiry` entry like any other. `marketplace run` runs it now.
+
 ### Credit expiry
 
 With the expiry module, the server sends due warnings and expires due credit every

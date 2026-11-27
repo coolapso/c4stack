@@ -224,6 +224,59 @@ OnRun: func(ctx context.Context, r expiry.Result, err error) {
 },
 ```
 
+## Sell credit on a marketplace
+
+`credits/marketplace` sells credit on a provider's marketplace where AI agents buy it,
+such as Creem's Agentic Marketplace. It needs credits and API keys. Create one-time Creem
+products at fixed prices, one per pack, and price each at the credit plus your fee, so
+both ways of buying cost the same. Add `credits/marketplace` migrations after the
+credits ones, and generate a seal key: 32 random bytes from your secret store, such as
+`ACME_MARKETPLACE_SEAL_KEY`.
+
+```go
+market, err := marketplace.New(a, accts, cr, marketplace.Config{
+	Payments: pay, // the Creem adapter credits uses
+	Products: []marketplace.Product{
+		{ProviderID: "prod_10eur", CreditCents: 1000, PriceCents: 1083},
+	},
+	Keys:           keys,
+	KeyName:        "Marketplace agent",
+	KeyEnv:         "ACME_API_KEY",
+	ClaimEnv:       "ACME_CLAIM_URL",
+	ClaimURL:       cfg.PublicURL + "/account/claim",
+	SealKey:        cfg.MarketplaceSealKey,
+	InactiveMonths: 12,
+})
+// routes.go
+market.Mount(account.Group("/claim"), layout)
+r.POST("/webhooks/payments", market.Webhook) // in place of cr.Webhook
+```
+
+In Creem's dashboard, add `marketplace.grant.requested` to the store webhook's events,
+opt the products into the marketplace, and fill in the listing. Its "How agents use your
+key" declares `ACME_API_KEY` and `ACME_CLAIM_URL` as `envNames`, your API's base URL and
+auth header, and a `check`: an endpoint that answers 2xx for a valid key without
+charging, which Creem calls when it reviews the listing. Say on the listing that
+unclaimed credit expires without warning after `InactiveMonths` of inactivity, and how
+to claim; `DefaultEntitlement` tells the agent too.
+
+The module moves credit, purchases and keys when an owner claims an account. If your
+app keeps its own rows per account, such as a usage history, move them too:
+
+```go
+market.OnClaim(func(ctx context.Context, tx *sql.Tx, from, to string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE usage SET account_id = $2 WHERE account_id = $1`, from, to)
+	return err
+})
+```
+
+To record metrics, set `OnAnswer`, which reports each request's action, status and
+whether it was a repeat, and `OnRun`, which reports each hourly run: sealed credentials
+wiped, unclaimed accounts and cents expired, failures. An API that tells agents their
+balance can add `Status`, which says whether the account is claimed and when unclaimed
+credit expires; a process without selling constructs the module without `Payments` for
+that.
+
 ## Sell subscriptions
 
 `subscriptions` sells subscriptions through a payment provider that implements

@@ -32,6 +32,7 @@ registers.
 | `payments/creem` | The Creem adapter |
 | `credits` | Opt-in. Ledger, holds, purchases, webhooks, history and the credits page |
 | `credits/expiry` | Opt-in. Expires unused credit after a delivered warning |
+| `credits/marketplace` | Opt-in. Sells credit on a provider's marketplace, where AI agents buy it and receive an API key; owners claim the accounts |
 | `subscriptions` | Opt-in. Subscriptions through a payment provider: checkout, webhooks, reviews and the settings panel |
 | `email` | The email sender interface, and emails written once as text and HTML in an app's layout |
 | `email/scaleway` | The Scaleway Transactional Email adapter |
@@ -51,8 +52,9 @@ through `app`.
   `email` to send codes. Nothing depends on it.
 - `accounts` depends on `identity`. `apikeys`, `oidc`, `credits` and `subscriptions`
   depend on `accounts`.
-  `credits/expiry` depends on `credits` and `email`. Nothing points back: `accounts` learns
-  about other modules only through the deletion hooks they register.
+  `credits/expiry` depends on `credits` and `email`. `credits/marketplace` depends on
+  `credits` and `apikeys`: it sells credit and delivers keys. Nothing points back:
+  `accounts` learns about other modules only through the deletion hooks they register.
 - The app depends on everything it uses.
 
 Errors live in the package that owns the concept, such as `accounts.ErrNotFound` and
@@ -1113,6 +1115,105 @@ duplicate it. Each run:
 Purchases, charges, adjustments and transfers count as activity, and new activity needs a new
 warning. Deadlines are stored, so changing the policy never brings one forward.
 
+### credits/marketplace (opt-in)
+
+Credit sold on a payment provider's marketplace, such as Creem's Agentic Marketplace,
+where AI agents find the app, buy credit without anyone signing up, and receive an API
+key. The provider implements `payments.Marketplace`.
+
+```sql
+marketplace_grants(id uuid, provider, grant_id, account_id → accounts ON DELETE SET NULL,
+                   key_id → api_keys ON DELETE SET NULL, order_id, claim_token_hash UNIQUE,
+                   test, created_at, claimed_at, revoked_at, ended_at,
+                   UNIQUE (provider, grant_id))
+marketplace_operations(provider, operation_id, grant_ref → marketplace_grants ON DELETE CASCADE,
+                       event_id, action, order_id, status, answer jsonb, secret, secret_until,
+                       test, created_at, PRIMARY KEY (provider, operation_id))
+```
+
+```go
+type Product struct {
+	ProviderID  string
+	CreditCents int64
+	PriceCents  int64 // before tax: credit plus the app's fee; orders for less are refused
+}
+type Config struct {
+	Payments         payments.Marketplace // nil: no selling; Status still works
+	Products         []Product
+	Keys             *apikeys.Keys
+	KeyName          string // the delivered key's name
+	KeyEnv, ClaimEnv string // the names the listing declares, such as ACME_API_KEY
+	ClaimURL         string // the claim page's absolute URL
+	ClaimedPath      string // after claiming; zero: "/account"
+	SealKey          []byte // 32 bytes
+	InactiveMonths   int    // unclaimed credit expires after this, without a warning
+	Description      string // the purchases' ledger description
+	Entitlement      func(e Entitlement) map[string]any // what a provision tells the buyer
+	OnAnswer         func(ctx context.Context, a Answered)
+	OnRun            func(ctx context.Context, r Result, err error)
+}
+
+func New(a *app.App, accts *accounts.Accounts, cr *credits.Credits, cfg Config) (*Marketplace, error)
+func (m *Marketplace) Webhook(c *gin.Context) // in place of credits.Webhook
+func (m *Marketplace) Mount(r gin.IRouter, layout ui.Layout) // the claim page, behind RequireSignIn
+func (m *Marketplace) Claimable(ctx context.Context, token string) (Claimable, error) // ErrClaimInvalid
+func (m *Marketplace) Claim(ctx context.Context, token, intoAccountID string) error  // ErrClaimInvalid, ErrBusy
+func (m *Marketplace) NewClaimLink(ctx context.Context, grantID string) (string, error)
+func (m *Marketplace) OnClaim(hook func(ctx context.Context, tx *sql.Tx, from, to string) error)
+func (m *Marketplace) Status(ctx context.Context, accountID string) (Status, error) // claimed, and when unclaimed credit expires
+func (m *Marketplace) Run(ctx context.Context) (Result, error)
+```
+
+The operator commands are `marketplace grants`, `marketplace grant`, `marketplace
+claim-link`, `marketplace revoke`, `marketplace remove-tests` and, with a provider,
+`marketplace run`.
+
+**Requests.** The provider asks, at the store's webhook, to provision a grant, top it up,
+revoke it after its provision's order was refunded or charged back, or take back a
+refunded top-up. `Webhook` answers each in the reply, within the provider's wait, and
+hands every other event to `credits.Webhook`. A request is answered once per operation,
+in one transaction that deliveries of the same operation take turns at: a repeat gets
+the recorded answer.
+- **Provision** opens an account without an identity, issues its API key and a claim
+  link, credits the order as a purchase (`Tx.CreditOrder`), and answers with both under
+  the listing's names. A grant that is already active is refused: more credit is a
+  top-up.
+- **Top-up** credits another order to the grant's account, claimed or not.
+- **Revoke** reverses the provision's purchase, as a chargeback when the bank took the
+  payment back, and revokes the key. An unclaimed account is deleted, forfeiting what its
+  top-ups left; a claimed one keeps everything else.
+- **Revoke credit** reverses the refunded top-up. Whichever reverses a purchase first, the
+  module or the payment webhook, does it once.
+- **Refusals.** An order for an unknown product, unpaid, in another currency than EUR or
+  for less than the product's price is answered `failed`, which makes the provider
+  refund the buyer, and recorded for review. Credit comes from the product's
+  configuration, never from the request.
+- **Failures** of the app's own, such as the database, are answered `pending`: the
+  provider asks again until its deadline.
+- **Reviews.** The provider tests a listing with requests marked `test`: a provision gets
+  an account and a key without credit, a top-up changes nothing, and a revoke deletes
+  the account.
+
+**Credentials.** The raw key and claim token are kept only to answer a repeated
+provision: sealed with AES-256-GCM under `SealKey`, bound to the operation, until the
+request's deadline and an hour, when the hourly job wipes them. The key is otherwise
+stored as `apikeys` stores every key, and the claim token as a SHA-256 hash.
+
+**Claiming.** The claim link opens the app's claim page, behind `RequireSignIn`, so the
+owner signs in or signs up first. Confirming moves, in one transaction, the account's
+credit and purchases (`credits.Transfer`), its API keys, which keep working, and the
+app's own rows through `OnClaim` hooks into the owner's account, then deletes the
+claimed account. Later top-ups credit the owner. Claiming waits while the app holds any
+of the account's credit, so no request settles on a deleted account. A lost link is
+replaced with `marketplace claim-link`, which voids the old one.
+
+**Unclaimed credit.** Nobody can be told before an unclaimed account's credit expires:
+the provider shares no address. So the hourly job expires it after `InactiveMonths`
+without a purchase, charge, adjustment or transfer, as an `expiry` entry, without a
+warning, and deletes the account; credit held for work in progress waits. Apps state
+this rule wherever they sell, and `Status` reports the date, for an API to show the
+agent. Claimed accounts follow `credits/expiry` like any other.
+
 ### subscriptions (opt-in)
 
 Subscriptions an account buys through a payment provider that implements
@@ -1468,6 +1569,9 @@ These features were considered and decided as follows.
 | Linking accounts | By verified email | A new identity joins the account with its verified address, from any provider, so users keep their accounts across provider changes and re-registrations. The provider's verified flag is trusted, and deleted accounts are gone, so an address never inherits someone else's account. |
 | Deletion marks | Two columns: started and confirmed | The started mark stops a sign-up from joining, or deleting, an account while the provider decides. Only the confirmed mark lets a sign-up finish a deletion, so local data never goes before the provider confirms. Cancel commands are not needed. |
 | Identity tombstones | Yes, as one hash table | Checked at account creation under the identity lock, it stops an in-flight request recreating a deleted person's account with their email. Per-request session validation already rejects stale sessions. |
+| A raw key kept for marketplace repeats | Sealed, until the request's deadline | The provider may send a provision again and expects the same answer, and the app stores only hashes of keys. Keeping the key sealed until the provider stops asking is the narrowest exception; only marketplace provisions have it. |
+| Linking a marketplace account to its owner | A claim that moves everything, then deletes the account | The owner may already have an account: one identity can't sign in to two. Moving the credit, purchases, keys and the app's rows serves new and existing owners alike, and keeps the ledger append-only with transfer entries. |
+| Warning before unclaimed marketplace credit expires | No warning: the rule is stated when selling | The provider shares no way to reach the owner. The claim link is the only warning the app can give; credit that never expired would grow the app's liabilities forever. |
 | Expiry metrics | A hook, no metrics library | The module schedules its own runs, so `OnRun` hands the app every run's `Result`, hourly or from `credits expire`. The app records it with its own metrics library; C4Stack depends on none. |
 | A scheduler switch and a warning-reset command | No | Expiry runs hourly under a lock and on demand with `credits expire`, and logs its outcomes. |
 | Server timeouts as environment variables | No | Safe fixed defaults. `DrainDelay` and `ShutdownTimeout` are `web.Server` fields; an app exposes them as variables if it wants. |
