@@ -28,7 +28,7 @@ registers.
 | `accounts` | Accounts mapped from identities, sign-in middleware, the settings page and account deletion |
 | `apikeys` | Opt-in. API keys, bearer middleware and the keys page |
 | `oidc` | Opt-in. An OpenID Connect provider, so other services sign people in with the app's accounts |
-| `payments` | The payment provider interface |
+| `payments` | The payment provider interface, and the optional ones for subscriptions and marketplaces |
 | `payments/creem` | The Creem adapter |
 | `credits` | Opt-in. Ledger, holds, purchases, webhooks, history and the credits page |
 | `credits/expiry` | Opt-in. Expires unused credit after a delivered warning |
@@ -880,6 +880,37 @@ type SubscriptionEvent struct {
 }
 ```
 
+`payments.Marketplace` is the optional interface of a provider with a marketplace where
+AI agents buy the app's products and receive their access from the app, which
+`credits/marketplace` needs:
+
+```go
+type Marketplace interface {
+	Provider
+	ParseGrantRequest(header http.Header, body []byte) (GrantRequest, error) // ErrIgnored: any other event
+	GrantReply(a GrantAnswer) ([]byte, error) // the webhook's reply body
+}
+type GrantRequest struct {
+	EventID, GrantID, OperationID string
+	Action                        GrantAction // GrantProvision, GrantTopUp, GrantRevoke, GrantRevokeCredit
+	ProductID, ListingID, OrderID string
+	OrderPaid                     bool
+	AmountCents                   int64
+	Currency                      string
+	PaidAt, Deadline, CreatedAt   time.Time // zero when the request doesn't say
+	Test                          bool      // the provider reviewing a listing
+	Reason                        string    // a revocation's: refund, chargeback, undelivered or test
+}
+type GrantAnswer struct {
+	Status        GrantStatus // GrantReady, GrantPending, GrantFailed
+	Env           map[string]string // a provision's credentials, by the listing's names
+	KeyHint       string
+	AccountRef    string
+	Entitlement   map[string]any
+	FailureReason string
+}
+```
+
 **How the Creem adapter works.**
 - Credit checkouts use one configured product with `custom_price`. The purchase ID
   travels as `request_id` and as `intent_id` metadata. `ProductID` is needed only for
@@ -906,6 +937,14 @@ type SubscriptionEvent struct {
   left is refunded. Tax is at the rate of the subscription's last payment
   (`tax_amount` of `amount_paid`, which includes it). Products are read once every ten
   minutes.
+- Agentic Marketplace requests are `marketplace.grant.requested` events at the store's
+  webhook, verified with `WebhookSecret`; their object's fields are camelCase. A request
+  names its order unless it is a test or a `revoke`, whose order is the provision's.
+  `amountMinor` is read as whole minor units. The reply is snake_case JSON, and
+  `GrantReply` refuses what Creem would: credentials outside `^[A-Z][A-Z0-9_]{0,63}$`,
+  more than 16 of them or values that aren't 1 to 4,096 printable ASCII characters, a
+  key hint over 8 characters, an entitlement over 4 KB, a failure without a reason of
+  at most 200 characters, and a pending answer with anything but its status.
 - An API key starting with `creem_test_` selects Creem's test API.
 - Webhooks are verified with HMAC-SHA256 from the `creem-signature` header, with the
   secret of the endpoint they arrive at: Creem gives each webhook its own.
