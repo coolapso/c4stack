@@ -122,6 +122,7 @@ const (
 	KindAdjustment = "adjustment" // an operator's or the app's correction
 	KindExpiry     = "expiry"     // credit that expired unused
 	KindForfeit    = "forfeit"    // credit left when the account was deleted
+	KindTransfer   = "transfer"   // credit moved to or from another account
 )
 
 // Entry is one ledger entry.

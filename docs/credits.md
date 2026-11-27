@@ -21,12 +21,13 @@ Every change to credit is a row in `credit_ledger`:
 
 | Kind | Sign | Written by |
 |---|---|---|
-| `top_up` | + | the webhook, for a paid purchase |
-| `refund`, `chargeback` | − | the webhook, for a refunded or disputed purchase |
+| `top_up` | + | the webhook, for a paid purchase; another module, for an order it took (`Tx.CreditOrder`) |
+| `refund`, `chargeback` | − | the webhook, for a refunded or disputed purchase; another module (`Tx.ReverseOrder`) |
 | `usage` | − | the app, for work (`Debit`, `Tx.Debit`, `Tx.Capture`) |
 | `adjustment` | ± | the app or an operator (`Adjust`, `credits adjust`) |
 | `expiry` | − | credit expiry, when that module is enabled |
 | `forfeit` | − | account deletion, for remaining credit |
+| `transfer` | ± | another module, moving an account's credit to another account (`Transfer`) |
 
 Entries for payments carry the purchase and the provider's event ID; the app's entries
 carry its reference; any entry can carry a description, which `credits.Label` shows
@@ -42,6 +43,10 @@ These rules hold:
 - **Debits never take available credit below zero.** Available credit is the balance
   minus what the app's `Holds` function reports. `Capture`, adjustments and reversals
   can make the balance negative.
+- **A transfer moves the whole balance once.** `Transfer` locks both accounts, refuses
+  while the app holds any of the first account's credit (`ErrHeld`), and writes one
+  entry on each account with the same reference. It moves the first account's purchases
+  too, so a later refund takes the credit back from the account that now has it.
 - **The ledger is append-only.** A trigger rejects changes and deletes. Corrections are
   new entries.
 - **The one exception is account deletion.** The remaining positive balance is
@@ -110,6 +115,17 @@ gives up. A failure that lasts longer needs the operator: compare Creem's dashbo
 
 Logs carry event, purchase and account IDs and the outcome. They never contain webhook
 bodies, buyer names or email addresses.
+
+## Orders another module took
+
+A module that sells credit outside the credits checkout, such as `credits/marketplace` on
+a provider's marketplace, records each paid order with `Tx.CreditOrder`, inside a
+transaction where it holds the account's lock (`Lock`). The order becomes a purchase like
+any other: paid, with its credit, fee and price, credited once per provider order, and
+kept without the account if the account is deleted. The module, not the provider's event,
+says what the order buys. `Tx.ReverseOrder` takes the credit back once; if the payment
+webhook reversed the purchase first, it changes nothing, and the other way round. An
+order that doesn't fit is recorded with `Review` for an operator.
 
 ## Reviews
 

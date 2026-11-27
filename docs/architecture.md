@@ -934,8 +934,8 @@ payment_reviews(id, provider, event_id, payment_intent_id, reason, created_at,
 
 A purchase's `provider_status` is `created`, `pending` once its checkout exists, then
 `paid`, `refunded` or `charged_back`. Ledger kinds are `top_up`, `usage`, `refund`,
-`chargeback`, `adjustment`, `expiry` and `forfeit`. A trigger keeps the ledger
-append-only.
+`chargeback`, `adjustment`, `expiry`, `forfeit` and `transfer`. A trigger keeps the
+ledger append-only.
 
 ```go
 type Policy struct {
@@ -958,6 +958,17 @@ func (tx *Tx) Available() (int64, error)
 func (tx *Tx) Debit(cents int64, reference, description string) error   // within available credit
 func (tx *Tx) Capture(cents int64, reference, description string) error // work a hold reserved
 func (tx *Tx) Expire(cents int64) error                                  // for credits/expiry
+func (cr *Credits) Lock(ctx context.Context, tx *sql.Tx, accountID string) (*Tx, error) // in the caller's transaction
+func (tx *Tx) CreditOrder(o Order) (intentID string, credited bool, err error) // an order another module took
+func (tx *Tx) ReverseOrder(provider, orderID, eventID string, disputed bool) (bool, error)
+type Order struct {
+	Provider, OrderID, EventID          string
+	CreditCents, PriceCents, PaidCents  int64 // PriceCents: credit plus fee, before tax
+	PaidAt                              time.Time
+	Description                         string
+}
+func (cr *Credits) Transfer(ctx context.Context, tx *sql.Tx, from, to, reference, description string) (int64, error) // ErrHeld
+func (cr *Credits) Review(ctx context.Context, provider, eventID, reason string) error
 func (cr *Credits) Summary(ctx context.Context, accountID string) (Summary, error) // balance, held, available
 func (cr *Credits) History(ctx context.Context, accountID string, page, perPage int) ([]Entry, bool, error)
 func Label(e Entry) string
@@ -982,7 +993,14 @@ The operator commands are `credits adjust`, `credits balance`, `credits reviews`
   what the app's `Holds` function reports. `Capture` charges work a hold reserved without
   that check, so finished work is charged even if a refund lowered the balance since.
 - `WithAccount` lets app reservations share the lock and transaction with the module's
-  charges.
+  charges. `Lock` does the same inside a transaction the caller already holds.
+- A module that takes orders outside the checkout, such as `credits/marketplace`, records
+  them with `Tx.CreditOrder` as purchases like any other, and reverses them with
+  `Tx.ReverseOrder`. Whichever reverses a purchase first, the webhook or the module, does
+  it; the other changes nothing.
+- `Transfer` moves an account's whole balance and its purchases to another account, as a
+  `transfer` entry on each, once per reference. It refuses with `ErrHeld` while the app
+  holds any of the first account's credit.
 
 **Webhooks.** The webhook grants credit from the stored purchase, never from the payload.
 - A paid event credits once.
@@ -1053,7 +1071,7 @@ duplicate it. Each run:
    warning is about the account's last activity, went to the account's current
    address, which an identity still verifies, and the app holds none of it.
 
-Purchases, charges and adjustments count as activity, and new activity needs a new
+Purchases, charges, adjustments and transfers count as activity, and new activity needs a new
 warning. Deadlines are stored, so changing the policy never brings one forward.
 
 ### subscriptions (opt-in)

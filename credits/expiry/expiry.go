@@ -1,7 +1,7 @@
 // Package expiry expires credit that has gone unused, after warning its owner.
 //
-// An account's credit expires after Policy.InactiveMonths without a purchase, charge or
-// adjustment. A warning goes out NoticeDays before that, and counts only once the email
+// An account's credit expires after Policy.InactiveMonths without a purchase, charge,
+// adjustment or transfer. A warning goes out NoticeDays before that, and counts only once the email
 // provider reports it delivered: credit expires once a full notice period from delivery
 // has passed, and never before the date the warning announced. Each warning's deadline
 // is stored, so a later policy change never shortens it. New activity starts over, and
@@ -210,11 +210,11 @@ const batchSize = 100
 const resendAfter = 3 * 24 * time.Hour
 
 // activity summarises each account's balance and last activity: its latest purchase,
-// charge or adjustment.
+// charge, adjustment or transfer.
 const activity = `
 	SELECT account_id,
 	       sum(amount_cents) AS balance,
-	       max(created_at) FILTER (WHERE kind IN ('top_up', 'usage', 'adjustment')) AS last_activity
+	       max(created_at) FILTER (WHERE kind IN ('top_up', 'usage', 'adjustment', 'transfer')) AS last_activity
 	FROM credit_ledger
 	WHERE account_id IS NOT NULL
 	GROUP BY account_id`

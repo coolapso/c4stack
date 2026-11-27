@@ -815,6 +815,8 @@ func Label(e Entry) string {
 		return "Expired credit"
 	case KindForfeit:
 		return "Forfeited credit"
+	case KindTransfer:
+		return "Credit moved"
 	}
 	return "Adjustment"
 }
