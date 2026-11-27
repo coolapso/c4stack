@@ -19,7 +19,8 @@ var _ payments.Marketplace = (*Creem)(nil)
 const grantEvent = "marketplace.grant.requested"
 
 // grantObject is the object of a marketplace.grant.requested event. Its fields are
-// camelCase, unlike the rest of Creem's webhooks.
+// camelCase, unlike the rest of Creem's webhooks. The order's amountMinor is its
+// total, tax included.
 type grantObject struct {
 	GrantID     string  `json:"grantId"`
 	OperationID string  `json:"operationId"`
@@ -52,6 +53,15 @@ func (c *Creem) ParseGrantRequest(header http.Header, body []byte) (payments.Gra
 	var o grantObject
 	if json.Unmarshal(env.Object, &o) != nil || o.GrantID == "" || o.OperationID == "" {
 		return payments.GrantRequest{}, payments.ErrInvalid
+	}
+	if o.Reason == "" {
+		// Creem's support places a revocation's reason at the top level of the
+		// payload; its guide shows it nowhere. Either place counts.
+		var top struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(body, &top)
+		o.Reason = top.Reason
 	}
 	r := payments.GrantRequest{
 		EventID:     env.ID,

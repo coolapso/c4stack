@@ -56,7 +56,8 @@ type GrantRequest struct {
 	OrderID string
 	// OrderPaid holds when the order is paid.
 	OrderPaid bool
-	// AmountCents and Currency are what the order came to, as the provider reports it.
+	// AmountCents and Currency are what the order came to, as the provider reports it:
+	// for Creem, the total, tax included.
 	AmountCents int64
 	Currency    string
 	// PaidAt is when the order was paid, if the request says.

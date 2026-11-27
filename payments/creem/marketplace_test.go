@@ -114,6 +114,25 @@ func TestParseGrantRequestShapes(t *testing.T) {
 	}
 }
 
+// Creem's support places a revocation's reason at the top level of the payload; the
+// object's still counts first.
+func TestRevocationReasonAtEitherLevel(t *testing.T) {
+	c := adapter(t, "")
+	for body, want := range map[string]string{
+		`{"id": "evt_1", "eventType": "marketplace.grant.requested", "reason": "chargeback",
+		  "object": {"grantId": "g", "operationId": "o", "action": "revoke"}}`: "chargeback",
+		`{"id": "evt_1", "eventType": "marketplace.grant.requested", "reason": "chargeback",
+		  "object": {"grantId": "g", "operationId": "o", "action": "revoke", "reason": "refund"}}`: "refund",
+		`{"id": "evt_1", "eventType": "marketplace.grant.requested",
+		  "object": {"grantId": "g", "operationId": "o", "action": "revoke"}}`: "",
+	} {
+		r, err := c.ParseGrantRequest(signed(body), []byte(body))
+		if err != nil || r.Reason != want {
+			t.Errorf("reason %q, want %q: %v", r.Reason, want, err)
+		}
+	}
+}
+
 func TestGrantReply(t *testing.T) {
 	c := adapter(t, "")
 	body, err := c.GrantReply(payments.GrantAnswer{
