@@ -477,15 +477,15 @@ goes through `accounts`.
 ### accounts
 
 ```sql
-accounts(id uuid, primary_email UNIQUE, name, created_at, updated_at,
-         deletion_started_at, deletion_confirmed_at)
+accounts(id uuid, primary_email UNIQUE (NULL without an identity), name, created_at,
+         updated_at, deletion_started_at, deletion_confirmed_at)
 account_identities(id uuid, account_id → accounts ON DELETE CASCADE, provider, subject,
                    email, email_verified, created_at, updated_at, UNIQUE (provider, subject))
 deleted_identities(identity_hash bytea, deleted_at)
 ```
 
 ```go
-type Account struct{ ID, Email, Name string; CreatedAt time.Time } // Email is the primary address
+type Account struct{ ID, Email, Name string; CreatedAt time.Time } // Email is the primary address, or empty
 type Config struct{ Paths Paths; Names bool }
 type Paths struct{ Login, Name, Logout, Unverified, Settings, Delete, Deleted, EmailChanged string }
 
@@ -498,6 +498,8 @@ func (s *Accounts) List(ctx context.Context, opts ListOptions) (AccountPage, err
 type ListOptions struct{ Search, After string; Limit int } // Search: address or name; Limit: 50 by default, 500 at most
 type AccountPage struct{ Accounts []Account; Next string } // Next: the next page's After, empty on the last
 func (s *Accounts) Count(ctx context.Context) (int, error)
+func (s *Accounts) CreateWithoutIdentity(ctx context.Context, tx *sql.Tx) (Account, error) // nobody signs in to it
+func (s *Accounts) DeleteWithoutIdentity(ctx context.Context, tx *sql.Tx, accountID string) error // ErrHasIdentity
 func (s *Accounts) Names() bool // Config.Names
 func (s *Accounts) OnDelete(hook func(ctx context.Context, tx *sql.Tx, accountID string) error)
 func (s *Accounts) CheckDeletion(check func(ctx context.Context, tx *sql.Tx, accountID string) error) // refuse: *DeletionRefused
@@ -592,6 +594,15 @@ authenticated just before an address change would write the old address back aft
 A process that only needs account IDs, such as an API gateway, constructs the module
 with a nil provider. It holds no sign-in configuration, and `RequireSignIn`, `Mount` and
 `Delete` are unavailable.
+
+**Accounts without an identity.** `CreateWithoutIdentity` creates an account nobody signs
+in to, such as the one `credits/marketplace` opens for an AI agent's purchase, which
+reaches it only through API keys. Its primary address is NULL, so no identity ever joins
+it, and `Email` is empty. The module that created it ends it with
+`DeleteWithoutIdentity`, which runs the `OnDelete` hooks like any deletion and refuses an
+account with an identity: only its owner deletes that, through `Delete`. Both take the
+caller's transaction, so creating or ending such an account commits together with the
+caller's own rows.
 
 **Deletion** runs these steps:
 1. The user confirms on `/account/delete` with CSRF and types `DELETE`. The session must

@@ -55,7 +55,8 @@ type Account struct {
 	ID string
 	// Email is the account's primary address. One of the account's identities verified
 	// it, unless every identity has since moved to an address the provider has not
-	// verified or that another account has.
+	// verified or that another account has. It is empty for an account without an
+	// identity (CreateWithoutIdentity).
 	Email string
 	// Name is what the person asked to be called, when the app asks for names
 	// (Config.Names); empty until they give it.
@@ -203,7 +204,7 @@ func (s *Accounts) Get(ctx context.Context, id string) (Account, error) {
 	}
 	var a Account
 	err := s.app.DB().QueryRowContext(ctx, `
-		SELECT id, primary_email, COALESCE(name, ''), created_at
+		SELECT id, COALESCE(primary_email, ''), COALESCE(name, ''), created_at
 		FROM accounts
 		WHERE id = $1`, id,
 	).Scan(&a.ID, &a.Email, &a.Name, &a.CreatedAt)
@@ -222,7 +223,7 @@ func (s *Accounts) ByEmail(ctx context.Context, email string) (Account, error) {
 	}
 	var a Account
 	err := s.app.DB().QueryRowContext(ctx, `
-		SELECT id, primary_email, COALESCE(name, ''), created_at
+		SELECT id, COALESCE(primary_email, ''), COALESCE(name, ''), created_at
 		FROM accounts
 		WHERE lower(primary_email) = lower($1)
 		ORDER BY primary_email = $1 DESC
@@ -286,7 +287,7 @@ func (s *Accounts) List(ctx context.Context, opts ListOptions) (AccountPage, err
 		afterAt, afterID = time.UnixMicro(n).UTC(), strings.ToLower(id)
 	}
 	rows, err := s.app.DB().QueryContext(ctx, `
-		SELECT id, primary_email, COALESCE(name, ''), created_at
+		SELECT id, COALESCE(primary_email, ''), COALESCE(name, ''), created_at
 		FROM accounts
 		WHERE ($1 = ''
 		       OR strpos(lower(primary_email), lower($1)) > 0
@@ -350,7 +351,7 @@ func (s *Accounts) resolve(ctx context.Context, id identity.Identity) (Account, 
 	var email string
 	var verified, started, confirmed, current bool
 	err := s.app.DB().QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, COALESCE(a.name, ''), a.created_at,
+		SELECT a.id, COALESCE(a.primary_email, ''), COALESCE(a.name, ''), a.created_at,
 		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
 		       i.email, i.email_verified, `+primaryVerified+`
 		FROM account_identities i
@@ -535,7 +536,7 @@ func (s *Accounts) joinTx(ctx context.Context, tx *sql.Tx, provider string, id i
 	var a Account
 	// A concurrent first sign-in of the same identity may have joined it already.
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, COALESCE(a.name, ''), a.created_at
+		SELECT a.id, COALESCE(a.primary_email, ''), COALESCE(a.name, ''), a.created_at
 		FROM account_identities i
 		JOIN accounts a ON a.id = i.account_id
 		WHERE i.provider = $1 AND i.subject = $2`, provider, id.Subject,
@@ -549,7 +550,7 @@ func (s *Accounts) joinTx(ctx context.Context, tx *sql.Tx, provider string, id i
 
 	var started, confirmed, current bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT a.id, a.primary_email, COALESCE(a.name, ''), a.created_at,
+		SELECT a.id, COALESCE(a.primary_email, ''), COALESCE(a.name, ''), a.created_at,
 		       a.deletion_started_at IS NOT NULL, a.deletion_confirmed_at IS NOT NULL,
 		       `+primaryVerified+`
 		FROM accounts a
