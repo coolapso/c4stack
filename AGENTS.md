@@ -8,12 +8,13 @@ new apps. Apps call it; it never owns their engine, routes, layout or configurat
 
 - Public packages are the apps' API: `web`, `app`, `app/apptest`, `ui`, `identity`,
   `identity/hanko`, `identity/local`, `accounts`, `apikeys`, `oidc`, `payments`,
-  `payments/creem`, `credits`, `credits/expiry`, `subscriptions`, `email`,
-  `email/scaleway` and `email/smtp`. Start new names unexported and export them when an
+  `payments/creem`, `credits`, `credits/expiry`, `credits/marketplace`, `subscriptions`,
+  `email`, `email/scaleway` and `email/smtp`. Start new names unexported and export them when an
   app needs them. Keep changes additive after v0.1.0.
 - Dependencies point one way: `web` and `internal/postgres` at the bottom; interfaces
   (`identity`, `payments`, `email`) depend on nothing in C4Stack; modules depend on
-  `accounts`; nothing depends on a module. Errors live in the package that owns them.
+  `accounts`; nothing depends on a module, except a module's extensions:
+  `credits/expiry` on `credits`, and `credits/marketplace` on `credits` and `apikeys`. Errors live in the package that owns them.
 - New capabilities are new modules or optional interfaces, such as `subscriptions` and
   `payments.Subscriber`, never new required methods on an existing interface.
   Provider-specific payloads stay in adapters.
