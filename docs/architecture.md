@@ -655,9 +655,12 @@ type Config struct{ Prefix string } // "acme" issues acme_<43 characters>
 
 func New(a *app.App, cfg Config) (*Keys, error) // keys cascade with their account
 func (k *Keys) Create(ctx context.Context, accountID, name string) (raw string, key Key, err error)
+func (k *Keys) CreateTx(ctx context.Context, tx *sql.Tx, accountID, name string) (raw string, key Key, err error)
 func (k *Keys) List(ctx context.Context, accountID string) ([]Key, error)
 func (k *Keys) Rename(ctx context.Context, accountID, keyID, name string) error // active keys
 func (k *Keys) Revoke(ctx context.Context, accountID, keyID string) error
+func (k *Keys) RevokeTx(ctx context.Context, tx *sql.Tx, accountID, keyID string) error
+func (k *Keys) Move(ctx context.Context, tx *sql.Tx, fromAccountID, toAccountID string) (int, error)
 func (k *Keys) Delete(ctx context.Context, accountID, keyID string) error // revoked keys; ErrActive
 func (k *Keys) Authenticate(ctx context.Context, raw string) (Key, error)
 func (k *Keys) LockActive(ctx context.Context, tx *sql.Tx, accountID, keyID string) error
@@ -672,6 +675,12 @@ C4Stack stores the SHA-256 of the whole raw key plus its last six characters, an
 keys as the current prefix, `_••••` and those characters. Lookup is by hash, so changing
 `Prefix` never invalidates existing keys. The raw key is shown once in the create
 response and never logged.
+
+**In a caller's transaction.** `CreateTx` and `RevokeTx` issue and revoke a key together
+with the caller's own rows, such as `credits/marketplace` opening an account and its key
+in one transaction. `Move` gives all of an account's keys to another account, as when an
+account without an identity is claimed: they authenticate for the new account from the
+next request.
 
 **`RequireKey`** requires exactly one `Authorization: Bearer` header and ignores cookies.
 It answers JSON 401 with `WWW-Authenticate` when the key is missing or invalid, and

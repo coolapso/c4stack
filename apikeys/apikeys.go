@@ -119,8 +119,23 @@ func validName(name string) (string, error) {
 	return name, nil
 }
 
+// queryer is what Create and Revoke need from a database or a transaction.
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // Create issues a key and returns it raw, once. Store or show it immediately.
 func (k *Keys) Create(ctx context.Context, accountID, name string) (string, Key, error) {
+	return k.create(ctx, k.app.DB(), accountID, name)
+}
+
+// CreateTx issues a key inside tx, such as together with the account it is for, and
+// returns it raw, once.
+func (k *Keys) CreateTx(ctx context.Context, tx *sql.Tx, accountID, name string) (string, Key, error) {
+	return k.create(ctx, tx, accountID, name)
+}
+
+func (k *Keys) create(ctx context.Context, q queryer, accountID, name string) (string, Key, error) {
 	name, err := validName(name)
 	if err != nil {
 		return "", Key{}, err
@@ -132,7 +147,7 @@ func (k *Keys) Create(ctx context.Context, accountID, name string) (string, Key,
 	raw := k.prefix + "_" + base64.RawURLEncoding.EncodeToString(secret)
 	hash := sha256.Sum256([]byte(raw))
 	key := Key{AccountID: accountID, Name: name, Prefix: k.prefix, Suffix: raw[len(raw)-suffixLength:]}
-	err = k.app.DB().QueryRowContext(ctx, `
+	err = q.QueryRowContext(ctx, `
 		INSERT INTO api_keys (account_id, name, key_hash, key_suffix)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at`,
@@ -234,8 +249,18 @@ func (k *Keys) LockActive(ctx context.Context, tx *sql.Tx, accountID, keyID stri
 // Revoke stops a key from authenticating. Revoking a revoked key changes nothing.
 // An unknown key returns ErrNotFound.
 func (k *Keys) Revoke(ctx context.Context, accountID, keyID string) error {
+	return revoke(ctx, k.app.DB(), accountID, keyID)
+}
+
+// RevokeTx revokes a key inside tx, such as together with the credit a refund takes
+// back. See Revoke.
+func (k *Keys) RevokeTx(ctx context.Context, tx *sql.Tx, accountID, keyID string) error {
+	return revoke(ctx, tx, accountID, keyID)
+}
+
+func revoke(ctx context.Context, q queryer, accountID, keyID string) error {
 	var id string
-	err := k.app.DB().QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 		UPDATE api_keys
 		SET revoked_at = COALESCE(revoked_at, now())
 		WHERE id = $1 AND account_id = $2
@@ -245,6 +270,26 @@ func (k *Keys) Revoke(ctx context.Context, accountID, keyID string) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+// Move gives every key of one account, revoked ones included, to another, inside tx,
+// such as when an account without an identity is claimed by its owner's. The keys keep
+// working: they authenticate for the new account from the next request. It returns how
+// many keys moved.
+func (k *Keys) Move(ctx context.Context, tx *sql.Tx, fromAccountID, toAccountID string) (int, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE api_keys
+		SET account_id = $2
+		WHERE account_id = $1`, fromAccountID, toAccountID,
+	)
+	if isInvalidUUID(err) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // Authenticate returns the active key matching raw. It records when the key was last
